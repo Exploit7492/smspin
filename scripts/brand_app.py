@@ -85,6 +85,10 @@ def write_brand_json():
     }
     with open(os.path.join(ROOT, "brand.json"), "w") as f:
         json.dump(data, f, indent=2)
+    assets_dir = os.path.join(ROOT, "app/src/main/assets")
+    os.makedirs(assets_dir, exist_ok=True)
+    with open(os.path.join(assets_dir, "brand.json"), "w") as f:
+        json.dump(data, f, indent=2)
     return data
 
 

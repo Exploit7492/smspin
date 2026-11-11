@@ -115,7 +115,7 @@ jobs:
             -PappName="${TENANT_NAME}" \
             -PversionCode="${GITHUB_RUN_NUMBER}" \
             -PversionName="1.0.${GITHUB_RUN_NUMBER}" \
-            -PbrandJson="$(tr -d '\n' < brand.json)"
+           
 
       - name: Rename APK
         run: |

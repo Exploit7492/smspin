@@ -14,7 +14,6 @@ android {
         versionCode = providers.gradleProperty("versionCode").orElse("1").get().toInt()
         versionName = providers.gradleProperty("versionName").orElse("1.0.0").get()
         resValue("string", "app_name", providers.gradleProperty("appName").orElse("SMSPin").get())
-        buildConfigField("String", "BRAND_JSON", "\"${providers.gradleProperty("brandJson").orElse("{}").get()}\"")
     }
 
     signingConfigs {

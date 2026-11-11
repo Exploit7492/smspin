@@ -9,20 +9,20 @@ import org.json.JSONObject
 
 /**
  * Multi-tenant shell: loads the tenant storefront, branded per build via
- * BuildConfig.BRAND_JSON (injected by the CI workflow). Deep links of the form
- * https://<domain>/store/<slug>/... open the matching store.
+ * assets/brand.json (injected by the CI workflow). The screens are the same
+ * pages served by the website, so the app stays a replica of the site.
+ * Deep links of the form https://<domain>/store/<slug>/... open the store.
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var web: WebView
+    private val brand: JSONObject by lazy { loadBrand() }
+    private val apiBase: String get() = brand.optString("apiBase", "https://smspin.io")
+    private val slug: String get() = brand.optString("slug", "")
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        val brand = runCatching { JSONObject(BuildConfig.BRAND_JSON) }.getOrElse { JSONObject() }
-        val apiBase = brand.optString("apiBase", "https://smspin.io")
-        val slug = brand.optString("slug", "")
 
         web = WebView(this)
         setContentView(web)
@@ -35,7 +35,13 @@ class MainActivity : AppCompatActivity() {
         web.loadUrl(startUrl)
     }
 
+    private fun loadBrand(): JSONObject = runCatching {
+        assets.open("brand.json").bufferedReader().use { JSONObject(it.readText()) }
+    }.getOrElse { JSONObject() }
+
+    @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (this::web.isInitialized && web.canGoBack()) web.goBack() else super.onBackPressed()
+        if (this::web.isInitialized && web.canGoBack()) web.goBack()
+        else @Suppress("DEPRECATION") super.onBackPressed()
     }
 }
