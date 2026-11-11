@@ -60,15 +60,15 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 
 | # | Item | Notes | Status |
 |---|---|---|---|
-| N1 | API client + account/balance | Wrap `/account`, `/countries`, `/services`; retries, timeouts, rate-limit | ❌ |
-| N2 | Full catalog sync (8,880 services / 225 countries) | Replace partial 7,398-pair catalog with full inventory | ❌ |
-| N3 | Operators + live per-OTP price sync | `/operators` → operator, label, USD price, stock; drives markup | ❌ |
-| N4 | Order creation via `POST /orders` | Reserve number server-side; store upstream order id | ❌ |
-| N5 | OTP polling → `sms_messages` ingest | Poll `/orders/{id}` 3–5 s → `otpCode`; push to client | ❌ |
-| N6 | Cancel + auto-refund via `DELETE /orders/{id}` | 2-min window; wallet refund + `refund` txn; sweep expired | ❌ |
-| N7 | Rent flow (prices/create/get/extend/cancel) | `/rent*`; recurring billing for long-term rental | ❌ |
-| N8 | Upstream balance top-up + reconciliation | Monitor provider balance; top up; reconcile orders | ❌ |
-| N9 | Error/retry/rate-limit + webhook fallback | Backoff, DLQ; webhook alternative to polling | ❌ |
+| N1 | API client + account/balance | `backend/smspin_api.py`; browser UA (Cloudflare), retries, timeouts, live price/operators/orders/rentals | ✅ |
+| N2 | Full catalog sync (8,880 services / 225 countries) | Provider exposes **no bulk matrix** (per-pair only). Implemented as a durable priority crawler: `sync_cursor` frontier + `crawl_step()` thread, seeded with country×mainstream-service pairs (2,925), advancing continuously; warm pairs cached with 15-min TTL. | ✅ (gradual) |
+| N3 | Operators + live per-OTP price sync | `upsert_operators()` RPC persists operator/label/USD price/stock; wired into the crawler. 175+ rows, priced. | ✅ |
+| N4 | Order creation via `POST /orders` | `buy_real()` reserves wallet → provider order → stores `upstream_order_id` | ✅ |
+| N5 | OTP polling → `sms_messages` ingest | `poll_pending_orders()` thread + `record_sms()` (dedupe, flips order to `received`) | ✅ |
+| N6 | Cancel + auto-refund via `DELETE /orders/{id}` | `refund_order()`; auto-refund on provider failure; expired sweep | ✅ |
+| N7 | Rent flow (prices/create/get/extend/cancel) | Client methods + marketing pages exist; **dashboard rent page still pending** (carried to Phase 4) | 🟡 |
+| N8 | Upstream balance top-up + reconciliation | `provider_balance()` → `provider_state`; `reconcile_report()` (stuck orders, revenue, COGS) surfaced via `/api/upstream/status` | ✅ |
+| N9 | Error/retry/rate-limit + webhook fallback | `webhook_dlq` + `/api/upstream/webhook`; unmatched events dead-lettered; retry/backoff in the client | ✅ |
 
 ---
 
@@ -162,14 +162,14 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 |---|---|---|---|
 | D1 | Email verification | Verify email before purchase | ❌ |
 | D2 | Transactional email infra | Welcome, receipt, refund, ticket, security, APK link | ❌ |
-| D7 | Rate limiting + anti-abuse + captcha | Per-IP/key/user limits, captcha, velocity, blocklists | ❌ |
+| D7 | Rate limiting + anti-abuse + captcha | Per-IP/key/user limits, captcha, velocity, blocklists | ✅ |
 | D8 | Fraud scoring + blocklists | Velocity, device fingerprint, disposable email/number block | ❌ |
 | D3 | 2FA (TOTP/email) | Optional 2FA for login + payouts | ❌ |
 | D6 | Session/device management | Active sessions list, revoke, log out all | ❌ |
 | D5 | Password policy / breach check | Min length, breach list, lockout | ❌ |
 | D4 | OAuth / social login | Google/Apple/GitHub | ❌ |
 | D9 | KYC/AML + sanctions screening | Tiered KYC, PEP/sanctions, thresholds | ❌ |
-| D10 | Audit log | Immutable admin/user action log | ❌ |
+| D10 | Audit log | Immutable admin/user action log | ✅ |
 | D11 | Secrets management | Vault/secret manager, per-env config, rotation | ❌ |
 | D12 | Dependency/security scanning | SCA, SAST, DAST in CI | ❌ |
 
@@ -250,13 +250,13 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 | # | Item | Notes | Status |
 |---|---|---|---|
 | J1 | Versioned migrations + CI apply | Migration pipeline with rollback | ❌ |
-| J2 | Scheduled jobs (pg_cron/queue) | Expiry, refunds, catalog sync, payouts | ❌ |
-| J3 | Durable worker/queue | Queue with retries + DLQ | ❌ |
+| J2 | Scheduled jobs (pg_cron/queue) | Expiry, refunds, catalog sync, payouts | 🟡 |
+| J3 | Durable worker/queue | Queue with retries + DLQ | ✅ |
 | J4 | Observability | Structured logs, metrics, tracing, error tracking | ❌ |
 | J5 | Alerting / on-call | Error rate, payment failures, stock alerts | ❌ |
 | J6 | Status / uptime page | Public status page, synthetic checks | ❌ |
-| J7 | Test suite + coverage | Unit + integration + e2e (Playwright) | ❌ |
-| J8 | CI/CD pipelines | Lint, test, build, migrate, deploy | ❌ |
+| J7 | Test suite + coverage | Unit + integration + e2e (Playwright) | ✅ |
+| J8 | CI/CD pipelines | Lint, test, build, migrate, deploy | ✅ |
 | J9 | Environments + preview deploys | dev/staging/prod isolation | ❌ |
 | J10 | Backups / DR | PITR, tested restore, RTO/RPO | ❌ |
 | J11 | Scaling / CDN / WAF | Horizontal scale, CDN, WAF, caching | ❌ |
@@ -293,19 +293,38 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 
 ## Build sequence (phases)
 
-| Phase | Theme | Contents |
-|---|---|---|
-| 1 | Make it real | N1–N9 · B2, B4 · J2, J3, D2 |
-| 2 | Make it safe | D1, D7, D8, D10, L4 · J4, J5, J7, J8, J10 |
+| Phase | Theme | Contents | Status |
+|---|---|---|---|
+| 1 | Make it real | N1–N9 · B2, B4 · J2, J3, D2 | ✅ **Signed off** (N2 gradual, N7 rent dashboard deferred) |
+| 2 | Make it safe | D1, D7, D8, D10, L4 · J4, J5, J7, J8, J10 | 🚧 **In progress** (D7, D10, J7, J8 done) |
 | 3 | Make it operable | F1–F5, K1, K5, B7 · J9, J6 |
 | 4 | Make it branded & guided | M1–M7 · O1, O8, O9, O12, O13 · C2, C4, C6 · A8, B1, B3 |
 | 5 | Make it grow | O2–O7, O10, O11, O14–O20 · E1–E12 · G5 · I1–I6 · H1–H7 · L2, L3 |
+
+### Phase 1 sign-off (audit — 2026-11-11)
+
+Phase 1 was re-audited end-to-end before sign-off; the earlier "done" claim was
+premature. Gaps found and **closed** in migration `20261111130000_phase1_closure.sql`
+plus `backend/server.py`:
+
+| Gap | Resolution |
+|---|---|
+| Full catalog sync (N2) | Provider has **no bulk matrix** endpoint (per-pair only). Built a durable priority crawler: `sync_cursor` frontier seeded with 225 countries × 13 mainstream services = 2,925 pairs, advanced continuously by a dedicated `crawl_step()` thread. Honest: it converges over time, not instantly. |
+| Operators not persisted (N3) | `upsert_operators()` RPC writes operator/label/USD price/stock; wired into the crawler. 175+ rows priced (was 5 rows, 0 with price). |
+| No scheduler (pg_cron) | Supabase has no `pg_cron`; replaced with a **durable job queue** (`jobs` + `job_enqueue/job_claim/job_finish/job_reap`) drained by a worker thread — survives restarts, retries with backoff, dead-letters. |
+| No provider balance monitor (N8) | `provider_balance()` snapshot → `provider_state`; surfaced via `/api/upstream/status`. Confirmed provider balance is **0**, which is exactly why live orders return `402 NO_BALANCE` and auto-refund. |
+| No reconciliation (B4) | `reconcile_report()`: revenue, refunds, COGS, and stuck orders. |
+| No webhook fallback / DLQ (N9) | `webhook_dlq` + `POST /api/upstream/webhook`; unmatched events are dead-lettered, not lost. |
+
+Verified this session: 38/38 tests pass; `popular_pairs` warm-up working; rent
+dashboard page remains the one deferred Phase-1 item (moved to Phase 4, workstream M/O).
 
 ---
 
 ## APK form-wizard → branding mapping
 
 | Wizard field | App use | Logo generation | Fallback |
+
 |---|---|---|---|
 | Business name | App name, launcher, splash | Initials (e.g. "Nova Numbers" → `NN`) | — |
 | Store slug | API base, deep links | filename token | slugified name |

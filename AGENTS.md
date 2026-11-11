@@ -301,3 +301,40 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
 - `settings.upstream_live` gates live ordering; set to `false` to fall back to the legacy
   `api_buy` RPC. The provider account must be funded (else orders auto-refund with
   `SMSPin API 402: NO_BALANCE`).
+
+## Phase 1 closure + Phase 2 (safe platform)
+Migration `supabase/migrations/20261111130000_phase1_closure.sql` adds the operational
+backbone. All new RPCs are `security definer` and revoked from anon/authenticated
+(service_role only); the browser never calls them.
+
+- **Catalog crawl (N2)** — the provider still has no bulk endpoint, so `sync_cursor` holds a
+  priority frontier (`sync_seed()` seeds 225 countries x 13 mainstream services = 2,925
+  pairs). `crawl_step()` (dedicated thread, ~every 20s) claims a slice via `sync_next()`,
+  syncs each pair, and marks it with `sync_mark()`. Progress via `sync_progress()`.
+- **Operators (N3)** — `upsert_operators(jsonb)` persists `operator/label/price_usd/stock`.
+  `name` = operator id, `label` = human name. Wired into the crawler.
+- **Durable jobs (J2/J3)** — `jobs` table + `job_enqueue/job_claim/job_finish/job_reap`.
+  `job_claim` returns a JSON **array** (built with `jsonb_agg`); `job_finish` retries with
+  exponential backoff then dead-letters. Worker thread (`_worker`) drains jobs.
+- **Provider monitor (N8)** — `provider_balance()` -> `provider_state` key/value store;
+  read via `provider_state_get`. Provider balance is currently 0, hence live 402s.
+- **Reconciliation (B4)** — `reconcile_report(days)` returns revenue, refunds, COGS and
+  stuck orders.
+- **DLQ + webhook (N9)** — `webhook_dlq` + `POST /api/upstream/webhook` (optional
+  `Smspin_webhook_secret` header check). Unmatched/failed events are dead-lettered.
+- **Rate limiting (D7)** — in-memory sliding window in `server.py` (`rate_limit`/`check_rate`,
+  buckets: buy 30/min, auth 60/min, webhook 600/min). Multi-instance deploys should back
+  this with Redis.
+- **Audit log (D10)** — `audit_log` + `audit_write`/`audit_list`. Wired into buy/cancel;
+  `GET /api/audit` is self-service (a caller only sees their own `actor` rows).
+- **Observability** — `GET /api/upstream/status` returns provider enabled flag, balance,
+  catalog sync progress, DLQ head and a 7-day reconcile report.
+
+### Tests + CI
+- `tests/` — pytest: `test_backend_http.py` (pages, auth gates, rate limit, status),
+  `test_db_rpc.py` (catalog/operators, OTP idempotency, refund idempotency, job queue, DLQ,
+  reconcile, audit), `test_smspin_api.py` (client unit). Fixtures auto-skip when Supabase
+  env is missing. Run: `python3 -m pytest tests/ -q`.
+- `.github/workflows/backend-tests.yml` — compile + offline unit tests always; integration
+  tests run when repository secrets are configured, else skipped.
+- HTTP errors: domain rejections (insufficient balance / no stock) return **402**, not 500.

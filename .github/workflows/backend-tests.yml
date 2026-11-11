@@ -1,0 +1,54 @@
+name: backend-tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest psycopg2-binary
+
+      - name: Lint (compile + syntax)
+        run: |
+          python -m py_compile backend/server.py backend/smspin_api.py
+          python -m compileall -q backend
+
+      - name: Unit tests (offline)
+        run: python -m pytest tests/test_smspin_api.py -q
+
+      - name: Integration tests
+        # These hit the real Supabase project + the local backend. They are
+        # skipped automatically (env unset -> conftest skips) on forks or when
+        # the repository secrets are not configured.
+        env:
+          Smspin_Supabase_url: ${{ secrets.Smspin_Supabase_url }}
+          Smspin_supabase_annonkey: ${{ secrets.Smspin_supabase_annonkey }}
+          Smspin_supabase_secretskey: ${{ secrets.Smspin_supabase_secretskey }}
+          Smspin_supabase_Postgresql: ${{ secrets.Smspin_supabase_Postgresql }}
+          Smspin_apikey: ${{ secrets.Smspin_apikey }}
+          Kora_test_secrete_key: ${{ secrets.Kora_test_secrete_key }}
+          Kora_test_public_key: ${{ secrets.Kora_test_public_key }}
+          KORA_MODE: test
+        run: |
+          if [ -z "$Smspin_supabase_Postgresql" ]; then
+            echo "Supabase secrets not configured - skipping integration tests."
+            exit 0
+          fi
+          python backend/server.py &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:12000/api/pricing >/dev/null && break
+            sleep 1
+          done
+          python -m pytest tests/ -q

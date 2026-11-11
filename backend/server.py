@@ -298,6 +298,183 @@ def warm_popular():
             pass
 
 
+def sync_operators(country, service):
+    """Persist the provider's operator breakdown (price/stock) for one pair."""
+    if not upstream_enabled():
+        return 0
+    try:
+        ops = _SMS_CLIENT.operators(country.lower(), service) or []
+    except smspin_api.SmspinError:
+        return 0
+    if not ops:
+        return 0
+    items = []
+    for o in ops:
+        if not isinstance(o, dict):
+            continue
+        items.append({
+            "country": country.lower(),
+            "operator": o.get("operator"),
+            "label": o.get("label"),
+            "id": o.get("operator"),
+            "price": o.get("price"),
+            "count": o.get("count"),
+        })
+    if not items:
+        return 0
+    try:
+        return int(_svc("upsert_operators", {"p_items": json.dumps(items)}) or 0)
+    except Exception:
+        return 0
+
+
+def crawl_step(budget=30):
+    """N2: sync a slice of the priority frontier (see sync_seed / sync_next)."""
+    if not upstream_enabled():
+        return {"synced": 0}
+    try:
+        todo = _svc("sync_next", {"p_limit": budget}) or []
+    except Exception:
+        todo = []
+    synced = 0
+    for pair in todo:
+        cc, sv = pair.get("country"), pair.get("service")
+        try:
+            sync_pair(cc, sv, force=True)
+            sync_operators(cc, sv)
+            _svc("sync_mark", {"p_country": cc, "p_service": sv, "p_done": True})
+            synced += 1
+        except Exception:
+            _svc("sync_mark", {"p_country": cc, "p_service": sv, "p_done": False})
+    return {"synced": synced, "budget": budget}
+
+
+def provider_balance():
+    """N8: refresh the provider-side balance snapshot into provider_state."""
+    if not upstream_enabled():
+        return None
+    try:
+        acc = _SMS_CLIENT.account()
+    except smspin_api.SmspinError as e:
+        _svc("provider_state_set", {"p_key": "balance", "p_value": json.dumps({"error": str(e)})})
+        return None
+    snap = {"balance_usd": acc.get("balance"), "currency": acc.get("currency", "USD"),
+            "plan": acc.get("plan"), "checked_at": time.time()}
+    _svc("provider_state_set", {"p_key": "balance", "p_value": json.dumps(snap)})
+    return snap
+
+
+def _audit(actor, action, subject=None, detail=None, ip=None):
+    """Fire-and-forget audit trail (D10). Never let logging break a request."""
+    try:
+        _svc("audit_write", {"p_actor": actor, "p_action": action, "p_subject": subject,
+                             "p_detail": json.dumps(detail or {}), "p_ip": ip})
+    except Exception:
+        pass
+
+
+def client_ip(handler):
+    return (handler.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or handler.client_address[0])
+
+
+# ---------------------------------------------------------------- D7 rate limit
+# In-memory sliding-window limiter (per worker). For multi-instance deploys back
+# this with Redis; the interface stays the same.
+_RL_LOCK = threading.Lock()
+_RL_HITS = {}
+
+
+def rate_limit(key, limit, window=60):
+    """Return (allowed, retry_after_seconds). `limit` requests per `window` secs."""
+    now = time.time()
+    with _RL_LOCK:
+        hits = _RL_HITS.setdefault(key, [])
+        cutoff = now - window
+        while hits and hits[0] < cutoff:
+            hits.pop(0)
+        if len(hits) >= limit:
+            return False, max(1, int(window - (now - hits[0])))
+        hits.append(now)
+        # Opportunistic GC so the dict does not grow unbounded.
+        if len(_RL_HITS) > 5000:
+            for k in [k for k, v in _RL_HITS.items() if not v or v[-1] < cutoff]:
+                _RL_HITS.pop(k, None)
+        return True, 0
+
+
+# Per-endpoint budgets: (limit, window_seconds). Auth/write paths are tighter.
+RL_RULES = {
+    "buy": (30, 60),
+    "auth": (60, 60),
+    "webhook": (600, 60),
+    "default": (240, 60),
+}
+
+
+def check_rate(handler, bucket):
+    limit, window = RL_RULES.get(bucket, RL_RULES["default"])
+    key = f"{bucket}:{client_ip(handler)}"
+    allowed, retry = rate_limit(key, limit, window)
+    if not allowed:
+        handler._send(429, {"error": "rate limit exceeded", "retry_after": retry},
+                      extra={"Retry-After": str(retry)})
+    return allowed
+
+
+def job_worker_step(budget=5):
+    """J3: claim and run durable jobs (provider top-up reminders, retries...)."""
+    try:
+        jobs = _svc("job_claim", {"p_limit": budget}) or []
+    except Exception:
+        return 0
+    done = 0
+    for j in jobs:
+        ok, err = True, None
+        try:
+            if j["kind"] == "provider_balance":
+                provider_balance()
+            elif j["kind"] == "catalog_sync":
+                crawl_step(int((j.get("payload") or {}).get("budget", 20)))
+            elif j["kind"] == "reconcile":
+                _svc("reconcile_report", {"p_days": 1})
+        except Exception as e:
+            ok, err = False, str(e)[:300]
+        _svc("job_finish", {"p_id": j["id"], "p_ok": ok, "p_error": err})
+        done += 1
+    return done
+
+
+def upstream_webhook(payload):
+    """N9: map an upstream order event onto our local order (OTP or refund)."""
+    up_id = str(payload.get("id") or payload.get("order_id") or "")
+    if not up_id:
+        _svc("dlq_enqueue", {"p_source": "upstream", "p_event": payload.get("event"),
+                             "p_payload": json.dumps(payload), "p_error": "missing order id"})
+        return {"received": True, "matched": False}
+    try:
+        row = _svc("order_by_upstream", {"p_upstream_id": up_id})
+    except Exception:
+        row = None
+    if not row or row == "null":
+        _svc("dlq_enqueue", {"p_source": "upstream", "p_event": payload.get("event"),
+                             "p_payload": json.dumps(payload), "p_error": "no local order for " + up_id})
+        return {"received": True, "matched": False}
+    order_id = row.get("order_id") or row.get("id")
+    code = payload.get("otpCode") or payload.get("otp_code") or payload.get("code")
+    status = (payload.get("status") or "").lower()
+    if code:
+        _svc("record_sms", {"p_order_id": order_id, "p_sender": payload.get("service") or row.get("service"),
+                            "p_body": f"Verification code: {code}", "p_code": str(code),
+                            "p_received_at": payload.get("createdAt") or None})
+        return {"received": True, "matched": True, "otp": True}
+    if status in ("cancelled", "expired", "failed"):
+        _svc("refund_order", {"p_order_id": order_id, "p_reason": f"webhook_{status}"})
+        return {"received": True, "matched": True, "refunded": True}
+    return {"received": True, "matched": True}
+
+
+
 
 OPENAPI = {
     "openapi": "3.0.3",
@@ -336,12 +513,14 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _send(self, code, obj, ctype="application/json"):
+    def _send(self, code, obj, ctype="application/json", extra=None):
         body = json.dumps(obj).encode() if not isinstance(obj, (bytes, bytearray)) else obj
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -457,6 +636,31 @@ class Handler(SimpleHTTPRequestHandler):
             if not oid:
                 return self._send(400, {"error": "id required"})
             return self._send(200, self._order_status(int(oid)))
+        if path == "/api/audit":
+            # Self-service: a caller only ever sees their own audit trail.
+            q = parse_qs(urlparse(self.path).query)
+            actor = None
+            tenant_token = self.headers.get("x-tenant-token")
+            if tenant_token:
+                tid = self._auth_tenant(tenant_token)
+                if not tid:
+                    return self._send(401, {"error": "invalid tenant session"})
+                actor = f"tenant:{tid}"
+            else:
+                uid = self._auth_user()
+                if not uid:
+                    return self._send(401, {"error": "missing or invalid session"})
+                actor = f"user:{uid}"
+            limit = int((q.get("limit", ["100"])[0]) or 100)
+            return self._send(200, _svc("audit_list", {"p_limit": limit, "p_actor": actor}))
+        if path == "/api/upstream/status":
+            return self._send(200, {
+                "enabled": upstream_enabled(),
+                "balance": _svc("provider_state_get", {"p_key": "balance"}),
+                "catalog_sync": _svc("sync_progress", {}),
+                "dlq": _svc("dlq_list", {"p_limit": 10}),
+                "reconcile": _svc("reconcile_report", {"p_days": 7}),
+            })
         if path == "/api/pricing":
             with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("select * from settings")
@@ -481,9 +685,15 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/korapay/webhook":
                 return self.api_webhook()
             if path == "/api/orders/buy":
+                if not check_rate(self, "buy"):
+                    return
                 return self.api_buy_order()
             if path == "/api/orders/cancel":
                 return self.api_cancel_order()
+            if path == "/api/upstream/webhook":
+                if not check_rate(self, "webhook"):
+                    return
+                return self.api_upstream_webhook()
             if path.startswith("/api/v1/"):
                 return self.api_v1(path)
         except Exception as e:
@@ -547,11 +757,44 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             res = buy_real(country, service, user_id=user_id, tenant_account=tenant_account,
                            operator=int(operator) if operator else None)
+            _audit(f"tenant:{tenant_account}" if tenant_account else f"user:{user_id}",
+                   "order.buy", str(res.get("order_id")),
+                   {"country": country, "service": service, "price_ngn": res.get("price_ngn")},
+                   client_ip(self))
             return self._send(200, res)
         except RuntimeError as e:
+            _audit(f"tenant:{tenant_account}" if tenant_account else f"user:{user_id}",
+                   "order.buy_failed", None, {"country": country, "service": service,
+                                              "error": str(e)[:200]}, client_ip(self))
             return self._send(402, {"error": str(e)})
         except Exception as e:
-            return self._send(500, {"error": str(e).split("\n")[0]})
+            msg = str(e).split("\n")[0]
+            # Domain-level rejections (balance/stock) are 402, not 500.
+            code = 402 if any(k in msg.lower() for k in
+                              ("insufficient", "no stock", "out of stock", "unavailable")) else 500
+            return self._send(code, {"error": msg})
+
+    def api_upstream_webhook(self):
+        """Provider -> us callback (OTP arrived / order cancelled). Optional shared secret."""
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)) if self.headers.get("Content-Length") else b""
+        secret = os.environ.get("Smspin_webhook_secret", "")
+        if secret:
+            given = self.headers.get("x-webhook-secret", "")
+            if not hmac.compare_digest(given, secret):
+                return self._send(401, {"error": "invalid signature"})
+        try:
+            payload = json.loads(raw or b"{}")
+        except Exception:
+            return self._send(400, {"error": "invalid json"})
+        try:
+            return self._send(200, upstream_webhook(payload))
+        except Exception as e:
+            try:
+                _svc("dlq_enqueue", {"p_source": "upstream", "p_event": payload.get("event"),
+                                     "p_payload": json.dumps(payload), "p_error": str(e)[:300]})
+            except Exception:
+                pass
+            return self._send(500, {"error": "handled via dlq"})
 
     def api_cancel_order(self):
         body = self._read_json()
@@ -583,7 +826,10 @@ class Handler(SimpleHTTPRequestHandler):
                 _SMS_CLIENT.cancel_order(o["upstream_order_id"])
             except smspin_api.SmspinError:
                 pass
-        return self._send(200, _svc("refund_order", {"p_order_id": order_id, "p_reason": "user_cancel"}))
+        res = _svc("refund_order", {"p_order_id": order_id, "p_reason": "user_cancel"})
+        _audit(f"tenant:{tenant_account}" if tenant_account else f"user:{user_id}",
+               "order.cancel", str(order_id), {"reason": "user_cancel"}, client_ip(self))
+        return self._send(200, res)
 
     # ---------- public API (user-generated keys) ----------
     def _api_user(self):
@@ -785,13 +1031,49 @@ if __name__ == "__main__":
 
     def _poller():
         time.sleep(15)
-        warm_popular()
+        try:
+            warm_popular()
+        except Exception as e:
+            print("warm error:", e, flush=True)
+        print("poller: started", flush=True)
         while True:
             try:
                 poll_pending_orders()
             except Exception as e:
                 print("poll error:", e, flush=True)
-            time.sleep(10)
+            time.sleep(8)
+
+    def _crawler():
+        """N2: walk the priority frontier so the catalog fills in over time."""
+        time.sleep(25)
+        while True:
+            try:
+                r = crawl_step(15)
+                if r.get("synced"):
+                    print("crawl:", r, flush=True)
+            except Exception as e:
+                print("crawl error:", e, flush=True)
+            time.sleep(20)
+
+    def _worker():
+        """J3 + N8: drain durable jobs and keep the provider balance snapshot fresh."""
+        time.sleep(30)
+        try:
+            _svc("job_reap", {})
+        except Exception:
+            pass
+        while True:
+            try:
+                _svc("job_enqueue", {"p_kind": "provider_balance", "p_payload": "{}"})
+            except Exception:
+                pass
+            try:
+                job_worker_step(5)
+            except Exception as e:
+                print("job error:", e, flush=True)
+            time.sleep(120)
 
     threading.Thread(target=_poller, daemon=True).start()
+    threading.Thread(target=_crawler, daemon=True).start()
+    threading.Thread(target=_worker, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
