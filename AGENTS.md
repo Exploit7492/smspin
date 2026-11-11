@@ -255,3 +255,28 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
   first. Default service: mainstream priority list (`MAINSTREAM`: whatsapp, telegram, google,
   ...) present in that country, else most widely available. A `.dash-loader` preloader covers
   slow RPCs and clears when the page render resolves.
+
+## SMSPin upstream API (SMS provider)
+- Base `https://smspin.io/api/v1`, auth header `X-API-Key: sk_live_...` (secret `Smspin_apikey`;
+  also accepts `Authorization: Bearer`). Docs render from `GET /api/openapi`.
+- Endpoints: `/account`, `/countries` (225), `/services` (8,880; `?country=`), `/operators`
+  (`?country&service` -> operator/label/USD price/count), `/numbers`, `POST/GET /orders`,
+  `GET/DELETE /orders/{id}`, `/rent/prices`, `POST/GET /rent`, `GET/DELETE /rent/{id}`,
+  `GET/POST /rent/{id}/extend`.
+- Cloudflare blocks non-browser UAs — send a browser `User-Agent` from server-side clients.
+- Our DB catalog (`number_catalog`, ~7.4k pairs) is a subset; sync from the API (task N2).
+
+## White-label Android app + CI
+- `app/` is a thin Kotlin/WebView shell that renders the **same screens as the website**
+  (dashboard + store), so the app is a replica of the site and UI ships with the site.
+- Branding is per build via `scripts/brand_app.py` (Pillow): writes `brand.json`,
+  `app/src/main/assets/brand.json`, `res/values/colors.xml`, and launcher icons at all
+  densities. Uploaded logo wins; otherwise an initials mark is generated from the business
+  name on the brand colour.
+- `.github/workflows/build-app.yml` (workflow_dispatch) builds a signed release APK, uploads
+  it as an artifact, publishes a GitHub Release, and optionally emails the link. Trigger:
+  `POST /repos/Exploit7492/smspin/actions/workflows/build-app.yml/dispatches`.
+- `.github/workflows/branding-preview.yml` validates branding in seconds (no Gradle).
+- Both workflows sparse-checkout only `app`, `scripts`, `settings.gradle.kts`,
+  `gradle.properties` so CI never fetches the ~1.9 GB site.
+- Repo: https://github.com/Exploit7492/smspin (branch `feat/apk-branding-ci`).
