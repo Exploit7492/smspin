@@ -81,6 +81,7 @@ jobs:
             app
             scripts
             settings.gradle.kts
+            gradle.properties
           sparse-checkout-cone-mode: false
 
       - name: Set up JDK 17

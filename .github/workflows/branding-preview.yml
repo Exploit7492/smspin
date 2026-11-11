@@ -27,6 +27,7 @@ jobs:
           sparse-checkout: |
             app
             scripts
+            gradle.properties
           sparse-checkout-cone-mode: false
       - name: Set up Python + Pillow
         uses: actions/setup-python@v5
