@@ -61,6 +61,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       TENANT_SLUG: ${{ inputs.slug }}
       TENANT_NAME: ${{ inputs.name }}
@@ -85,8 +86,8 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Install ImageMagick (initials logo)
-        run: sudo apt-get update && sudo apt-get install -y imagemagick fonts-dejavu-core
+      - name: Ensure ImageMagick (preinstalled on runners)
+        run: magick -version || convert -version || sudo apt-get install -y -o Dpkg::Use-Pty=0 imagemagick
 
       - name: Download uploaded logo (if any)
         if: ${{ inputs.logo_url != '' }}
