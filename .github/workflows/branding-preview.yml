@@ -10,7 +10,7 @@ on:
       logo_url: { description: "Logo URL (blank = initials)", required: false, default: "" }
   push:
     paths:
-      - "scripts/brand-app.sh"
+      - "scripts/brand_app.py"
       - ".github/workflows/branding-preview.yml"
 
 permissions:
@@ -21,9 +21,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - name: Ensure ImageMagick (preinstalled on runners)
-        run: magick -version || convert -version || sudo apt-get install -y -o Dpkg::Use-Pty=0 imagemagick
+      - name: Checkout (app sources only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            app
+            scripts
+          sparse-checkout-cone-mode: false
+      - name: Set up Python + Pillow
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pillow
       - name: Generate branding
         env:
           TENANT_SLUG: ${{ inputs.slug || 'nova-numbers' }}
@@ -34,7 +43,7 @@ jobs:
             mkdir -p .branding && curl -fsSL "${{ inputs.logo_url }}" -o .branding/logo.png
             export LOGO_FILE=.branding/logo.png
           fi
-          bash scripts/brand-app.sh
+          python3 scripts/brand_app.py
       - name: Show results
         run: |
           echo "--- brand.json ---"; cat brand.json

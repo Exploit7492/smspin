@@ -337,7 +337,7 @@ changes). Only branding (name, colors, logo, slug, deep links) is baked per tena
 | `backend/` | Python backend (static, API, KoraPay, FX/PPP, `/api/v1/*`) |
 | `supabase/` | Migrations, RPCs, edge functions |
 | `app/` | Kotlin Android shell (website replica), config-driven per tenant |
-| `scripts/` | `brand-app.sh` (branding + initials logo), `send-apk-email.py` |
+| `scripts/` | `brand_app.py` (branding + initials logo), `send-apk-email.py` |
 | `.github/workflows/` | `build-app.yml` (per-request branded APK), `branding-preview.yml` |
 | `task.md` | This plan |
 
