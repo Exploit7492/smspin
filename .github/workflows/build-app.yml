@@ -135,7 +135,7 @@ jobs:
         id: release
         uses: softprops/action-gh-release@v2
         with:
-          tag: ${{ inputs.slug }}-v${{ github.run_number }}
+          tag_name: ${{ inputs.slug }}-v${{ github.run_number }}
           name: ${{ inputs.name }} app v1.0.${{ github.run_number }}
           body: |
             Branded build for **${{ inputs.name }}** (`${{ inputs.slug }}`).
