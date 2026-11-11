@@ -338,3 +338,38 @@ backbone. All new RPCs are `security definer` and revoked from anon/authenticate
 - `.github/workflows/backend-tests.yml` — compile + offline unit tests always; integration
   tests run when repository secrets are configured, else skipped.
 - HTTP errors: domain rejections (insufficient balance / no stock) return **402**, not 500.
+
+## Phase 2 — safe platform (migration `20261111140000_phase2_safe.sql`)
+All RPCs are `security definer`, revoked from anon/authenticated, service_role only.
+
+- **D1 email verification** — `email_verified(uuid)` reads `auth.users.email_confirmed_at`;
+  `email_verification_required()` reads the setting of the same name. Buy returns
+  `403 email_unverified` **only when the toggle is on**. Off by default.
+- **D7 rate limiting** — sliding window in `server.py`; buckets buy 30/min, auth 60/min,
+  webhook 600/min, default 240/min. 429 carries `Retry-After`.
+- **D8 fraud + blocklists** — `blocklist(kind,value)` (kinds: email, email_domain, ip, user,
+  phone_prefix; 10 disposable domains seeded), `risk_events`, and `fraud_check(user,ip,email)`
+  which scores velocity (orders/hour, orders/day, failed payments/hour) + blocklist hits and
+  records a `risk_event`. Buy returns `403 fraud_block` with `reasons`. Fails closed.
+  Admin: `POST /api/admin/blocklist` (add/remove/list), `GET/POST /api/admin/risk`.
+- **L4 acceptable use** — `policy_acceptances` + `policy_accept/policy_status/policy_current`.
+  `GET /api/policies` (and `?policy=aup` for the text), `POST /api/policies/accept`.
+  Enforcement is gated by `aup_enforcement_required`; **off by default**. Accepting via the
+  buy body (`accept_aup: true`) also satisfies it.
+- **J4 observability** — `JsonLogger` emits one JSON object per line (stdout); `Metrics`
+  keeps counters + latency percentiles exposed at `GET /api/metrics`; DB `metrics_snapshot` +
+  `metrics_record/metrics_series`; `GET /api/health` reports db/upstream/error-rate.
+- **J5 alerting** — `alert_rules` (5 seeded) + `alert_events`; `alert_evaluate()` fires on
+  cooldown and `dispatch_alerts()` posts to `settings.alerts_webhook_url`. `GET /api/alerts`
+  (admin), `POST /api/admin/alerts/run`.
+- **J2 scheduler** — `scheduler_step()` thread every 5 min: metrics snapshot, alert evaluate +
+  dispatch, enqueue provider_balance/reconcile/catalog_sync jobs. State in `scheduler_state`,
+  read via `GET /api/scheduler`.
+- **J10 backups/DR** — hourly `backup_verify()` writes row-count/wallet-sum checksums to
+  `backup_checks` so a restore can be validated. Supabase PITR itself is console-managed.
+- **Admin allow-list** — `admins(email)` + `is_admin(email)`; backend `_is_admin()` checks the
+  caller's profile email. Add rows to grant admin.
+- Safety switches (settings): `email_verification_required`, `aup_enforcement_required`,
+  `fraud_max_orders_hour` (20), `fraud_max_orders_day` (200), `fraud_max_failed_pay_hour` (10),
+  `alerts_webhook_url`.
+- Tests: `tests/test_phase2_safe.py` (21). Full suite 59 tests: `python3 -m pytest tests/ -q`.

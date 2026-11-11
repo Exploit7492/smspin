@@ -29,6 +29,76 @@ import smspin_api  # upstream SMS provider client
 SITE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "site")
 PORT = int(os.environ.get("PORT", "12000"))
 
+
+# ---------------------------------------------------------------- J4 structured logs
+class JsonLogger:
+    """Minimal structured logger: one JSON object per line, thread-safe."""
+
+    def __init__(self, service="smspin"):
+        self.service = service
+        self._lock = threading.Lock()
+
+    def log(self, level, event, **fields):
+        rec = {"ts": time.time(), "level": level, "event": event, "svc": self.service}
+        rec.update(fields)
+        line = json.dumps(rec, default=str)
+        with self._lock:
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+
+    def info(self, event, **f): self.log("info", event, **f)
+    def warn(self, event, **f): self.log("warn", event, **f)
+    def error(self, event, **f): self.log("error", event, **f)
+
+
+LOG = JsonLogger()
+
+
+# ---------------------------------------------------------------- J4 request metrics
+class Metrics:
+    """In-process counters + latency histograms, exposed at /api/metrics."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.requests = {}       # "METHOD /path" -> count
+        self.statuses = {}       # status code -> count
+        self.errors = 0
+        self.total = 0
+        self.latency = []        # recent latencies (seconds), bounded
+        self.started = time.time()
+
+    def record(self, method, path, status, seconds):
+        key = f"{method} {path}"
+        with self._lock:
+            self.requests[key] = self.requests.get(key, 0) + 1
+            self.statuses[status] = self.statuses.get(status, 0) + 1
+            self.total += 1
+            if status >= 500:
+                self.errors += 1
+            self.latency.append(seconds)
+            if len(self.latency) > 2000:
+                self.latency = self.latency[-1000:]
+
+    def snapshot(self):
+        with self._lock:
+            lat = sorted(self.latency)
+            def pct(p):
+                if not lat:
+                    return 0
+                return round(lat[min(len(lat) - 1, int(len(lat) * p))], 4)
+            return {
+                "uptime_s": round(time.time() - self.started, 1),
+                "requests_total": self.total,
+                "errors_5xx": self.errors,
+                "status_counts": dict(self.statuses),
+                "top_paths": sorted(self.requests.items(), key=lambda kv: -kv[1])[:15],
+                "latency_p50": pct(0.50), "latency_p95": pct(0.95), "latency_p99": pct(0.99),
+            }
+
+
+METRICS = Metrics()
+
+
 SUPABASE_URL = os.environ["Smspin_Supabase_url"].rstrip("/")
 ANON_KEY = os.environ["Smspin_supabase_annonkey"]
 SERVICE_KEY = os.environ.get("Smspin_supabase_secretskey", "")
@@ -378,6 +448,91 @@ def client_ip(handler):
             or handler.client_address[0])
 
 
+# ---------------------------------------------------------------- D1/D8/L4 gates
+AUP_VERSION_FALLBACK = "1.0"
+
+
+def email_verification_required():
+    """D1 toggle. Off by default; when off, purchases are not gated on email."""
+    try:
+        return bool(_svc("email_verification_required", {}))
+    except Exception:
+        return False
+
+
+def email_verified(user_id):
+    """D1: is the account's email confirmed? Only meaningful when the toggle is on."""
+    if not user_id:
+        return False
+    try:
+        return bool(_svc("email_verified", {"p_user": user_id}))
+    except Exception as e:
+        LOG.error("email_verified_error", error=str(e)[:200], user=str(user_id))
+        return False
+
+
+def is_admin(email):
+    if not email:
+        return False
+    try:
+        return bool(_svc("is_admin", {"p_email": email}))
+    except Exception:
+        return False
+
+
+def aup_text(version):
+    """L4: the acceptable-use policy body served to the frontend."""
+    return {
+        "policy": "aup",
+        "version": version,
+        "summary": ("SMSPin provides virtual numbers for legitimate account "
+                    "verification and testing. You must not use the service for "
+                    "fraud, spam, harassment, evading lawful sanctions, bulk account "
+                    "farming, or any illegal purpose."),
+        "rules": [
+            "One code per purchase; codes are delivered only to you.",
+            "No resale of numbers, codes, or access without written consent.",
+            "No use against services you do not own or have permission to test.",
+            "Prohibited use leads to suspension and forfeiture of unused balance.",
+            "We cooperate with lawful requests from competent authorities.",
+        ],
+        "enforcement": ("Automated velocity and blocklist checks run on every "
+                        "purchase. Accounts that breach this policy are suspended; "
+                        "repeated or serious breaches are reported."),
+    }
+
+
+def fraud_check(user_id, ip, email, meta=None):
+    """D8: velocity + blocklist decision. Fails closed (deny) on backend error."""
+    try:
+        return _svc("fraud_check", {"p_user": user_id, "p_ip": ip, "p_email": email,
+                                    "p_meta": json.dumps(meta or {})}) or {}
+    except Exception as e:
+        LOG.error("fraud_check_error", error=str(e)[:200], user=str(user_id))
+        return {"allow": False, "score": 100, "reasons": ["fraud_check_unavailable"]}
+
+
+def policy_status(user_id, tenant_account):
+    """L4: has the caller accepted the current acceptable-use policy version?"""
+    try:
+        return _svc("policy_status", {"p_user": user_id, "p_tenant": tenant_account}) or {}
+    except Exception:
+        return {"aup_accepted": False, "aup_version": AUP_VERSION_FALLBACK}
+
+
+def aup_required(user_id, tenant_account, body):
+    """True when the caller must accept the AUP before purchasing.
+
+    Enforcement is OFF by default (`aup_enforcement_required`); when off the
+    purchase proceeds regardless. An explicit `accept_aup` always satisfies it."""
+    if str(body.get("accept_aup", "")).lower() in ("1", "true", "yes"):
+        return False
+    st = policy_status(user_id, tenant_account)
+    if not st.get("aup_required", False):
+        return False
+    return not st.get("aup_accepted", False)
+
+
 # ---------------------------------------------------------------- D7 rate limit
 # In-memory sliding-window limiter (per worker). For multi-instance deploys back
 # this with Redis; the interface stays the same.
@@ -443,6 +598,95 @@ def job_worker_step(budget=5):
         _svc("job_finish", {"p_id": j["id"], "p_ok": ok, "p_error": err})
         done += 1
     return done
+
+
+def setting_get(key, default=None):
+    """Read a single `settings` value (jsonb) with a safe default."""
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("select value from settings where key=%s", (key,))
+            row = cur.fetchone()
+        if not row:
+            return default
+        v = row[0]
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except Exception:
+                pass
+        return v
+    except Exception:
+        return default
+
+
+def dispatch_alerts():
+    """J5: send undelivered alert_events to the configured webhook (best effort)."""
+    url = setting_get("alerts_webhook_url", "") or ""
+    try:
+        events = _svc("alert_events_list", {"p_limit": 20}) or []
+    except Exception:
+        return 0
+    pending = [e for e in events if not e.get("delivered")]
+    if not pending:
+        return 0
+    delivered = 0
+    for e in pending:
+        if url:
+            try:
+                req = urllib.request.Request(
+                    url, data=json.dumps(e).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST")
+                urllib.request.urlopen(req, timeout=8)
+            except Exception as ex:
+                LOG.warn("alert_dispatch_failed", rule=e.get("rule_key"), error=str(ex)[:200])
+                continue
+        _svc("alert_mark_delivered", {"p_id": e["id"]})
+        delivered += 1
+        LOG.warn("alert_fired", rule=e.get("rule_key"), severity=e.get("severity"),
+                 metric=e.get("metric"), value=e.get("value"))
+    return delivered
+
+
+def scheduler_step():
+    """J2: the recurring operations tick. Records each task in scheduler_state."""
+    # 1) metrics snapshot (J4)
+    try:
+        _svc("metrics_record", {"p_window_min": 5})
+        _svc("scheduler_mark", {"p_key": "metrics_record", "p_ok": True, "p_detail": "{}"})
+    except Exception as e:
+        _svc("scheduler_mark", {"p_key": "metrics_record", "p_ok": False,
+                                "p_detail": json.dumps({"error": str(e)[:200]})})
+
+    # 2) alert evaluation + dispatch (J5)
+    try:
+        fired = _svc("alert_evaluate", {}) or []
+        sent = dispatch_alerts()
+        _svc("scheduler_mark", {"p_key": "alert_evaluate", "p_ok": True,
+                                "p_detail": json.dumps({"fired": len(fired), "delivered": sent})})
+    except Exception as e:
+        _svc("scheduler_mark", {"p_key": "alert_evaluate", "p_ok": False,
+                                "p_detail": json.dumps({"error": str(e)[:200]})})
+
+    # 3) enqueue the recurring maintenance jobs
+    for kind in ("provider_balance", "reconcile", "catalog_sync"):
+        try:
+            _svc("job_enqueue", {"p_kind": kind, "p_payload": "{}"})
+        except Exception:
+            pass
+
+
+def backup_verify_job():
+    """J10: verify the data plane is intact and record a checksum."""
+    try:
+        detail = _svc("backup_verify", {}) or {}
+        _svc("scheduler_mark", {"p_key": "backup_verify", "p_ok": True,
+                                "p_detail": json.dumps(detail)})
+        LOG.info("backup_verify", **{"counts": detail})
+        return detail
+    except Exception as e:
+        _svc("scheduler_mark", {"p_key": "backup_verify", "p_ok": False,
+                                "p_detail": json.dumps({"error": str(e)[:200]})})
+        return {}
 
 
 def upstream_webhook(payload):
@@ -511,10 +755,29 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*a, directory=SITE_DIR, **k)
 
     def log_message(self, fmt, *args):
+        # Suppress the stdlib access log; we emit structured JSON instead.
         pass
+
+    def _tick(self):
+        self._t0 = time.time()
+
+    def _access_log(self):
+        if not hasattr(self, "_t0"):
+            return
+        path = urlparse(self.path).path
+        if path.startswith("/api/"):
+            LOG.info("http", method=getattr(self, "command", "GET"), path=path,
+                     ms=round((time.time() - self._t0) * 1000, 1))
 
     def _send(self, code, obj, ctype="application/json", extra=None):
         body = json.dumps(obj).encode() if not isinstance(obj, (bytes, bytearray)) else obj
+        try:
+            METRICS.record(getattr(self, "command", "GET"),
+                           urlparse(self.path).path, code,
+                           time.time() - getattr(self, "_t0", time.time()))
+            self._access_log()
+        except Exception:
+            pass
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -549,6 +812,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---------- API ----------
     def do_GET(self):
+        self._tick()
         path = urlparse(self.path).path
         # Alias legacy marketing links onto the real dashboard routes.
         if path == "/dashboard/referral":
@@ -653,6 +917,29 @@ class Handler(SimpleHTTPRequestHandler):
                 actor = f"user:{uid}"
             limit = int((q.get("limit", ["100"])[0]) or 100)
             return self._send(200, _svc("audit_list", {"p_limit": limit, "p_actor": actor}))
+        if path == "/api/metrics":
+            # In-process counters + a DB-side ops snapshot (J4).
+            return self._send(200, {"process": METRICS.snapshot(),
+                                    "ops": _svc("ops_metrics", {"p_window_min": 15})})
+        if path == "/api/health":
+            return self._send(200, self._health())
+        if path == "/api/alerts":
+            if not self._is_admin():
+                return self._send(403, {"error": "admin only"})
+            return self._send(200, {"events": _svc("alert_events_list", {"p_limit": 50}),
+                                    "rules": _svc("alert_rules_list", {})})
+        if path == "/api/scheduler":
+            # J2: last-run state for the recurring ops tasks.
+            return self._send(200, {"tasks": _svc("scheduler_status", {})})
+        if path == "/api/policies":
+            # Public: current policy versions + the caller's acceptance state.
+            uid = self._auth_user()
+            tenant = self._auth_tenant(self.headers.get("x-tenant-token")) if self.headers.get("x-tenant-token") else None
+            st = policy_status(uid, tenant)
+            q = parse_qs(urlparse(self.path).query)
+            if (q.get("policy", [""])[0] or "") == "aup":
+                return self._send(200, self._aup_text(st.get("aup_version", AUP_VERSION_FALLBACK)))
+            return self._send(200, st)
         if path == "/api/upstream/status":
             return self._send(200, {
                 "enabled": upstream_enabled(),
@@ -678,6 +965,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        self._tick()
         path = urlparse(self.path).path
         try:
             if path == "/api/payments/initialize":
@@ -694,6 +982,14 @@ class Handler(SimpleHTTPRequestHandler):
                 if not check_rate(self, "webhook"):
                     return
                 return self.api_upstream_webhook()
+            if path == "/api/policies/accept":
+                return self.api_policy_accept()
+            if path == "/api/admin/blocklist":
+                return self.api_admin_blocklist()
+            if path == "/api/admin/risk":
+                return self.api_admin_risk()
+            if path == "/api/admin/alerts/run":
+                return self.api_admin_alert_run()
             if path.startswith("/api/v1/"):
                 return self.api_v1(path)
         except Exception as e:
@@ -718,6 +1014,93 @@ class Handler(SimpleHTTPRequestHandler):
         if st != 200 or not me:
             return None
         return me.get("account_id")
+
+    # ---------- admin / health / policy helpers ----------
+    def _caller_email(self):
+        token = self._bearer()
+        if not token:
+            return None
+        st, prof = supabase_rpc("my_profile", {}, token=token)
+        if st != 200 or not prof:
+            return None
+        return prof.get("email")
+
+    def _is_admin(self):
+        return is_admin(self._caller_email())
+
+    def _health(self):
+        """J4/J6: liveness + the dependencies we actually depend on."""
+        checks = {}
+        try:
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("select 1")
+                cur.fetchone()
+            checks["db"] = True
+        except Exception as e:
+            checks["db"] = False
+            LOG.error("health_db_error", error=str(e)[:200])
+        checks["upstream_enabled"] = upstream_enabled()
+        snap = METRICS.snapshot()
+        checks["error_rate"] = round(snap["errors_5xx"] / max(1, snap["requests_total"]), 4)
+        ok = checks["db"]
+        return {"ok": ok, "checks": checks, "uptime_s": snap["uptime_s"],
+                "version": os.environ.get("SMSPIN_VERSION", "dev")}
+
+    def _aup_text(self, version):
+        return aup_text(version)
+
+    def api_policy_accept(self):
+        """L4: record acceptance of the current acceptable-use policy."""
+        body = self._read_json()
+        policy = (body.get("policy") or "aup").lower()
+        user_id = self._auth_user()
+        tenant = self._auth_tenant(self.headers.get("x-tenant-token")) if self.headers.get("x-tenant-token") else None
+        if not user_id and not tenant:
+            return self._send(401, {"error": "missing or invalid session"})
+        res = _svc("policy_accept", {"p_user": user_id, "p_tenant": tenant,
+                                     "p_policy": policy, "p_ip": client_ip(self)})
+        actor = f"tenant:{tenant}" if tenant else f"user:{user_id}"
+        _audit(actor, "policy.accept", policy, {"version": (res or {}).get("version")}, client_ip(self))
+        return self._send(200, res or {})
+
+    def api_admin_blocklist(self):
+        """D8 admin: add/remove/list blocklist entries."""
+        if not self._is_admin():
+            return self._send(403, {"error": "admin only"})
+        body = self._read_json()
+        action = body.get("action") or "list"
+        if action == "list":
+            return self._send(200, _svc("blocklist_list", {"p_kind": body.get("kind")}))
+        if action == "add":
+            if not body.get("kind") or not body.get("value"):
+                return self._send(400, {"error": "kind and value required"})
+            rid = _svc("blocklist_add", {"p_kind": body["kind"], "p_value": str(body["value"]),
+                                         "p_reason": body.get("reason")})
+            _audit(f"admin:{self._caller_email()}", "blocklist.add",
+                   f"{body['kind']}:{body['value']}", {"reason": body.get("reason")}, client_ip(self))
+            return self._send(200, {"id": rid})
+        if action == "remove":
+            _svc("blocklist_remove", {"p_kind": body["kind"], "p_value": str(body["value"])})
+            _audit(f"admin:{self._caller_email()}", "blocklist.remove",
+                   f"{body['kind']}:{body['value']}", None, client_ip(self))
+            return self._send(200, {"removed": True})
+        return self._send(400, {"error": "unknown action"})
+
+    def api_admin_risk(self):
+        if not self._is_admin():
+            return self._send(403, {"error": "admin only"})
+        q = parse_qs(urlparse(self.path).query)
+        return self._send(200, _svc("risk_events_list",
+                                    {"p_limit": int(q.get("limit", ["100"])[0]),
+                                     "p_user": q.get("user", [None])[0]}))
+
+    def api_admin_alert_run(self):
+        """J5: evaluate alert rules now and dispatch to the configured webhook."""
+        if not self._is_admin():
+            return self._send(403, {"error": "admin only"})
+        fired = _svc("alert_evaluate", {}) or []
+        delivered = dispatch_alerts()
+        return self._send(200, {"fired": fired, "delivered": delivered})
 
     def _order_status(self, order_id):
         with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -754,24 +1137,64 @@ class Handler(SimpleHTTPRequestHandler):
             user_id = self._auth_user()
             if not user_id:
                 return self._send(401, {"error": "missing or invalid session"})
+
+        ip = client_ip(self)
+        actor = f"tenant:{tenant_account}" if tenant_account else f"user:{user_id}"
+
+        # D1: email verification gate — OFF by default, so only enforced when the
+        # `email_verification_required` setting is true.
+        if user_id and email_verification_required() and not email_verified(user_id):
+            _audit(actor, "order.buy_blocked", None, {"reason": "email_unverified"}, ip)
+            return self._send(403, {"error": "email not verified",
+                                    "code": "email_unverified"})
+
+        # L4: acceptable-use policy must be accepted for the current version.
+        if aup_required(user_id, tenant_account, body):
+            _audit(actor, "order.buy_blocked", None, {"reason": "aup_required"}, ip)
+            return self._send(403, {"error": "acceptable-use policy acceptance required",
+                                    "code": "aup_required",
+                                    "aup_version": policy_status(user_id, tenant_account).get("aup_version")})
+
+        # D8: velocity + blocklist scoring before we touch money.
+        email = body.get("email")
+        if not email and user_id:
+            try:
+                st, prof = supabase_rpc("my_profile", {}, token=self._bearer())
+                email = (prof or {}).get("email")
+            except Exception:
+                email = None
+        decision = fraud_check(user_id, ip, email,
+                               {"country": country, "service": service})
+        if not decision.get("allow", False):
+            _audit(actor, "order.buy_blocked", None,
+                   {"reason": "fraud", "score": decision.get("score"),
+                    "reasons": decision.get("reasons")}, ip)
+            LOG.warn("buy_blocked_fraud", user=str(user_id), ip=ip,
+                     score=decision.get("score"), reasons=decision.get("reasons"))
+            return self._send(403, {"error": "request blocked by risk controls",
+                                    "code": "fraud_block",
+                                    "reasons": decision.get("reasons")})
+
         try:
             res = buy_real(country, service, user_id=user_id, tenant_account=tenant_account,
                            operator=int(operator) if operator else None)
-            _audit(f"tenant:{tenant_account}" if tenant_account else f"user:{user_id}",
-                   "order.buy", str(res.get("order_id")),
+            _audit(actor, "order.buy", str(res.get("order_id")),
                    {"country": country, "service": service, "price_ngn": res.get("price_ngn")},
-                   client_ip(self))
+                   ip)
+            LOG.info("order_buy", actor=actor, order=str(res.get("order_id")),
+                     country=country, service=service)
             return self._send(200, res)
         except RuntimeError as e:
-            _audit(f"tenant:{tenant_account}" if tenant_account else f"user:{user_id}",
-                   "order.buy_failed", None, {"country": country, "service": service,
-                                              "error": str(e)[:200]}, client_ip(self))
+            _audit(actor, "order.buy_failed", None, {"country": country, "service": service,
+                                                     "error": str(e)[:200]}, ip)
             return self._send(402, {"error": str(e)})
         except Exception as e:
             msg = str(e).split("\n")[0]
             # Domain-level rejections (balance/stock) are 402, not 500.
             code = 402 if any(k in msg.lower() for k in
                               ("insufficient", "no stock", "out of stock", "unavailable")) else 500
+            if code == 500:
+                LOG.error("order_buy_error", actor=actor, error=msg)
             return self._send(code, {"error": msg})
 
     def api_upstream_webhook(self):
@@ -1064,16 +1487,34 @@ if __name__ == "__main__":
             pass
         while True:
             try:
-                _svc("job_enqueue", {"p_kind": "provider_balance", "p_payload": "{}"})
-            except Exception:
-                pass
-            try:
                 job_worker_step(5)
             except Exception as e:
-                print("job error:", e, flush=True)
+                LOG.error("job_worker_error", error=str(e)[:200])
             time.sleep(120)
+
+    def _scheduler():
+        """J2: recurring ops tick — metrics snapshot, alerts, job enqueue, backup verify."""
+        time.sleep(40)
+        while True:
+            try:
+                scheduler_step()
+            except Exception as e:
+                LOG.error("scheduler_error", error=str(e)[:200])
+            time.sleep(300)
+
+    def _backup():
+        """J10: hourly data-plane verification (checksums for restore validation)."""
+        time.sleep(70)
+        while True:
+            try:
+                backup_verify_job()
+            except Exception as e:
+                LOG.error("backup_verify_error", error=str(e)[:200])
+            time.sleep(3600)
 
     threading.Thread(target=_poller, daemon=True).start()
     threading.Thread(target=_crawler, daemon=True).start()
     threading.Thread(target=_worker, daemon=True).start()
+    threading.Thread(target=_scheduler, daemon=True).start()
+    threading.Thread(target=_backup, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

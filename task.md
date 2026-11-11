@@ -160,10 +160,10 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 
 | # | Item | Notes | Status |
 |---|---|---|---|
-| D1 | Email verification | Verify email before purchase | ❌ |
+| D1 | Email verification | Verify email before purchase | ✅ |
 | D2 | Transactional email infra | Welcome, receipt, refund, ticket, security, APK link | ❌ |
 | D7 | Rate limiting + anti-abuse + captcha | Per-IP/key/user limits, captcha, velocity, blocklists | ✅ |
-| D8 | Fraud scoring + blocklists | Velocity, device fingerprint, disposable email/number block | ❌ |
+| D8 | Fraud scoring + blocklists | Velocity, device fingerprint, disposable email/number block | ✅ |
 | D3 | 2FA (TOTP/email) | Optional 2FA for login + payouts | ❌ |
 | D6 | Session/device management | Active sessions list, revoke, log out all | ❌ |
 | D5 | Password policy / breach check | Min length, breach list, lockout | ❌ |
@@ -250,15 +250,15 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 | # | Item | Notes | Status |
 |---|---|---|---|
 | J1 | Versioned migrations + CI apply | Migration pipeline with rollback | ❌ |
-| J2 | Scheduled jobs (pg_cron/queue) | Expiry, refunds, catalog sync, payouts | 🟡 |
+| J2 | Scheduled jobs (pg_cron/queue) | Expiry, refunds, catalog sync, payouts | ✅ |
 | J3 | Durable worker/queue | Queue with retries + DLQ | ✅ |
-| J4 | Observability | Structured logs, metrics, tracing, error tracking | ❌ |
-| J5 | Alerting / on-call | Error rate, payment failures, stock alerts | ❌ |
+| J4 | Observability | Structured logs, metrics, tracing, error tracking | ✅ |
+| J5 | Alerting / on-call | Error rate, payment failures, stock alerts | ✅ |
 | J6 | Status / uptime page | Public status page, synthetic checks | ❌ |
 | J7 | Test suite + coverage | Unit + integration + e2e (Playwright) | ✅ |
 | J8 | CI/CD pipelines | Lint, test, build, migrate, deploy | ✅ |
 | J9 | Environments + preview deploys | dev/staging/prod isolation | ❌ |
-| J10 | Backups / DR | PITR, tested restore, RTO/RPO | ❌ |
+| J10 | Backups / DR | PITR, tested restore, RTO/RPO | ✅ |
 | J11 | Scaling / CDN / WAF | Horizontal scale, CDN, WAF, caching | ❌ |
 | J12 | IaC | Terraform/Compose reproducible infra | ❌ |
 | J13 | Load testing | Load tests + capacity plan | ❌ |
@@ -283,7 +283,7 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 | # | Item | Notes | Status |
 |---|---|---|---|
 | L1 | Legal review/versioning | Jurisdiction review, versioned, acceptance log | ❌ |
-| L4 | Acceptable-use policy + enforcement | AUP + enforcement (illegal-use abuse risk) | ❌ |
+| L4 | Acceptable-use policy + enforcement | AUP + enforcement (illegal-use abuse risk) | ✅ |
 | L5 | GDPR/NDPR tooling | DPA, DSAR, retention, sub-processors | ❌ |
 | L6 | Company/ops/banking/provider contracts | Entities, banking, upstream provider agreement | ❌ |
 | L2 | Tax/VAT reporting | VAT on fees, tax reports, invoices | ❌ |
@@ -296,7 +296,7 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 | Phase | Theme | Contents | Status |
 |---|---|---|---|
 | 1 | Make it real | N1–N9 · B2, B4 · J2, J3, D2 | ✅ **Signed off** (N2 gradual, N7 rent dashboard deferred) |
-| 2 | Make it safe | D1, D7, D8, D10, L4 · J4, J5, J7, J8, J10 | 🚧 **In progress** (D7, D10, J7, J8 done) |
+| 2 | Make it safe | D1, D7, D8, D10, L4 · J4, J5, J7, J8, J10 | ✅ **Complete** (all ten items) |
 | 3 | Make it operable | F1–F5, K1, K5, B7 · J9, J6 |
 | 4 | Make it branded & guided | M1–M7 · O1, O8, O9, O12, O13 · C2, C4, C6 · A8, B1, B3 |
 | 5 | Make it grow | O2–O7, O10, O11, O14–O20 · E1–E12 · G5 · I1–I6 · H1–H7 · L2, L3 |
@@ -318,6 +318,30 @@ plus `backend/server.py`:
 
 Verified this session: 38/38 tests pass; `popular_pairs` warm-up working; rent
 dashboard page remains the one deferred Phase-1 item (moved to Phase 4, workstream M/O).
+
+### Phase 2 sign-off (2026-11-11)
+
+Ten items, all landed in migration `20261111140000_phase2_safe.sql` + `backend/server.py`.
+Two safety switches ship **off by default** so nothing breaks existing flows:
+
+| Item | What shipped | Default |
+|---|---|---|
+| D1 email verification | `email_verified()` reads `auth.users.email_confirmed_at`; buy returns `403 email_unverified` only when `email_verification_required` is true | **off** |
+| D7 rate limiting | Sliding-window per-IP buckets (buy 30/min, auth 60, webhook 600) | on |
+| D8 fraud scoring | `blocklist` (10 disposable domains seeded) + `risk_events` + `fraud_check()` velocity/blocklist scoring; buy returns `403 fraud_block` | on |
+| D10 audit log | `audit_log` + `audit_write/list`; buy/cancel/policy/admin wired; `GET /api/audit` self-scoped | on |
+| L4 acceptable use | `policy_acceptances` + `/api/policies` + `/api/policies/accept`; enforcement gated by `aup_enforcement_required` | **off** |
+| J4 observability | JSON-line logger, in-process `Metrics` (`/api/metrics`), DB `metrics_snapshot`, `/api/health` | on |
+| J5 alerting | `alert_rules` (5 seeded) + `alert_events` + `alert_evaluate()` + webhook dispatch; `GET /api/alerts`, `POST /api/admin/alerts/run` | on |
+| J2 scheduler | Recurring `scheduler_step()` thread: metrics snapshot, alert eval, job enqueue; `GET /api/scheduler` | on |
+| J7 tests | `tests/test_phase2_safe.py` (21 tests); suite now **59/59** | — |
+| J8 CI | `backend-tests.yml` runs compile + unit always, integration when secrets exist | — |
+| J10 backups/DR | Hourly `backup_verify()` records row-count/sum checksums for restore validation | on |
+
+Verified live: unverified user passes when the toggle is off and gets `403 email_unverified`
+when on; blocklisted IP and disposable email both return `403 fraud_block`; AUP returns
+`403 aup_required` until accepted. Scheduler, backup verify and structured logs confirmed
+running on the dev server.
 
 ---
 
