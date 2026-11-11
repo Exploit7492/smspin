@@ -115,6 +115,14 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
 - `create_api_key` is capped at 5 active keys per user — revoke before creating more.
 - Test user: `demo@smspin.local`.
 
+## Local demo logins (seeded, for cross-checking)
+- User dashboard: `demo@smspin.local` / `SmspinDemo123!` (also an admin — the ops
+  console at `/admin/` unlocks). Seeded by `scripts/seed-demo-user.py`.
+- White-label store: `/store/zenith-verify/login` — `demo@smspin.local` /
+  `StoreDemo123!` (tenant slug `zenith-verify`, business #2). Seeded by
+  `scripts/seed-demo-tenant.py`.
+- Both scripts are idempotent and connect with `Smspin_supabase_Postgresql`.
+
 ## Edge Functions (server-side funding + purchases)
 - `supabase/functions/funding/index.ts` — wallet funding. Actions: `initialize`
   (creates a payment via `create_payment`, starts KoraPay checkout, stores the checkout
