@@ -969,8 +969,19 @@
 
     async function updatePrice() {
       if (!btn) return;
-      const row = cat.find(c => c.country === state.country && (c.service === state.service || codeToService[c.service] === state.service))
-               || cat.find(c => c.country === state.country);
+      let row = cat.find(c => c.country === state.country && (c.service === state.service || codeToService[c.service] === state.service))
+             || cat.find(c => c.country === state.country);
+      // If we don't stock this pair yet, ask the backend to fetch it live.
+      if (!row || !Number(row.stock)) {
+        try {
+          const rr = await fetch("/api/catalog/live?country=" + encodeURIComponent(state.country) +
+                                 "&service=" + encodeURIComponent(state.service));
+          if (rr.ok) {
+            const d = await rr.json();
+            if (d.price_ngn) row = { price: d.price_ngn, stock: d.available || 0 };
+          }
+        } catch (e) { /* fall back to what we have */ }
+      }
       if (!row) { btn.textContent = "Unavailable"; btn.disabled = true; return; }
       btn.disabled = false;
       const ngn = Number(row.price);
@@ -1003,8 +1014,8 @@
       remember();
       try {
         const store = window.SMSPIN.store && SMSPIN.store();
-        const res = await SMSPIN.functions("purchase", { country: state.country, service: state.service, store: store || undefined });
-        const r = (res && res.order) || {};
+        const res = await SMSPIN.buyOrder({ country: state.country, service: state.service });
+        const r = res || {};
         toast("Number " + (r.phone_number || "") + " reserved", "ok");
         setTimeout(() => location.href = "/dashboard/sms/", 900);
       } catch (e) { toast(e.message, "err"); updatePrice(); }
@@ -1064,12 +1075,46 @@
           '<span class="sms-timer-left" id="smsTimerLeft">\u2014</span></div>' +
         '<div class="sms-bar"><span id="smsBarFill" style="width:100%"></span></div>' +
       "</div>" +
-      '<div class="sms-list">' +
+      '<div class="sms-list" id="smsList">' +
         (msgs && msgs.length
           ? msgs.map(smsRow).join("")
           : '<p class="muted sms-empty">No messages yet. Codes usually arrive within 2 minutes.</p>') +
-      "</div>";
+      "</div>" +
+      '<div class="sms-actions"><button class="btn btn-secondary" id="smsCancelBtn" type="button">Cancel &amp; refund</button></div>';
     startExpiryCountdown(order.created_at, order.expires_at);
+    watchOrder(order);
+
+    const cancel = document.getElementById("smsCancelBtn");
+    if (cancel) cancel.addEventListener("click", async () => {
+      cancel.disabled = true;
+      try {
+        await SMSPIN.cancelOrder({ orderId: order.id });
+        toast("Number cancelled and refunded", "ok");
+        setTimeout(() => location.reload(), 800);
+      } catch (e) { toast(e.message, "err"); cancel.disabled = false; }
+    });
+  }
+
+  // Poll for incoming codes (the backend fetches them from the provider).
+  function watchOrder(order) {
+    clearInterval(window.__smsPoll);
+    let seen = 0;
+    const tick = async () => {
+      try {
+        const msgs = await SMSPIN.rpc("order_messages", { p_order_id: order.id });
+        if (msgs && msgs.length !== seen) {
+          seen = msgs.length;
+          const list = document.getElementById("smsList");
+          if (list) list.innerHTML = msgs.map(smsRow).join("");
+        }
+        const st = await SMSPIN.orderStatus(order.id);
+        if (st && (st.status === "refunded" || st.status === "received")) {
+          clearInterval(window.__smsPoll);
+          if (st.status === "refunded") setTimeout(() => location.reload(), 1500);
+        }
+      } catch (e) { /* keep polling */ }
+    };
+    window.__smsPoll = setInterval(tick, 6000);
   }
 
   // Gamified countdown: the bar drains as the number approaches expiry.

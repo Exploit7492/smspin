@@ -24,6 +24,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pricing  # real-time FX + PPP funding fees (forex-python + wbdata)
+import smspin_api  # upstream SMS provider client
 
 SITE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "site")
 PORT = int(os.environ.get("PORT", "12000"))
@@ -137,6 +138,167 @@ def convert(amount_ngn, to):
             "formatted": f"{sym}{val:,.2f}".strip()}
 
 
+# =========================================================================
+# Upstream SMS provider (SMSPin) integration
+# =========================================================================
+_SMS_CLIENT = smspin_api.SmspinClient(SMSPIN_KEY) if SMSPIN_KEY else None
+
+
+def upstream_enabled():
+    if _SMS_CLIENT is None:
+        return False
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("select value from settings where key='upstream_live'")
+            row = cur.fetchone()
+            return bool(row) and row[0] in (True, "true", '"true"')
+    except Exception:
+        return False
+
+
+def _svc(fn, params):
+    """Call a SECURITY DEFINER function as the service role (backend-only)."""
+    with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        placeholders = ",".join(["%s"] * len(params))
+        cur.execute(f"select {fn}({placeholders}) as r", tuple(params.values()))
+        return cur.fetchone()["r"]
+
+
+def _upsert_catalog(items):
+    if not items:
+        return
+    _svc("catalog_upsert", {"p_items": json.dumps(items)})
+
+
+def _stock_for(country, service):
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("select stock, price from number_catalog where country_code=%s and service_code=%s",
+                    (country, service))
+        return cur.fetchone()
+
+
+def sync_pair(country, service, force=False):
+    """Refresh price + stock for one (country, service) from the provider."""
+    if not upstream_enabled():
+        return None
+    cc, sv = (country or "").lower(), service
+    if not cc or not sv:
+        return None
+    if not force:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("""select 1 from number_catalog
+                where country_code=%s and service_code=%s and updated_at > now() - interval '15 minutes'""",
+                        (cc, sv))
+            if cur.fetchone():
+                return None
+    try:
+        live = _SMS_CLIENT.live_price(cc, sv)
+    except smspin_api.SmspinError:
+        return None
+    cost = live.get("price_usd")
+    if cost is None:
+        _upsert_catalog([{"country": cc, "service": sv, "cost_usd": 0, "stock": 0}])
+        return live
+    rate = fx_rates().get("NGN", 1.0)
+    markup = 200.0
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("select value::text::numeric from settings where key='markup_percent'")
+        row = cur.fetchone()
+        if row:
+            markup = float(row[0])
+    price_ngn = round(cost * (1 + markup / 100.0) * rate, 2)
+    _upsert_catalog([{"country": cc, "service": sv, "cost_usd": cost,
+                      "price_ngn": price_ngn, "stock": live.get("available", 0)}])
+    return live
+
+
+def buy_real(country, service, user_id=None, tenant_account=None, operator=None):
+    """Reserve funds locally, place the provider order, confirm or refund."""
+    if not upstream_enabled():
+        raise RuntimeError("upstream disabled")
+    cc, sv = country.lower(), service
+    live = sync_pair(cc, sv, force=True) or {}
+    res = _svc("reserve_number", {
+        "p_user": user_id, "p_country": cc, "p_service": sv,
+        "p_tenant_account": tenant_account, "p_operator": operator,
+    })
+    order_id = res["order_id"]
+    try:
+        up = _SMS_CLIENT.create_order(cc, sv, operator)
+    except smspin_api.SmspinError as e:
+        _svc("refund_order", {"p_order_id": order_id, "p_reason": "provider_error"})
+        raise RuntimeError(str(e))
+    phone = up.get("phoneNumber") or up.get("phone_number") or ""
+    up_id = str(up.get("id") or "")
+    if not phone or not up_id:
+        _svc("refund_order", {"p_order_id": order_id, "p_reason": "no_number"})
+        raise RuntimeError("provider did not return a number")
+    _svc("set_order_upstream", {"p_order_id": order_id, "p_phone": phone,
+                                "p_upstream_id": up_id, "p_operator": up.get("operator"),
+                                "p_cost_usd": up.get("price")})
+    return {"order_id": order_id, "phone_number": phone, "price_ngn": res["price_ngn"],
+            "base_ngn": res["base_ngn"], "markup_ngn": res["markup_ngn"],
+            "status": "waiting", "upstream_order_id": up_id}
+
+
+_CODE_RE = re.compile(r"\b(\d{4,8})\b")
+
+
+def _extract_code(text):
+    """Best-effort OTP extraction from a message body (provider fallback)."""
+    if not text:
+        return None
+    m = _CODE_RE.search(text)
+    return m.group(1) if m else None
+
+
+def poll_pending_orders():
+    """Fetch OTPs for waiting orders and auto-refund expired ones."""
+    if not upstream_enabled():
+        return
+    for o in (_svc("upstream_pending_orders", {"p_limit": 150}) or []):
+        up_id = o.get("upstream_order_id")
+        try:
+            up = _SMS_CLIENT.get_order(up_id)
+        except smspin_api.SmspinError:
+            continue
+        status = (up.get("status") or "").lower()
+        code = up.get("otpCode") or up.get("otp_code")
+        if code:
+            _svc("record_sms", {"p_order_id": o["id"], "p_sender": up.get("service") or o.get("service_code"),
+                                "p_body": f"Verification code: {code}", "p_code": str(code),
+                                "p_received_at": up.get("createdAt") or None})
+        elif status in ("cancelled", "expired", "failed"):
+            _svc("refund_order", {"p_order_id": o["id"], "p_reason": f"upstream_{status}"})
+    for o in (_svc("expired_orders", {"p_limit": 200}) or []):
+        up_id = o.get("upstream_order_id")
+        if up_id:
+            try:
+                _SMS_CLIENT.cancel_order(up_id)
+            except smspin_api.SmspinError:
+                pass
+        _svc("refund_order", {"p_order_id": o["id"], "p_reason": "expired"})
+
+
+def warm_popular():
+    """Refresh the pairs shown on the homepage so the catalog is never empty."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("select value from settings where key='popular_pairs'")
+        row = cur.fetchone()
+    pairs = row[0] if row else None
+    if isinstance(pairs, str):
+        pairs = json.loads(pairs)
+    if not pairs:
+        pairs = [["gb", "wa"], ["us", "wa"], ["ng", "wa"], ["in", "wa"], ["id", "wa"],
+                 ["de", "wa"], ["fr", "wa"], ["br", "wa"], ["gb", "tg"], ["us", "tg"]]
+    for cc, sv in pairs:
+        try:
+            sync_pair(cc, sv, force=True)
+        except Exception:
+            pass
+
+
+
 OPENAPI = {
     "openapi": "3.0.3",
     "info": {"title": "SMSPin API", "version": "1.0.0",
@@ -209,6 +371,12 @@ class Handler(SimpleHTTPRequestHandler):
     # ---------- API ----------
     def do_GET(self):
         path = urlparse(self.path).path
+        # Alias legacy marketing links onto the real dashboard routes.
+        if path == "/dashboard/referral":
+            self.send_response(301)
+            self.send_header("Location", "/dashboard/referrals/")
+            self.end_headers()
+            return
         # White-label storefronts live at /store/<slug>; serve the single store page.
         # Real files (e.g. /store/auth.css) are served as-is.
         if path.startswith("/store/") and not os.path.isfile(os.path.join(SITE_DIR, path.lstrip("/"))):
@@ -267,6 +435,28 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send(500, {"error": str(e)})
         if path.startswith("/api/v1/"):
             return self.api_v1(path)
+        if path == "/api/catalog/live":
+            q = parse_qs(urlparse(self.path).query)
+            cc = (q.get("country", [""])[0] or "").lower()
+            sv = q.get("service", [""])[0] or ""
+            if not cc or not sv:
+                return self._send(400, {"error": "country and service required"})
+            live = sync_pair(cc, sv) or {}
+            with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""select price, cost_usd, stock, updated_at from number_catalog
+                                where country_code=%s and service_code=%s""", (cc, sv))
+                row = cur.fetchone() or {}
+            return self._send(200, {"country": cc, "service": sv,
+                                    "price_ngn": float(row["price"]) if row.get("price") is not None else None,
+                                    "cost_usd": float(row["cost_usd"]) if row.get("cost_usd") is not None else live.get("price_usd"),
+                                    "available": row.get("stock", live.get("available")),
+                                    "operators": live.get("operators", [])})
+        if path == "/api/order/status":
+            q = parse_qs(urlparse(self.path).query)
+            oid = q.get("id", [None])[0]
+            if not oid:
+                return self._send(400, {"error": "id required"})
+            return self._send(200, self._order_status(int(oid)))
         if path == "/api/pricing":
             with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("select * from settings")
@@ -290,11 +480,110 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.api_payments_initialize()
             if path == "/api/korapay/webhook":
                 return self.api_webhook()
+            if path == "/api/orders/buy":
+                return self.api_buy_order()
+            if path == "/api/orders/cancel":
+                return self.api_cancel_order()
             if path.startswith("/api/v1/"):
                 return self.api_v1(path)
         except Exception as e:
             return self._send(500, {"error": str(e)})
         return self._send(404, {"error": "not found"})
+
+    # ---------- upstream orders (buy / cancel / status) ----------
+    def _auth_user(self):
+        """Resolve the caller to a dashboard user id, or None."""
+        token = self._bearer()
+        if not token:
+            return None
+        st, prof = supabase_rpc("my_profile", {}, token=token)
+        if st != 200 or not prof:
+            return None
+        return prof.get("id")
+
+    def _auth_tenant(self, token):
+        if not token:
+            return None
+        st, me = supabase_rpc("tenant_me", {"p_token": token})
+        if st != 200 or not me:
+            return None
+        return me.get("account_id")
+
+    def _order_status(self, order_id):
+        with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""select o.id, o.status, o.phone_number, o.price, o.expires_at,
+                                  o.created_at, o.country_code, o.service_code,
+                                  (select m.code from sms_messages m
+                                    where m.order_id = o.id and m.code is not null
+                                    order by m.received_at desc limit 1) as otp
+                             from orders o where o.id = %s""", (order_id,))
+            row = cur.fetchone()
+        if not row:
+            return {"error": "not found"}
+        row["price"] = float(row["price"]) if row.get("price") is not None else None
+        return row
+
+    def api_buy_order(self):
+        body = self._read_json()
+        country = (body.get("country") or "").lower()
+        service = body.get("service") or ""
+        if not country or not service:
+            return self._send(400, {"error": "country and service required"})
+        operator = body.get("operator")
+        if not upstream_enabled():
+            return self._send(503, {"error": "ordering temporarily unavailable"})
+
+        user_id = None
+        tenant_account = None
+        tenant_token = body.get("tenant_token") or self.headers.get("x-tenant-token")
+        if tenant_token:
+            tenant_account = self._auth_tenant(tenant_token)
+            if not tenant_account:
+                return self._send(401, {"error": "invalid tenant session"})
+        else:
+            user_id = self._auth_user()
+            if not user_id:
+                return self._send(401, {"error": "missing or invalid session"})
+        try:
+            res = buy_real(country, service, user_id=user_id, tenant_account=tenant_account,
+                           operator=int(operator) if operator else None)
+            return self._send(200, res)
+        except RuntimeError as e:
+            return self._send(402, {"error": str(e)})
+        except Exception as e:
+            return self._send(500, {"error": str(e).split("\n")[0]})
+
+    def api_cancel_order(self):
+        body = self._read_json()
+        order_id = body.get("order_id")
+        if not order_id:
+            return self._send(400, {"error": "order_id required"})
+        user_id = None
+        tenant_account = None
+        tenant_token = body.get("tenant_token") or self.headers.get("x-tenant-token")
+        if tenant_token:
+            tenant_account = self._auth_tenant(tenant_token)
+        else:
+            user_id = self._auth_user()
+        if not user_id and not tenant_account:
+            return self._send(401, {"error": "missing or invalid session"})
+
+        with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""select id, user_id, tenant_account_id, upstream_order_id, status
+                             from orders where id=%s""", (order_id,))
+            o = cur.fetchone()
+        if not o:
+            return self._send(404, {"error": "order not found"})
+        if (user_id and o["user_id"] != user_id) or (tenant_account and o["tenant_account_id"] != tenant_account):
+            return self._send(403, {"error": "forbidden"})
+        if o["status"] in ("refunded", "cancelled"):
+            return self._send(200, {"order_id": order_id, "status": o["status"], "already": True})
+        if o["upstream_order_id"]:
+            try:
+                _SMS_CLIENT.cancel_order(o["upstream_order_id"])
+            except smspin_api.SmspinError:
+                pass
+        return self._send(200, _svc("refund_order", {"p_order_id": order_id, "p_reason": "user_cancel"}))
 
     # ---------- public API (user-generated keys) ----------
     def _api_user(self):
@@ -339,6 +628,12 @@ class Handler(SimpleHTTPRequestHandler):
             cc, sv = body.get("country"), body.get("service")
             if not cc or not sv:
                 return self._send(400, {"error": "country and service required"})
+            if upstream_enabled():
+                try:
+                    return self._send(200, buy_real(cc.lower(), sv, user_id=uid,
+                                                    operator=body.get("operator")))
+                except RuntimeError as e:
+                    return self._send(402, {"error": str(e)})
             try:
                 return self._send(200, self._rpc_svc("api_buy",
                                  {"p_user": uid, "p_country": cc, "p_service": sv}))
@@ -487,4 +782,16 @@ if __name__ == "__main__":
             print("pricing warm failed:", e, flush=True)
 
     threading.Thread(target=_warm_pricing, daemon=True).start()
+
+    def _poller():
+        time.sleep(15)
+        warm_popular()
+        while True:
+            try:
+                poll_pending_orders()
+            except Exception as e:
+                print("poll error:", e, flush=True)
+            time.sleep(10)
+
+    threading.Thread(target=_poller, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

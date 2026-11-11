@@ -157,7 +157,7 @@
     var svc = document.getElementById('svc').value, ctry = document.getElementById('ctry').value;
     var btn = this; btn.disabled = true;
     try {
-      var r = await SMSPIN.tenant.buy(S, ctry, svc);
+      var r = await SMSPIN.buyOrder({ country: ctry, service: svc, tenantToken: SMSPIN.tenant.token(S) });
       TENANT_AUTH.show(msg, 'Number reserved: ' + r.phone_number + ' — waiting for SMS.', 'ok');
       refresh(); loadOrders();
     } catch (e) { TENANT_AUTH.show(msg, e.message, 'err'); }

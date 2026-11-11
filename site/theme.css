@@ -813,6 +813,7 @@ table.tbl tr:hover td { background: var(--glass-bg-soft); }
 
 /* Gamified expiry countdown bar */
 .sms-timer { margin-bottom: 14px; }
+.sms-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 .sms-timer-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .sms-timer-label { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; font-weight: 800; color: var(--text-muted); }
 .sms-timer-top .mono { font-weight: 700; }

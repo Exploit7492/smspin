@@ -280,3 +280,24 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
 - Both workflows sparse-checkout only `app`, `scripts`, `settings.gradle.kts`,
   `gradle.properties` so CI never fetches the ~1.9 GB site.
 - Repo: https://github.com/Exploit7492/smspin (branch `feat/apk-branding-ci`).
+
+## Live ordering (real numbers + OTP)
+- The provider API has **no bulk matrix**: price/availability is per `(country, service)`
+  pair. So we never enumerate the full grid; instead `sync_pair()` refreshes a pair on
+  demand (15-min TTL) and stores it in `number_catalog` via `catalog_upsert`. The homepage
+  pairs are warmed on boot (`warm_popular`, list in `settings.popular_pairs`).
+- Buy flow (`backend/server.py`): reserve -> provider -> confirm/refund. `reserve_number`
+  debits the wallet (dashboard user OR tenant account) and inserts a `waiting` order;
+  `buy_real()` then calls `POST /orders` upstream and either `set_order_upstream` (phone +
+  upstream id) or `refund_order` (auto-refund on provider error / no number).
+- A background poller (`poll_pending_orders`, every 10s) pulls OTPs via `GET /orders/{id}`
+  into `sms_messages` (`record_sms`) and auto-refunds orders past `expires_at`
+  (`expired_orders` + upstream `DELETE /orders/{id}`).
+- HTTP surface: `POST /api/orders/buy`, `POST /api/orders/cancel`, `GET /api/order/status`,
+  `GET /api/catalog/live`. Auth is a dashboard bearer token OR `x-tenant-token`.
+  Frontend helpers: `SMSPIN.buyOrder / cancelOrder / orderStatus` (`dashboard/api.js`).
+- The new RPCs are service-role only (revoked from anon/authenticated); the browser never
+  calls them directly. Migration: `supabase/migrations/20261111120000_upstream_integration.sql`.
+- `settings.upstream_live` gates live ordering; set to `false` to fall back to the legacy
+  `api_buy` RPC. The provider account must be funded (else orders auto-refund with
+  `SMSPin API 402: NO_BALANCE`).

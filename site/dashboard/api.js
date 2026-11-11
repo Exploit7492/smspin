@@ -196,7 +196,43 @@
     try { return await res.json(); } catch (e) { return null; }
   }
 
-  window.SMSPIN = { auth, tenant, rpc, functions, feeQuote, getSession, setSession, config: cfg, store: () => {
+  // Real number orders run through our backend (same origin): it reserves the
+  // wallet balance, calls the upstream SMS provider, and confirms or refunds.
+  async function buyOrder({ country, service, operator, tenantToken }) {
+    const headers = { "Content-Type": "application/json" };
+    if (tenantToken) headers["x-tenant-token"] = tenantToken;
+    else headers["Authorization"] = "Bearer " + accessToken();
+    const res = await fetch("/api/orders/buy", {
+      method: "POST", headers,
+      body: JSON.stringify({ country, service, operator, tenant_token: tenantToken }),
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+    if (!res.ok) throw new Error((data && data.error) || res.statusText);
+    return data;
+  }
+
+  async function cancelOrder({ orderId, tenantToken }) {
+    const headers = { "Content-Type": "application/json" };
+    if (tenantToken) headers["x-tenant-token"] = tenantToken;
+    else headers["Authorization"] = "Bearer " + accessToken();
+    const res = await fetch("/api/orders/cancel", {
+      method: "POST", headers,
+      body: JSON.stringify({ order_id: orderId, tenant_token: tenantToken }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data && data.error) || res.statusText);
+    return data;
+  }
+
+  async function orderStatus(orderId) {
+    const res = await fetch("/api/order/status?id=" + encodeURIComponent(orderId));
+    if (!res.ok) return null;
+    return res.json().catch(() => null);
+  }
+
+  window.SMSPIN = { auth, tenant, rpc, functions, feeQuote, buyOrder, cancelOrder, orderStatus, getSession, setSession, config: cfg, store: () => {
     try { return localStorage.getItem("smspin_store") || ""; } catch (e) { return ""; }
   } };
 })();
