@@ -1,0 +1,1284 @@
+// Dashboard hydration — pulls live data from Supabase RPC and renders it.
+(function () {
+  const page = document.body.dataset.page;
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const UI = window.SMSPINUI || { alert: async () => {}, confirm: async () => "ok", reveal: async () => {}, modal: async () => null, select: async () => null };
+
+  const CURRENCY_SYMBOL = { NGN: "\u20a6", USD: "$", GBP: "\u00a3", EUR: "\u20ac", INR: "\u20b9",
+    JPY: "\u00a5", BRL: "R$", ZAR: "R", KES: "KSh", GHS: "GH\u20b5", CAD: "C$", AUD: "A$" };
+  function money(n, cur) {
+    const v = Number(n || 0);
+    const c = cur || SITE.currency || "NGN";
+    const sym = CURRENCY_SYMBOL[c] || (c + " ");
+    return sym + " " + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  // Brand/currency come from the tenant's settings row (site_config RPC), never hardcoded.
+  let SITE = { brand_name: "SMSPin", brand_short: "SMSPin", currency: "NGN", commission: 10, support_email: "" };
+  async function loadSite() {
+    try { const d = await SMSPIN.rpc("site_config"); if (d) Object.assign(SITE, d); } catch (e) {}
+    applyBrand();
+  }
+  function applyBrand() {
+    const name = SITE.brand_name || "SMSPin";
+    const short = SITE.brand_short || name;
+    document.title = document.title.replace(/SMSPin/g, name);
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach(n => {
+      if (/SMSPin/.test(n.nodeValue)) n.nodeValue = n.nodeValue.replace(/SMSPin/g, name);
+    });
+    const side = document.querySelector(".side-brand > span:last-child");
+    if (side) side.textContent = short;
+    const top = document.querySelector(".dash-topbrand .tb-name");
+    if (top) top.textContent = name;
+    const el = document.querySelector('meta[name="application-name"]');
+    if (el) el.setAttribute("content", name);
+    mountTopBrand();
+  }
+  // Fixed top-left brand bar: app logo + tenant name (matches the side panel logo).
+  function mountTopBrand() {
+    if (document.querySelector(".dash-topbrand")) return;
+    const name = SITE.brand_name || "SMSPin";
+    const bar = document.createElement("a");
+    bar.className = "dash-topbrand";
+    bar.href = "/dashboard/";
+    bar.setAttribute("aria-label", name + " home");
+    bar.innerHTML =
+      '<span class="tb-mark" aria-hidden="true">' +
+        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+          '<path d="M4 5C4 3.9 4.9 3 6 3H18C19.1 3 20 3.9 20 5V14C20 15.1 19.1 16 18 16H13L9.5 19.5C9 20 8 19.6 8 18.9V16H6C4.9 16 4 15.1 4 14V5Z" fill="#FFFFFF"/>' +
+          '<rect x="7.5" y="8.5" width="2.5" height="3.5" rx="0.8" fill="currentColor"/>' +
+          '<rect x="10.8" y="8.5" width="2.5" height="3.5" rx="0.8" fill="currentColor"/>' +
+          '<rect x="14.1" y="8.5" width="2.5" height="3.5" rx="0.8" fill="currentColor"/>' +
+        "</svg></span>" +
+      '<span class="tb-name">' + esc(name) + "</span>";
+    document.body.appendChild(bar);
+  }
+
+  // Scale each stat-card value to the largest size that fits its (square) box,
+  // so short numbers read big while long money strings never overflow.
+  function fitStatValues() {
+    document.querySelectorAll(".cards .card").forEach(card => {
+      const v = card.querySelector(".v");
+      if (!v) return;
+      const cs = getComputedStyle(card);
+      const avail = card.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      if (avail <= 0) return;
+      v.style.fontSize = "100px";
+      const w = v.scrollWidth;
+      let size = w > 0 ? Math.floor(100 * avail / w) : 40;
+      size = Math.max(13, Math.min(size, 46));
+      v.style.fontSize = size + "px";
+    });
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + fmtTime(iso);
+  }
+  function fmtTime(iso) {
+    if (!iso) return "";
+    return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+  const STATUS = { received: "ok", waiting: "wait", refunded: "err", expired: "err", cancelled: "err" };
+  function badge(status) {
+    return '<span class="badge ' + (STATUS[status] || "info") + '">' + esc(status) + "</span>";
+  }
+  function td(label, val, cls) {
+    return '<td data-l="' + esc(label) + '"' + (cls ? ' class="' + cls + '"' : "") + ">" + val + "</td>";
+  }
+  // Platform icon: services.icon is either an emoji or an image URL.
+  function serviceIcon(icon, fallback) {
+    const v = String(icon || "").trim();
+    if (/^https?:\/\//i.test(v) || v.startsWith("/")) {
+      return '<span class="sms-ico"><img src="' + esc(v) + '" alt="" loading="lazy" onerror="this.remove()"></span>';
+    }
+    return '<span class="sms-ico">' + esc(v || fallback || "\u2709") + "</span>";
+  }
+  // One SMS row for the flat, full-width SMS board.
+  function smsRow(m) {
+    return '<div class="num-item sms-row">' +
+      serviceIcon(m.service_icon, "\u2709") +
+      '<div class="sms-main">' +
+        '<div class="sms-head"><b>' + esc(m.service || m.sender || "SMS") + "</b>" +
+          (m.phone_number ? '<span class="muted">' + esc(m.phone_number) + "</span>" : "") + "</div>" +
+        (m.body ? '<div class="sms-body">' + esc(m.body) + "</div>" : "") +
+        (m.code ? '<span class="sms-code">' + esc(m.code) + "</span>" : "") +
+      "</div>" +
+      (m.received_at ? '<span class="sms-time">' + esc(fmtDate(m.received_at)) + "</span>" : "") +
+    "</div>";
+  }
+  function toast(msg, cls) {
+    let el = $("#toast");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "toast";
+      el.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:99;padding:12px 18px;border-radius:10px;font-size:14px;font-weight:600;box-shadow:0 8px 32px rgba(0,0,0,.18)";
+      document.body.appendChild(el);
+    }
+    el.style.background = cls === "err" ? "var(--red-light)" : "var(--emerald-light)";
+    el.style.color = cls === "err" ? "var(--red)" : "var(--emerald)";
+    el.textContent = msg;
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.remove(), 3500);
+  }
+
+  // Detect visitor region/currency so prices show in the local currency.
+  let GEO = { country: null, currency: "NGN", country_name: null };
+  async function loadGeo() {
+    try {
+      const r = await fetch("/api/geo");
+      if (r.ok) GEO = await r.json();
+    } catch (e) { /* keep defaults */ }
+    window.SMSPIN_GEO = GEO;
+    const c = document.getElementById("cy");
+    if (c && GEO.country_name && !c.value) c.value = GEO.country_name;
+    return GEO;
+  }
+
+  // Convert an NGN amount to the visitor's currency (best effort, display only).
+  async function localMoney(ngn) {
+    if (!GEO || !GEO.currency || GEO.currency === "NGN") return money(ngn, "NGN");
+    try {
+      const r = await fetch("/api/fx?to=" + GEO.currency + "&amount=" + ngn);
+      if (r.ok) { const d = await r.json(); return d.formatted || money(ngn, "NGN"); }
+    } catch (e) {}
+    return money(ngn, "NGN");
+  }
+
+  async function guard() {
+    if (!window.SMSPIN) return false;
+    if (!SMSPIN.auth.isAuthed()) { location.href = "/login/"; return false; }
+    const u = SMSPIN.auth.user();
+    if (u && u.email) {
+      const local = u.email.split("@")[0];
+      const name = (u.user_metadata && u.user_metadata.full_name) || local;
+      const av = $(".dash-avatar"); if (av) av.textContent = name[0].toUpperCase();
+      const nm = $(".dash-user-name"); if (nm) nm.textContent = name;
+      const em = $(".dash-user-email"); if (em) em.textContent = u.email;
+      const hi = $("#ovWelcome");
+      if (hi) {
+        const first = local.split(/[._\-+]+/).filter(Boolean)[0] || local;
+        hi.textContent = "Welcome back, " + first.charAt(0).toUpperCase() + first.slice(1);
+      }
+    }
+    return true;
+  }
+
+  // Wallet balance pinned in the glass side panel.
+  async function fillSideBalance() {
+    const el = $("#sideBalance"); if (!el) return;
+    try { const w = await SMSPIN.rpc("wallet_summary"); el.textContent = money(w.balance, w.currency); }
+    catch (e) {}
+  }
+
+  // Service icon: real image if the service has one, else its emoji, else a letter.
+  function svcIcon(o, cls) {
+    const icon = (o && (o.service_icon || o.icon)) || "";
+    const c = "svc-ico" + (cls ? " " + cls : "");
+    if (/^https?:\/\//i.test(icon)) return '<span class="' + c + '"><img src="' + esc(icon) + '" alt="" loading="lazy"></span>';
+    if (icon) return '<span class="' + c + '">' + esc(icon) + "</span>";
+    const letter = String((o && (o.service || o.service_code)) || "?").trim().slice(0, 1).toUpperCase();
+    return '<span class="' + c + '">' + esc(letter) + "</span>";
+  }
+
+  // Recent orders shown inside the glass side panel.
+  async function fillSideOrders() {
+    const host = $("#sideOrders"); if (!host) return;
+    try {
+      const d = await SMSPIN.rpc("my_orders", { p_limit: 4 });
+      if (!d || !d.length) { host.innerHTML = '<p class="muted side-empty">No orders yet</p>'; return; }
+      host.innerHTML = d.map(o =>
+        '<a class="side-order" href="/dashboard/orders/">' +
+        svcIcon(o) +
+        '<span class="so-svc">' + esc(o.service || "Order") + "</span>" +
+        badge(o.status).replace('class="badge', 'class="badge so-badge') +
+        '<span class="so-num">' + esc(o.phone_number || "") + "</span></a>").join("");
+    } catch (e) { host.innerHTML = '<p class="muted side-empty">Unavailable</p>'; }
+  }
+
+  // Active numbers shown inside the glass side panel.
+  async function fillSideNumbers() {
+    const host = $("#sideNums"); if (!host) return;
+    try {
+      const d = await SMSPIN.rpc("my_orders", { p_limit: 30 });
+      const live = (d || []).filter(o => o.status === "waiting" || o.status === "received").slice(0, 3);
+      if (!live.length) { host.innerHTML = '<p class="muted side-empty">No active numbers</p>'; return; }
+      host.innerHTML = live.map(o =>
+        '<a class="side-order" href="/dashboard/numbers/">' +
+        svcIcon(o) +
+        '<span class="so-svc">' + esc((o.flag || "") + " " + (o.service || "Number")) + "</span>" +
+        badge(o.status).replace('class="badge', 'class="badge so-badge') +
+        '<span class="so-num">' + esc(o.phone_number || "") + "</span></a>").join("");
+    } catch (e) { host.innerHTML = '<p class="muted side-empty">Unavailable</p>'; }
+  }
+
+  // Collapsible glass side panel (mobile).
+  function wireSidePanel() {
+    const side = $("#dashSide"), btn = $("#dashToggle"), scrim = $("#dashScrim");
+    if (!side || !btn) return;
+    const close = () => { side.classList.remove("open"); btn.setAttribute("aria-expanded", "false"); if (scrim) scrim.classList.remove("on"); };
+    btn.addEventListener("click", () => {
+      const open = side.classList.toggle("open");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      if (scrim) scrim.classList.toggle("on", open);
+    });
+    if (scrim) scrim.addEventListener("click", close);
+    side.addEventListener("click", e => { if (e.target.closest("a")) close(); });
+  }
+
+  const CARD_LINKS = {
+    overview: ["/dashboard/wallet/", "/dashboard/numbers/", "/dashboard/orders/", "/dashboard/sms/"],
+    wallet: ["/dashboard/wallet/", "/dashboard/transactions/", "/dashboard/transactions/", "/dashboard/transactions/"],
+    referrals: ["/dashboard/referrals/", "/dashboard/wallet/", "/dashboard/wallet/", "/dashboard/referrals/"],
+    profile: ["/dashboard/settings/", "/dashboard/wallet/", "/dashboard/settings/", "/dashboard/referrals/"],
+  };
+  function wireCardLinks() {
+    const links = CARD_LINKS[page];
+    if (!links) return;
+    $$(".cards .card").forEach((card, i) => {
+      if (!links[i]) return;
+      if (card.querySelector(".card-fab")) return; // this card opens the funding sheet
+      card.classList.add("card-link");
+      card.setAttribute("role", "link");
+      card.tabIndex = 0;
+      card.addEventListener("click", () => { location.href = links[i]; });
+      card.addEventListener("keydown", e => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); location.href = links[i]; }
+      });
+    });
+  }
+
+  async function renderOverview() {
+    const d = await SMSPIN.rpc("dashboard_overview");
+    const cur = d.currency;
+    const cards = $$(".cards .card");
+    if (cards[0]) $(".v", cards[0]).textContent = money(d.balance, cur);
+    if (cards[1]) $(".v", cards[1]).textContent = d.active_numbers;
+    if (cards[2]) $(".v", cards[2]).textContent = d.total_orders;
+    if (cards[3]) $(".v", cards[3]).textContent = d.sms_received;
+    const tb = $("table.tbl tbody");
+    if (tb) tb.innerHTML = (d.recent_orders || []).map(o =>
+      "<tr>" + td("Service", '<span class="svc-cell">' + svcIcon(o) + esc(o.service || "") + "</span>") +
+      td("Number", '<span class="mono">' + esc(o.phone_number) + "</span>") +
+      td("Status", badge(o.status)) + td("Price", money(o.price, cur)) + td("Date", fmtDate(o.created_at)) + "</tr>").join("");
+
+    // Quick actions — dynamic speed dial of the services this user buys most,
+    // falling back to globally popular services (WhatsApp, X, Facebook, ...).
+    const qa = $("#ovQuickActions");
+    if (qa) {
+      const items = d.quick_actions || [];
+      qa.innerHTML = items.length
+        ? items.map(s => {
+            const icon = s.icon && /^(https?:|data:|\/)/.test(s.icon)
+              ? '<img src="' + esc(s.icon) + '" alt="' + esc(s.name) + '" loading="lazy" onerror="this.remove()">'
+              : '<span class="qa-emoji">' + esc(s.icon || (s.name || "?").charAt(0)) + "</span>";
+            return '<button class="qa-tile" type="button" data-svc="' + esc(s.code) + '" title="Buy ' + esc(s.name) + '">' +
+              '<span class="qa-ico">' + icon + "</span></button>";
+          }).join("")
+        : '<p class="muted">No services available right now.</p>';
+      $$("[data-svc]", qa).forEach(b => b.addEventListener("click", () =>
+        location.href = "/dashboard/buy/?service=" + encodeURIComponent(b.dataset.svc)));
+    }
+
+    // Incoming messages board — latest SMS landing on the user's numbers.
+    const grid = $("#ovMsgGrid");
+    if (grid) {
+      const msgs = d.recent_messages || [];
+      const cnt = $("#ovMsgCount"); if (cnt) cnt.textContent = msgs.length ? msgs.length + " recent" : "None yet";
+      grid.innerHTML = msgs.length
+        ? msgs.map(smsRow).join("")
+        : '<p class="muted sms-empty">No messages yet. Codes land here the moment they arrive.</p>';
+    }
+  }
+
+  async function renderNumbers() {
+    const d = await SMSPIN.rpc("my_orders", { p_limit: 100 });
+    const host = $("#numCards");
+    if (!host) return;
+    const cnt = $("#numCount");
+    if (cnt) cnt.textContent = (d || []).length + " number" + ((d || []).length === 1 ? "" : "s");
+    if (!d || !d.length) { host.innerHTML = '<p class="muted sms-empty">No numbers yet. Buy one to get started.</p>'; return; }
+    host.innerHTML = d.map(numCard).join("");
+    wireFlip(host);
+  }
+
+  // One flip card: front shows only the number; tap to flip for full details.
+  function numCard(o) {
+    return '<div class="num-flip">' +
+      '<div class="num-flip-inner">' +
+        '<div class="num-face num-front">' +
+          '<span class="num-svc-badge">' + svcIcon(o) + esc(o.service || "\u2014") + "</span>" +
+          '<span class="num-tap">Tap for details</span>' +
+          '<span class="mono num-front-num">' + esc(o.phone_number || "\u2014") + "</span>" +
+        "</div>" +
+        '<div class="num-face num-back">' +
+          '<div class="num-row"><span>Country</span><b>' + esc((o.flag ? o.flag + " " : "") + (o.country || "\u2014")) + "</b></div>" +
+          '<div class="num-row"><span>Service</span><b><span class="svc-cell">' + svcIcon(o) + esc(o.service || "\u2014") + "</span></b></div>" +
+          '<div class="num-row"><span>Status</span><b>' + badge(o.status) + "</b></div>" +
+          '<div class="num-row"><span>Expires</span><b>' + esc(o.expires_at ? fmtDate(o.expires_at) : "\u2014") + "</b></div>" +
+          '<div class="num-actions"><a class="btn btn-secondary" href="/dashboard/sms/">Inbox</a>' +
+          '<button class="btn btn-ghost" type="button" data-copy="' + esc(o.phone_number || "") + '">Copy</button></div>' +
+        "</div>" +
+      "</div></div>";
+  }
+
+  async function renderOrders() {
+    const d = await SMSPIN.rpc("my_orders", { p_limit: 100 });
+    const host = $("#orderCards");
+    if (!host) return;
+    const b = $(".panel-h .badge");
+    if (b) b.textContent = (d || []).length + " total";
+    if (!d || !d.length) { host.innerHTML = '<p class="muted sms-empty">No orders yet.</p>'; return; }
+    host.innerHTML = d.map(orderCard).join("");
+    wireFlip(host);
+  }
+
+  // One flip card for an order: front shows only the number; tap to flip for details.
+  function orderCard(o) {
+    return '<div class="num-flip">' +
+      '<div class="num-flip-inner">' +
+        '<div class="num-face num-front">' +
+          '<span class="num-svc-badge">' + svcIcon(o) + esc(o.service || "\u2014") + "</span>" +
+          '<span class="num-tap">Tap for details</span>' +
+          '<span class="mono num-front-num">' + esc(o.phone_number || "\u2014") + "</span>" +
+        "</div>" +
+        '<div class="num-face num-back">' +
+          '<div class="num-row"><span>Service</span><b><span class="svc-cell">' + svcIcon(o) + esc(o.service || "\u2014") + "</span></b></div>" +
+          '<div class="num-row"><span>Country</span><b>' + esc((o.flag ? o.flag + " " : "") + (o.country || "\u2014")) + "</b></div>" +
+          '<div class="num-row"><span>Status</span><b>' + badge(o.status) + "</b></div>" +
+          '<div class="num-row"><span>Price</span><b>' + money(o.price) + "</b></div>" +
+          '<div class="num-row"><span>Date</span><b>' + esc(fmtDate(o.created_at)) + "</b></div>" +
+          '<div class="num-actions"><a class="btn btn-secondary" href="/dashboard/sms/">Inbox</a>' +
+          '<button class="btn btn-ghost" type="button" data-copy="' + esc(o.phone_number || "") + '">Copy</button></div>' +
+        "</div>" +
+      "</div></div>";
+  }
+
+  // Wire tap-to-flip + copy on a set of flip cards.
+  function wireFlip(host) {
+    $$(".num-flip", host).forEach(c => c.addEventListener("click", e => {
+      if (e.target.closest("a,button")) return;
+      c.classList.toggle("flipped");
+    }));
+    $$("[data-copy]", host).forEach(b => b.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(b.dataset.copy); toast("Number copied", "ok"); }
+      catch (e) { toast("Copy failed", "err"); }
+    }));
+  }
+
+  // ---- Wallet: analytics + funding flow ----
+  const PAY_METHODS = [
+    { id: "card", label: "Card", note: "Visa, Mastercard, Verve", icon: "💳" },
+    { id: "bank", label: "Bank transfer", note: "Instant NGN transfer", icon: "🏦" },
+    { id: "ussd", label: "USSD", note: "Pay from your phone", icon: "📱" },
+  ];
+  let WALLET = null, payMethod = "card";
+
+  async function renderWallet() {
+    const d = await SMSPIN.rpc("wallet_summary");
+    WALLET = d;
+    const cur = d.currency || "NGN";
+    drawFlow(d.daily || [], cur);
+    drawBars("#walletSvc", d.by_category || [], cur, "name", "icon");
+    drawBars("#walletCtry", d.by_country || [], cur, "country", "flag");
+    drawActivity(d.activity || [], cur);
+    drawFunding(d, cur);
+  }
+
+  // 14-day cash-flow column chart (in vs out), built with divs (no chart lib).
+  // Smooth running-balance curve laid over the flow bars (SVG overlay, animated draw-in).
+  function drawFlowCurve(host, daily) {
+    const old = host.querySelector("svg.wcurve");
+    if (old) old.remove();
+    if (!daily.length) return;
+    // running balance across the window
+    let run = 0;
+    const series = daily.map(x => { run += (Number(x.in) || 0) - (Number(x.out) || 0); return run; });
+    const lo = Math.min(0, ...series), hi = Math.max(1, ...series);
+    const span = (hi - lo) || 1;
+    const W = 1000, H = 100;
+    const n = series.length;
+    const xAt = i => (n === 1 ? W / 2 : (i / (n - 1)) * W);
+    const yAt = v => H - ((v - lo) / span) * (H * 0.82) - H * 0.09;
+    const pts = series.map((v, i) => [xAt(i), yAt(v)]);
+    // Catmull-Rom → cubic bezier for a smooth, monotone-looking curve.
+    let d = "M" + pts[0][0].toFixed(1) + " " + pts[0][1].toFixed(1);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+      const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+      const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+      d += "C" + c1x.toFixed(1) + " " + c1y.toFixed(1) + " " +
+                 c2x.toFixed(1) + " " + c2y.toFixed(1) + " " +
+                 p2[0].toFixed(1) + " " + p2[1].toFixed(1);
+    }
+    const area = d + "L" + W + " " + H + "L0 " + H + "Z";
+    const dots = pts.map(p => '<circle class="wcurve-dot" cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="2.4"></circle>').join("");
+    host.insertAdjacentHTML("afterbegin",
+      '<svg class="wcurve" viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none" aria-hidden="true">' +
+      '<defs><linearGradient id="wcurveFill" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="var(--brand)" stop-opacity=".28"/>' +
+      '<stop offset="100%" stop-color="var(--brand)" stop-opacity="0"/>' +
+      '</linearGradient></defs>' +
+      '<path class="wcurve-area" d="' + area + '"/>' +
+      '<path class="wcurve-line" d="' + d + '" style="--len:1"/>' +
+      dots + "</svg>");
+    // measure once mounted so the dash-draw animation runs the full length
+    const svg = host.querySelector("svg.wcurve");
+    const line = svg.querySelector(".wcurve-line");
+    const len = line.getTotalLength ? line.getTotalLength() : 0;
+    line.style.setProperty("--len", len || 1);
+  }
+
+  function drawFlow(daily, cur) {
+    const host = $("#walletFlow");
+    if (!host) return;
+    if (!daily.length) { host.innerHTML = '<p class="muted">No activity yet.</p>'; return; }
+    const max = Math.max(1, ...daily.map(x => Math.max(x.in, x.out)));
+    host.innerHTML = daily.map(x => {
+      const hi = (x.in / max) * 100;
+      const ho = (x.out / max) * 100;
+      const dt = new Date(x.d + "T00:00:00");
+      const lbl = dt.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+      const tip = lbl + " · in " + money(x.in, cur) + " · out " + money(x.out, cur);
+      return '<div class="wcol" tabindex="0" data-tip="' + esc(tip) + '">' +
+        '<div class="wcol-bars">' +
+        '<span class="wbar in" data-h="' + hi.toFixed(2) + '" style="height:0"></span>' +
+        '<span class="wbar out" data-h="' + ho.toFixed(2) + '" style="height:0"></span>' +
+        '</div>' +
+        '<span class="wcol-l">' + dt.getDate() + "</span></div>";
+    }).join("");
+
+    drawFlowCurve(host, daily);
+
+    // Grow the bars in on the next frame so the chart animates to life.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      host.querySelectorAll(".wbar").forEach(b => { b.style.height = b.dataset.h + "%"; });
+      host.classList.add("wcurve-in");
+    }));
+
+    // Floating hover tooltip.
+    const wrap = host.parentElement;
+    if (wrap) {
+      wrap.classList.add("wchart-wrap");
+      let tip = wrap.querySelector(".wchart-tip");
+      if (!tip) { tip = document.createElement("div"); tip.className = "wchart-tip"; wrap.appendChild(tip); }
+      host.querySelectorAll(".wcol").forEach(col => {
+        col.addEventListener("mouseenter", () => { tip.textContent = col.dataset.tip; tip.classList.add("on"); });
+        col.addEventListener("mousemove", e => {
+          const r = wrap.getBoundingClientRect();
+          tip.style.left = (e.clientX - r.left) + "px";
+          tip.style.top = (e.clientY - r.top - 10) + "px";
+        });
+        col.addEventListener("mouseleave", () => tip.classList.remove("on"));
+      });
+    }
+  }
+
+  // Horizontal ranked bars for spend-by-service / spend-by-country.
+  function drawBars(sel, rows, cur, labelKey, iconKey) {
+    const host = $(sel);
+    if (!host) return;
+    if (!rows.length) { host.innerHTML = '<p class="muted">Nothing in the last 30 days.</p>'; return; }
+    const max = Math.max(1, ...rows.map(r => Number(r.total) || 0));
+    host.innerHTML = rows.map(r => {
+      const v = Number(r.total) || 0;
+      const pct = Math.round((v / max) * 100);
+      const icon = r[iconKey] || "";
+      const iconHtml = /^https?:\/\//i.test(icon) ? '<img src="' + esc(icon) + '" alt="" loading="lazy">'
+        : '<span class="wb-emoji">' + esc(icon || "•") + "</span>";
+      return '<div class="wbar-row"><span class="wb-ico">' + iconHtml + "</span>" +
+        '<div class="wb-main"><div class="wb-top"><b>' + esc(r[labelKey] || "—") + "</b>" +
+        "<span>" + money(v, cur) + "</span></div>" +
+        '<div class="wb-track"><span style="width:' + pct + '%"></span></div></div></div>';
+    }).join("");
+  }
+
+  // Bank-app style activity ledger: grouped by day, icon + title + subtitle + signed amount.
+  const TX_LABEL = { topup: "Wallet top-up", purchase: "Number purchase", refund: "Auto refund",
+    fee: "Funding fee", referral: "Referral bonus", business_earning: "Store earning" };
+  function txMeta(a) {
+    const label = TX_LABEL[a.type] || (a.type ? a.type[0].toUpperCase() + a.type.slice(1) : "Transaction");
+    let title = label, sub = a.service_name || a.method || "";
+    if (a.type === "purchase" && a.service_name) { title = a.service_name + " number"; sub = "Number purchase"; }
+    return { title, sub };
+  }
+  function txIcon(a) {
+    const icon = a.service_icon || "";
+    if (/^https?:\/\//i.test(icon)) return '<img src="' + esc(icon) + '" alt="" loading="lazy">';
+    if (icon) return '<span class="wb-emoji">' + esc(icon) + "</span>";
+    if (a.amount >= 0) return '<span class="wb-emoji">⬇</span>';
+    return '<span class="wb-emoji">⬆</span>';
+  }
+  function drawActivity(rows, cur) {
+    const host = $("#walletAct");
+    if (!host) return;
+    if (!rows.length) { host.innerHTML = '<p class="muted">No wallet activity yet.</p>'; return; }
+    const groups = [];
+    rows.forEach(a => {
+      const key = new Date(a.created_at).toDateString();
+      let g = groups.find(x => x.key === key);
+      if (!g) { g = { key, date: a.created_at, items: [] }; groups.push(g); }
+      g.items.push(a);
+    });
+    host.innerHTML = groups.map(g => {
+      const d = new Date(g.date);
+      const today = new Date().toDateString() === g.key;
+      const yest = new Date(Date.now() - 864e5).toDateString() === g.key;
+      const head = today ? "Today" : yest ? "Yesterday"
+        : d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+      return '<div class="act-day"><div class="act-day-h">' + head + "</div>" +
+        g.items.map(a => {
+          const m = txMeta(a);
+          const pos = a.amount >= 0;
+          return '<div class="act-row"><span class="act-ico ' + (pos ? "in" : "out") + '">' + txIcon(a) + "</span>" +
+            '<div class="act-main"><b>' + esc(m.title) + "</b>" +
+            (m.sub ? "<span>" + esc(m.sub) + "</span>" : "") + "</div>" +
+            '<div class="act-amt ' + (pos ? "in" : "out") + '">' + (pos ? "+" : "−") + money(Math.abs(a.amount), cur) +
+            '<span class="act-time">' + esc(fmtTime(a.created_at)) + "</span></div></div>";
+        }).join("") + "</div>";
+    }).join("");
+  }
+
+  // Full funding flow: quick amounts + method + summary -> edge function -> checkout.
+  function drawFunding(d, cur) {
+    const quick = $("#fundQuick");
+    if (quick) {
+      const amounts = [1000, 2000, 5000, 10000, 20000, 50000];
+      quick.innerHTML = amounts.map(a =>
+        '<button type="button" class="fund-chip" data-amt="' + a + '">' + money(a, cur) + "</button>").join("");
+      $$(".fund-chip", quick).forEach(b => b.addEventListener("click", () => {
+        const amt = $("#amt"); if (amt) amt.value = b.dataset.amt;
+        $$(".fund-chip", quick).forEach(x => x.classList.remove("on")); b.classList.add("on");
+        updateFundSummary(cur);
+      }));
+    }
+    const methods = $("#fundMethods");
+    if (methods) {
+      methods.innerHTML = PAY_METHODS.map(m =>
+        '<button type="button" class="fund-m' + (m.id === payMethod ? " on" : "") + '" data-m="' + m.id + '">' +
+        '<span class="fm-ico">' + m.icon + '</span><span class="fm-txt"><b>' + m.label + "</b><span>" + m.note + "</span></span></button>").join("");
+      $$(".fund-m", methods).forEach(b => b.addEventListener("click", () => {
+        payMethod = b.dataset.m;
+        $$(".fund-m", methods).forEach(x => x.classList.remove("on")); b.classList.add("on");
+        updateFundSummary(cur);
+      }));
+    }
+    const amt = $("#amt");
+    if (amt) amt.addEventListener("input", () => updateFundSummary(cur));
+    updateFundSummary(cur);
+  }
+
+  let fundFee = null, fundFeeAmt = 0;
+  function updateFundSummary(cur) {
+    const sum = $("#fundSummary");
+    const btn = $("#fundBtn");
+    if (!sum) return;
+    const amt = Number((document.getElementById("amt") || {}).value || 0);
+    const m = PAY_METHODS.find(x => x.id === payMethod) || PAY_METHODS[0];
+    const fee = (fundFee && fundFeeAmt === amt) ? fundFee : null;
+    sum.innerHTML =
+      '<div class="fs-row"><span>Amount</span><b>' + money(amt, cur) + "</b></div>" +
+      '<div class="fs-row"><span>Method</span><b>' + esc(m.label) + "</b></div>" +
+      (fee
+        ? '<div class="fs-row"><span>Fee <span class="fs-pct">' + (fee.fee_percent || 0) + '%</span></span><b>-' + money(fee.fee, cur) + "</b></div>" +
+          '<div class="fs-row"><span>You pay</span><b>' + money(amt, cur) + "</b></div>" +
+          '<div class="fs-row fs-total"><span>Wallet credit</span><b>' + money(fee.net, cur) + "</b></div>"
+        : '<div class="fs-row fs-total"><span>You pay</span><b>' + money(amt, cur) + "</b></div>");
+    if (btn) { btn.textContent = amt > 0 ? "Top up " + money(amt, cur) : "Enter an amount"; btn.disabled = !(amt > 0); }
+    if (amt > 0 && SMSPIN.feeQuote && fundFeeAmt !== amt) {
+      fundFeeAmt = amt;
+      SMSPIN.feeQuote(amt, cur).then(q => { if (q && Number((document.getElementById("amt")||{}).value||0) === amt) { fundFee = q; updateFundSummary(cur); } });
+    }
+  }
+
+  async function renderSettings() {
+    const d = await SMSPIN.rpc("wallet_summary");
+    const on = $("#atOn"), th = $("#atThreshold"), am = $("#atAmount"), st = $("#atStatus");
+    if (on) on.checked = !!d.auto_topup;
+    if (th) th.value = d.auto_topup_threshold || 1000;
+    if (am) am.value = d.auto_topup_amount || 5000;
+    if (st) { st.textContent = d.auto_topup ? "On" : "Off"; st.className = "badge " + (d.auto_topup ? "ok" : "info"); }
+  }
+
+
+  let TX_ROWS = [], TX_FILTER = "all";
+
+  const TXP_LABEL = {
+    topup: "Top-up", purchase: "Number purchase", refund: "Refund",
+    fee: "Funding fee", business_earning: "Business earning", referral: "Referral payout",
+  };
+  const TX_STATUS = {
+    success: { label: "Success", cls: "ok" },
+    pending: { label: "Pending", cls: "wait" },
+    waiting: { label: "Waiting", cls: "wait" },
+  };
+  function txStatus(row) {
+    const s = row.status || "success";
+    return TX_STATUS[s] ? s : "success";
+  }
+
+  function drawTxTabs() {
+    const counts = { all: TX_ROWS.length, success: 0, pending: 0, waiting: 0 };
+    TX_ROWS.forEach(r => { counts[txStatus(r)]++; });
+    $$(".tx-tab").forEach(t => {
+      const st = t.dataset.st;
+      t.classList.toggle("on", st === TX_FILTER);
+      t.setAttribute("aria-selected", st === TX_FILTER ? "true" : "false");
+      const c = $('[data-count="' + st + '"]', t); if (c) c.textContent = counts[st] || 0;
+    });
+    return counts;
+  }
+
+  function drawTxRows() {
+    const tb = $("table.tbl tbody");
+    if (!tb) return;
+    const rows = TX_FILTER === "all" ? TX_ROWS : TX_ROWS.filter(r => txStatus(r) === TX_FILTER);
+    const title = $("#txPanelTitle");
+    if (title) title.textContent = TX_FILTER === "all" ? "All transactions"
+      : TX_STATUS[TX_FILTER].label + " transactions";
+    const sum = $("#txSum");
+    if (sum) {
+      const net = rows.reduce((a, r) => a + (Number(r.amount) || 0), 0);
+      sum.textContent = rows.length + " entr" + (rows.length === 1 ? "y" : "ies") + " · net " +
+        (net >= 0 ? "+ " : "- ") + money(Math.abs(net));
+    }
+    tb.innerHTML = rows.length ? rows.map(a => {
+      const badge = TX_STATUS[txStatus(a)];
+      return "<tr>" +
+        td("Type", esc(TXP_LABEL[a.type] || a.type)) +
+        td("Amount", '<span class="badge ' + (a.amount >= 0 ? "ok" : "err") + '">' + (a.amount >= 0 ? "+ " : "- ") + money(Math.abs(a.amount)) + "</span>") +
+        td("Method", esc(a.method || "")) +
+        td("Status", '<span class="badge ' + badge.cls + '">' + badge.label + "</span>") +
+        td("Date", fmtDate(a.created_at)) + "</tr>";
+    }).join("") : '<tr><td colspan="5" class="muted" style="text-align:center;padding:18px">No ' +
+      (TX_FILTER === "all" ? "" : TX_STATUS[TX_FILTER].label.toLowerCase() + " ") + "transactions yet.</td></tr>";
+  }
+
+  async function renderTransactions() {
+    const d = await SMSPIN.rpc("my_transactions", { p_limit: 100 });
+    TX_ROWS = d || [];
+    drawTxTabs();
+    drawTxRows();
+    $$(".tx-tab").forEach(t => t.addEventListener("click", () => {
+      TX_FILTER = t.dataset.st;
+      drawTxTabs();
+      drawTxRows();
+    }));
+  }
+
+  const REF_TIER_BASE = { Starter: 0, Bronze: 5, Silver: 15, Gold: 30, Platinum: 50 };
+  const REF_TIER_NEXT = { Starter: 5, Bronze: 15, Silver: 30, Gold: 50, Platinum: 50 };
+
+  async function renderReferrals() {
+    const d = await SMSPIN.rpc("referral_summary");
+    const cards = $$(".cards .card");
+    if (cards[0]) $(".v", cards[0]).textContent = d.count;
+    if (cards[1]) $(".v", cards[1]).textContent = money(d.earned, SITE.currency);
+    if (cards[2]) $(".v", cards[2]).textContent = money(d.earned_month, SITE.currency);
+    if (cards[3]) $(".v", cards[3]).textContent = (d.commission || SITE.commission) + "%";
+
+    const link = location.origin + "/register?ref=" + (d.code || "");
+    const setTxt = (sel, v) => { const el = $(sel); if (el) el.textContent = v; };
+    setTxt("#refLink", link); setTxt("#refCode", d.code || "—"); setTxt("#refPct", (d.commission || SITE.commission) + "%");
+    setTxt("#refTier", d.tier || "Starter");
+    setTxt("#refTierNext", d.next_tier ? d.to_next + " more to " + d.next_tier : "Top tier reached");
+    setTxt("#refAvail", money(d.available || 0, SITE.currency));
+
+    const base = REF_TIER_BASE[d.tier] || 0, next = REF_TIER_NEXT[d.tier] || 5;
+    const pct = next > base ? Math.min(100, Math.round(((d.count - base) / (next - base)) * 100)) : 100;
+    const fill = $("#refTierFill"); if (fill) fill.style.width = pct + "%";
+
+    drawRefChart(d.monthly || []);
+    drawRefList(d.recent || []);
+
+    const copyBtn = $("#refCopy");
+    if (copyBtn) copyBtn.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(link); copyBtn.textContent = "Copied!"; }
+      catch (e) { copyBtn.textContent = "Copy failed"; }
+      setTimeout(() => (copyBtn.textContent = "Copy link"), 1600);
+    });
+    const shareBtn = $("#refShare");
+    if (shareBtn) shareBtn.addEventListener("click", async () => {
+      const data = { title: "Join " + SITE.brand_name, text: "Get instant virtual numbers on " + SITE.brand_name + " with my link.", url: link };
+      if (navigator.share) { try { await navigator.share(data); } catch (e) {} }
+      else { try { await navigator.clipboard.writeText(link); toast("Link copied to share", "ok"); } catch (e) {} }
+    });
+    const claim = $("#refClaim");
+    if (claim) claim.addEventListener("click", async () => {
+      claim.disabled = true;
+      try {
+        const r = await SMSPIN.rpc("claim_referral_earnings");
+        toast("Claimed " + money(r.claimed, SITE.currency) + " to wallet", "ok");
+        await renderReferrals();
+        if (typeof fillSideBalance === "function") fillSideBalance();
+      } catch (e) { toast(e.message, "err"); }
+      finally { claim.disabled = false; }
+    });
+  }
+
+  function drawRefChart(monthly) {
+    const host = $("#refChart");
+    if (!host) return;
+    if (!monthly.length) { host.innerHTML = '<p class="muted">No earnings yet.</p>'; return; }
+    const max = Math.max(1, ...monthly.map(m => Number(m.v) || 0));
+    host.innerHTML = monthly.map(m => {
+      const h = Math.round(((Number(m.v) || 0) / max) * 100);
+      return '<div class="wcol" title="' + esc(m.m) + " · " + money(m.v, SITE.currency) + '">' +
+        '<div class="wcol-bars"><span class="wbar in" style="height:' + Math.max(h, 2) + '%"></span></div>' +
+        '<span class="wcol-l">' + esc(m.m) + "</span></div>";
+    }).join("");
+  }
+
+  function drawRefList(rows) {
+    const host = $("#refList");
+    if (!host) return;
+    if (!rows.length) {
+      host.innerHTML = '<p class="muted">No referrals yet. Share your link to get started.</p>';
+      return;
+    }
+    host.innerHTML = rows.map(r => {
+      const initial = esc((r.email || "?").charAt(0).toUpperCase());
+      return '<div class="act-row"><span class="act-ico in">' + initial + "</span>" +
+        '<div class="act-main"><b>' + esc(r.email || "Hidden user") + "</b><span>Joined " + esc(fmtDate(r.created_at)) + "</span></div>" +
+        '<div class="act-amt in">+' + money(r.earned, SITE.currency) +
+        '<span class="act-time">' + (r.claimed ? "Claimed" : "Available") + "</span></div></div>";
+    }).join("");
+  }
+
+
+  async function renderProfile() {
+    const d = await SMSPIN.rpc("my_profile");
+    if (!d) return;
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ""; };
+    set("fn", d.full_name); set("em", d.email); set("ph", d.phone); set("cy", d.country);
+
+    const name = d.full_name || "Account holder";
+    const txt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    txt("pfName", name);
+    txt("pfEmail", d.email || "you@example.com");
+    txt("pfSince", d.created_at ? "Member since " + new Date(d.created_at).toLocaleDateString(undefined, { month: "long", year: "numeric" }) : "Member");
+    txt("pfCode", d.referral_code ? "Code " + d.referral_code : "No referral code");
+    txt("pfCodeCard", d.referral_code || "—");
+    txt("pfCountry", d.country || "—");
+    txt("pfVerifyEmail", d.email || "—");
+    txt("pfVerifyPhone", d.phone ? d.phone : "Not added yet");
+    const av = document.getElementById("pfAvatar");
+    if (av) av.textContent = (name.trim()[0] || "A").toUpperCase();
+  }
+
+  async function renderApiKeys() {
+    const wrap = $(".panel-b");
+    if (!wrap) return;
+    const head = $(".panel-h .btn-primary");
+    let activeId = null;
+
+    async function draw() {
+      const d = await SMSPIN.rpc("my_api_keys");
+      const active = (d || []).filter(k => !k.revoked);
+      activeId = active.length ? active[0].id : null;
+
+      if (head) {
+        head.textContent = activeId ? "Regenerate key" : "Generate key";
+        head.disabled = false;
+      }
+
+      if (!d || !d.length) {
+        wrap.innerHTML = '<p class="muted">No API key yet. Generate one to get started. ' +
+          'You can hold one active key at a time.</p>';
+        return;
+      }
+
+      const current = active[0];
+      let html = "";
+      if (current) {
+        html += '<div class="copyrow" style="margin-bottom:10px"><span class="mono">' + esc(current.key_prefix) + "</span>" +
+          '<span class="badge ok">Active</span>' +
+          '<button class="btn btn-ghost" type="button" data-copy="' + esc(current.key_prefix) + '">Copy</button>' +
+          '<button class="btn btn-danger-ghost" type="button" data-revoke="' + current.id + '">Revoke</button>' +
+          "</div>";
+      } else {
+        html += '<p class="muted">No active key. Generate a new one to continue.</p>';
+      }
+
+      const revoked = d.filter(k => k.revoked);
+      if (revoked.length) {
+        html += '<p class="muted" style="margin-top:16px">History</p>';
+        html += revoked.slice(0, 5).map(k =>
+          '<div class="copyrow" style="margin-bottom:8px;opacity:.7"><span class="mono">' + esc(k.key_prefix) + "</span>" +
+          '<span class="badge err">Revoked</span></div>').join("");
+      }
+      wrap.innerHTML = html;
+
+      $$("[data-copy]", wrap).forEach(b => b.addEventListener("click", () => {
+        navigator.clipboard?.writeText(b.dataset.copy).catch(() => {});
+        toast("Key prefix copied", "ok");
+      }));
+      $$("[data-revoke]", wrap).forEach(b => b.addEventListener("click", async () => {
+        const ok = await UI.confirm({
+          title: "Revoke API key",
+          message: "Apps using this key stop working immediately.",
+          tone: "warn",
+          actions: [{ id: "cancel", label: "Keep key", variant: "ghost" },
+                    { id: "ok", label: "Revoke", variant: "danger" }],
+        });
+        if (ok !== "ok") return;
+        try { await SMSPIN.rpc("revoke_api_key", { p_id: Number(b.dataset.revoke) }); toast("Key revoked", "ok"); draw(); }
+        catch (e) { toast(e.message, "err"); }
+      }));
+    }
+
+    if (head) head.addEventListener("click", async () => {
+      const isRegen = !!activeId;
+      if (isRegen) {
+        const ok = await UI.confirm({
+          title: "Regenerate API key",
+          message: "Your current key stops working the moment a new one is created.",
+          tone: "warn",
+          actions: [{ id: "cancel", label: "Cancel", variant: "ghost" },
+                    { id: "ok", label: "Regenerate", variant: "primary" }],
+        });
+        if (ok !== "ok") return;
+      }
+      head.disabled = true;
+      try {
+        const r = isRegen
+          ? await SMSPIN.rpc("regenerate_api_key", { p_name: "key-" + Date.now().toString(36) })
+          : await SMSPIN.rpc("create_api_key", { p_name: "key-" + Date.now().toString(36) });
+        await navigator.clipboard?.writeText(r.secret).catch(() => {});
+        await UI.reveal({
+          title: "Your new API key",
+          note: "Copy it now — it is shown only once and cannot be recovered later.",
+          value: r.secret,
+        });
+        draw();
+      } catch (e) { toast(e.message, "err"); head.disabled = false; }
+    });
+
+    // Base URL + example use this deployment's own origin, not the upstream host.
+    const base = location.origin + "/api/v1";
+    const ep = document.getElementById("ep");
+    const curl = document.getElementById("curl");
+    if (ep) ep.value = base;
+    if (curl) curl.value =
+      'curl ' + base + '/catalog -H "x-api-key: sk_live_..."\n' +
+      'curl ' + base + '/order -H "x-api-key: sk_live_..." -d "service=whatsapp&country=gb"';
+
+    await draw();
+  }
+
+  function pickerIco(el, icon) {
+    if (!el) return;
+    if (!icon) { el.innerHTML = ""; return; }
+    if (/^(https?:|data:|\/)/.test(icon)) el.innerHTML = '<img src="' + esc(icon) + '" alt="" onerror="this.remove()">';
+    else el.textContent = icon;
+  }
+
+  async function renderBuy() {
+    const store = window.SMSPIN.store && SMSPIN.store();
+    let cat;
+    if (store) {
+      const b = await SMSPIN.rpc("business_public", { p_slug: store });
+      cat = (b && b.catalog || []).map(c => ({
+        country: c.country, country_name: c.country_name, flag: c.flag,
+        service: c.service, service_name: c.service_name, service_icon: c.service_icon || c.icon,
+        price: c.price_ngn, stock: c.stock,
+      }));
+    } else {
+      cat = await SMSPIN.rpc("browse_catalog", {});
+    }
+    const btn = document.getElementById("buyBtn");
+    const svcBtn = document.getElementById("svcPick"), ctryBtn = document.getElementById("ctryPick");
+    if (!cat || !cat.length) {
+      if (btn) { btn.disabled = true; btn.textContent = "Catalog unavailable"; }
+      const t = document.getElementById("svcPickTxt"); if (t) t.textContent = "Unavailable";
+      const t2 = document.getElementById("ctryPickTxt"); if (t2) t2.textContent = "Unavailable";
+      return;
+    }
+
+    const countries = [], services = [];
+    const seenC = {}, seenS = {}, codeToService = {};
+    cat.forEach(c => {
+      if (!seenC[c.country]) { seenC[c.country] = 1; countries.push({ value: c.country, label: c.country_name, icon: c.flag }); }
+      // Map every raw service code onto its canonical (display) service so a
+      // deep link like ?service=wa still selects WhatsApp even when the picker
+      // de-duplicates aliases (wa/whatsapp, tg/telegram, ...).
+      const key = (c.service_name || c.service).toLowerCase();
+      codeToService[c.service] = key;
+      if (!seenS[key]) { seenS[key] = { value: key, label: c.service_name, icon: c.service_icon }; }
+      else if (!seenS[key].icon && c.service_icon) seenS[key].icon = c.service_icon;
+    });
+    services.push(...Object.values(seenS));
+    countries.sort((a, b) => a.label.localeCompare(b.label));
+    services.sort((a, b) => a.label.localeCompare(b.label));
+
+    // Smart defaults: honour ?country/?service deep links (resolving service
+    // aliases), else fall back to the last country this user bought in, else
+    // their geo country, else the first in the list.
+    const params = new URLSearchParams(location.search);
+    const wantSvc = params.get("service"), wantCtry = params.get("country");
+    const resolveSvc = v => {
+      if (!v) return null;
+      const lv = v.toLowerCase();
+      if (services.some(s => s.value === lv)) return lv;
+      return codeToService[v] || null;
+    };
+    let defCountry = (wantCtry && countries.some(c => c.value === wantCtry)) ? wantCtry : null;
+    let last = {};
+    try { last = JSON.parse(localStorage.getItem("smspin_last:buy") || "{}"); } catch (e) {}
+    if (!defCountry && last.country && countries.some(c => c.value === last.country)) defCountry = last.country;
+    const geoC = (GEO.country || "").toLowerCase();
+    if (!defCountry && geoC && countries.some(c => c.value === geoC)) defCountry = geoC;
+    const country = defCountry || (countries[0] && countries[0].value);
+    // Default service: prefer a mainstream messenger/OTP service the country
+    // actually stocks (WhatsApp first), so the first thing a buyer sees is the
+    // obvious pick rather than an alphabetical accident.
+    const MAINSTREAM = ["whatsapp", "telegram", "google", "facebook", "instagram", "tiktok", "twitter / x", "x", "discord", "uber"];
+    const svcReach = {};
+    cat.forEach(c => { const k = codeToService[c.service]; if (k) svcReach[k] = (svcReach[k] || 0) + 1; });
+    const inCountry = new Set(cat.filter(c => c.country === country).map(c => codeToService[c.service]));
+    const defSvc = MAINSTREAM.find(v => inCountry.has(v))
+      || services.map(s => s.value).filter(v => inCountry.has(v)).sort((a, b) => (svcReach[b] || 0) - (svcReach[a] || 0))[0];
+    const state = {
+      country,
+      service: resolveSvc(wantSvc) || resolveSvc(last.service) || defSvc || (services[0] && services[0].value),
+    };
+
+    function paintService() {
+      const s = services.find(x => x.value === state.service);
+      const t = document.getElementById("svcPickTxt");
+      if (t) t.textContent = s ? s.label : "Choose a service";
+      pickerIco(document.getElementById("svcPickIco"), s && s.icon);
+    }
+    function paintCountry() {
+      const c = countries.find(x => x.value === state.country);
+      const t = document.getElementById("ctryPickTxt");
+      if (t) t.textContent = c ? c.label : "Choose a country";
+      pickerIco(document.getElementById("ctryPickIco"), c && c.icon);
+    }
+    function remember() {
+      try { localStorage.setItem("smspin_last:buy", JSON.stringify({ country: state.country, service: state.service })); } catch (e) {}
+    }
+
+    async function updatePrice() {
+      if (!btn) return;
+      const row = cat.find(c => c.country === state.country && (c.service === state.service || codeToService[c.service] === state.service))
+               || cat.find(c => c.country === state.country);
+      if (!row) { btn.textContent = "Unavailable"; btn.disabled = true; return; }
+      btn.disabled = false;
+      const ngn = Number(row.price);
+      let label = money(ngn, "NGN");
+      if (GEO.currency && GEO.currency !== "NGN") {
+        try {
+          const r = await fetch("/api/fx?to=" + GEO.currency + "&amount=" + ngn);
+          if (r.ok) { const d = await r.json(); label += " (\u2248 " + d.formatted + ")"; }
+        } catch (e) {}
+      }
+      btn.textContent = "Buy number \u00b7 " + label;
+    }
+
+    if (svcBtn) svcBtn.addEventListener("click", async () => {
+      const v = await UI.select({ title: "Choose a service", items: services, value: state.service,
+        searchPlaceholder: "Search services\u2026", tone: "info" });
+      if (v) { state.service = v; remember(); paintService(); updatePrice(); }
+    });
+    if (ctryBtn) ctryBtn.addEventListener("click", async () => {
+      const v = await UI.select({ title: "Choose a country", items: countries, value: state.country,
+        searchPlaceholder: "Search countries\u2026", tone: "info" });
+      if (v) { state.country = v; remember(); paintCountry(); updatePrice(); }
+    });
+
+    paintService(); paintCountry();
+    await updatePrice();
+
+    if (btn) btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      remember();
+      try {
+        const store = window.SMSPIN.store && SMSPIN.store();
+        const res = await SMSPIN.functions("purchase", { country: state.country, service: state.service, store: store || undefined });
+        const r = (res && res.order) || {};
+        toast("Number " + (r.phone_number || "") + " reserved", "ok");
+        setTimeout(() => location.href = "/dashboard/sms/", 900);
+      } catch (e) { toast(e.message, "err"); updatePrice(); }
+    });
+
+    const pop = document.getElementById("buyPopular");
+    if (pop) {
+      const top = cat.slice().sort((a, b) => b.stock - a.stock).slice(0, 6);
+      pop.innerHTML = top.map(c => '<div class="num-item">' +
+        '<span class="flag ico-flag">' + (c.service_icon && /^(https?:|data:|\/)/.test(c.service_icon)
+          ? '<img src="' + esc(c.service_icon) + '" alt="" onerror="this.remove()">' : esc(c.service_icon || c.flag || "")) + "</span>" +
+        '<div class="meta"><b>' + esc(c.service_name) + "</b><span>" + esc(c.flag || "") + " " + esc(c.country_name) +
+        " \u00b7 " + Number(c.stock).toLocaleString() + " in stock</span></div>" +
+        '<button class="btn btn-secondary" type="button" data-c="' + esc(c.country) + '" data-s="' + esc(c.service) + '">' +
+        money(c.price, "NGN") + "</button></div>").join("");
+      $$("[data-c]", pop).forEach(b => b.addEventListener("click", () => {
+        state.country = b.dataset.c;
+        state.service = resolveSvc(b.dataset.s) || state.service;
+        remember(); paintService(); paintCountry(); updatePrice();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }));
+    }
+  }
+
+  async function renderSupport() {
+    const btn = document.querySelector(".panel-b .btn-primary");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      const sub = document.getElementById("s1").value.trim() || "Support request";
+      const ref = document.getElementById("s2").value.trim();
+      const msg = document.getElementById("s3").value.trim();
+      if (!msg) { toast("Please enter a message", "err"); return; }
+      btn.disabled = true;
+      try {
+        await SMSPIN.rpc("create_ticket", { p_subject: sub, p_message: msg, p_order_ref: ref || null });
+        toast("Ticket created. We will be in touch.", "ok");
+        document.getElementById("s3").value = "";
+      } catch (e) { toast(e.message, "err"); }
+      finally { btn.disabled = false; }
+    });
+  }
+
+  async function renderInbox() {
+    const orders = await SMSPIN.rpc("my_orders", { p_limit: 1 });
+    const host = document.querySelector(".panel .panel-b");
+    if (!orders || !orders.length) {
+      if (host) host.innerHTML = '<p class="muted sms-empty">No active number yet. Buy one to start receiving SMS.</p>';
+      return;
+    }
+    const order = orders[0];
+    const msgs = await SMSPIN.rpc("order_messages", { p_order_id: order.id });
+    if (!host) return;
+    host.innerHTML =
+      '<div class="sms-timer" data-exp="' + esc(order.expires_at || "") + '">' +
+        '<div class="sms-timer-top"><span class="sms-timer-label">Number active</span>' +
+          '<span class="mono" id="smsTimerNum">' + esc(order.phone_number || "") + "</span>" +
+          '<span class="sms-timer-left" id="smsTimerLeft">\u2014</span></div>' +
+        '<div class="sms-bar"><span id="smsBarFill" style="width:100%"></span></div>' +
+      "</div>" +
+      '<div class="sms-list">' +
+        (msgs && msgs.length
+          ? msgs.map(smsRow).join("")
+          : '<p class="muted sms-empty">No messages yet. Codes usually arrive within 2 minutes.</p>') +
+      "</div>";
+    startExpiryCountdown(order.created_at, order.expires_at);
+  }
+
+  // Gamified countdown: the bar drains as the number approaches expiry.
+  function startExpiryCountdown(createdAt, expiresAt) {
+    const fill = document.getElementById("smsBarFill");
+    const left = document.getElementById("smsTimerLeft");
+    if (!fill || !left) return;
+    const end = expiresAt ? new Date(expiresAt).getTime() : 0;
+    const start = createdAt ? new Date(createdAt).getTime() : 0;
+    if (!end) { left.textContent = "No expiry"; fill.style.width = "100%"; return; }
+    const total = Math.max(1, end - (start || Date.now()));
+    clearInterval(window.__smsTimer);
+    const tick = () => {
+      const now = Date.now();
+      let ms = end - now;
+      if (ms <= 0) {
+        fill.style.width = "0%"; fill.classList.add("expired");
+        left.textContent = "Expired";
+        clearInterval(window.__smsTimer);
+        return;
+      }
+      const frac = Math.min(1, Math.max(0, ms / total));
+      fill.style.width = (frac * 100).toFixed(1) + "%";
+      fill.classList.toggle("warn", frac < .25);
+      const s = Math.floor(ms / 1000);
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+      left.textContent = (h ? h + "h " : "") + m + "m " + String(sec).padStart(2, "0") + "s left";
+    };
+    tick();
+    window.__smsTimer = setInterval(tick, 1000);
+  }
+
+  const RENDER = {
+    overview: renderOverview, numbers: renderNumbers, orders: renderOrders,
+    wallet: renderWallet, transactions: renderTransactions, referrals: renderReferrals,
+    profile: renderProfile, "api-keys": renderApiKeys, buy: renderBuy,
+    support: renderSupport, sms: renderInbox, settings: renderSettings,
+  };
+
+  // Wallet funding goes through the server-side `funding` edge function:
+  // the browser never calls Supabase RPCs or sees KoraPay keys directly.
+  function wireTopup() {
+    const btn = document.getElementById("fundBtn");
+    const sheet = document.getElementById("fundSheet");
+    if (!btn || !sheet) return;
+
+    // Build the funding form (quick amounts, methods, live summary).
+    drawFunding(WALLET || {}, (WALLET && WALLET.currency) || "NGN");
+
+    // Slide-up "Add funds" sheet — opened from the balance-card "+" (and the card itself).
+    let lastFocus = null;
+    const open = () => {
+      lastFocus = document.activeElement;
+      sheet.classList.add("open");
+      sheet.setAttribute("aria-hidden", "false");
+      document.body.classList.add("sheet-lock");
+      const amt = document.getElementById("amt"); if (amt) amt.focus();
+    };
+    const close = () => {
+      sheet.classList.remove("open");
+      sheet.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("sheet-lock");
+      if (lastFocus && lastFocus.focus) lastFocus.focus();
+    };
+    const fab = document.getElementById("ovAddFunds");
+    const card = fab && fab.closest(".card");
+    if (fab) fab.addEventListener("click", e => { e.stopPropagation(); open(); });
+    if (card) { card.classList.add("card-link"); card.setAttribute("role", "button"); card.tabIndex = 0;
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } }); }
+    $$("[data-open-funds], #addFundsBtn").forEach(b => b.addEventListener("click", open));
+    sheet.addEventListener("click", e => { if (e.target === sheet) close(); });
+    $$("[data-close]", sheet).forEach(b => b.addEventListener("click", close));
+    document.addEventListener("keydown", e => { if (e.key === "Escape" && sheet.classList.contains("open")) close(); });
+
+    btn.addEventListener("click", async () => {
+      const amt = Number((document.getElementById("amt") || {}).value || 0);
+      if (!(amt > 0)) { toast("Enter an amount", "err"); return; }
+      btn.disabled = true;
+      btn.textContent = "Redirecting to checkout…";
+      try {
+        const sess = SMSPIN.getSession();
+        const res = await fetch("/api/payments/initialize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + (sess && sess.access_token || "") },
+          body: JSON.stringify({ amount: amt, country: (GEO && GEO.country) || undefined, currency: (GEO && GEO.currency) || undefined }),
+        });
+        const d = await res.json();
+        if (!res.ok || !d.checkout_url) throw new Error((d && d.error) || "Could not start payment");
+        location.href = d.checkout_url;
+      } catch (e) {
+        toast(e.message, "err");
+        btn.disabled = false;
+        updateFundSummary((WALLET && WALLET.currency) || "NGN");
+      }
+    });
+  }
+
+  // On return from checkout (?ref=...), verify server-side and credit the wallet.
+  async function settlePayment() {
+    const ref = new URLSearchParams(location.search).get("ref");
+    if (!ref) return;
+    try {
+      const d = await SMSPIN.functions("funding", { action: "verify", reference: ref });
+      if (d && d.verified) { toast("Payment confirmed. Wallet credited.", "ok"); await renderWallet(); }
+      else toast("Payment " + ((d && d.status) || "pending") + "…", "err");
+    } catch (e) { toast("Could not verify payment", "err"); }
+    history.replaceState({}, "", location.pathname);
+  }
+
+  function wireSettings() {
+    if (page !== "settings") return;
+    const btn = document.getElementById("atSave");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      const on = !!document.getElementById("atOn").checked;
+      const am = Number((document.getElementById("atAmount") || {}).value || 0);
+      const th = Number((document.getElementById("atThreshold") || {}).value || 0);
+      btn.disabled = true;
+      try {
+        await SMSPIN.rpc("set_auto_topup", { p_enabled: on, p_amount: am, p_threshold: th });
+        toast("Auto top-up saved", "ok");
+        await renderSettings();
+      } catch (e) { toast(e.message, "err"); }
+      finally { btn.disabled = false; }
+    });
+  }
+
+
+  function wireProfileSave() {
+    if (page !== "profile") return;
+    const g = id => (document.getElementById(id) || {}).value || "";
+
+    const save = document.getElementById("pfSave");
+    if (save) save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        await SMSPIN.rpc("update_profile", { p_full_name: g("fn"), p_phone: g("ph"), p_country: g("cy") });
+        toast("Profile saved", "ok");
+        await renderProfile();
+      } catch (e) { toast(e.message, "err"); }
+      finally { save.disabled = false; }
+    });
+
+    const pw = document.getElementById("pw");
+    const bar = document.getElementById("pfStrengthBar");
+    if (pw && bar) pw.addEventListener("input", () => {
+      const v = pw.value; let score = 0;
+      if (v.length >= 8) score++; if (/[A-Z]/.test(v)) score++;
+      if (/[0-9]/.test(v)) score++; if (/[^A-Za-z0-9]/.test(v)) score++;
+      const colors = ["#EF4444", "#F59E0B", "#0EA5E9", "#10B981"];
+      bar.style.width = (score * 25) + "%";
+      bar.style.background = colors[Math.max(0, score - 1)] || "transparent";
+    });
+
+    const pwBtn = document.getElementById("pfPw");
+    if (pwBtn) pwBtn.addEventListener("click", async () => {
+      const p1 = g("pw"), p2 = g("pw2");
+      if (p1.length < 8) { toast("Password must be at least 8 characters", "err"); return; }
+      if (p1 !== p2) { toast("Passwords do not match", "err"); return; }
+      pwBtn.disabled = true;
+      try {
+        await SMSPIN.auth.updatePassword(p1);
+        toast("Password updated", "ok");
+        const a = document.getElementById("pw"), b = document.getElementById("pw2");
+        if (a) a.value = ""; if (b) b.value = "";
+        if (bar) bar.style.width = "0%";
+      } catch (e) { toast(e.message, "err"); }
+      finally { pwBtn.disabled = false; }
+    });
+  }
+
+  // Lightweight page preloader so slow RPCs never show an empty shell.
+  function showLoader(msg) {
+    if (document.getElementById("dashLoader")) return;
+    const el = document.createElement("div");
+    el.id = "dashLoader";
+    el.className = "dash-loader";
+    el.innerHTML = '<span class="dl-spin" aria-hidden="true"></span><span class="dl-txt">' + esc(msg || "Loading\u2026") + "</span>";
+    document.body.appendChild(el);
+  }
+  function hideLoader() {
+    const el = document.getElementById("dashLoader");
+    if (el) { el.classList.add("out"); setTimeout(() => el.remove(), 220); }
+  }
+
+  document.addEventListener("DOMContentLoaded", async () => {
+    if (!(await guard())) return;
+    await loadSite();
+    wireSidePanel();
+    wireCardLinks();
+    fillSideBalance();
+    fillSideNumbers();
+    fillSideOrders();
+    await loadGeo();
+    const fn = RENDER[page];
+    if (fn) {
+      showLoader(page === "buy" ? "Loading catalog\u2026" : "Loading\u2026");
+      try { await fn(); } catch (e) { console.warn("render " + page + ":", e.message); }
+      finally { hideLoader(); }
+    }
+    fitStatValues();
+    let fitT;
+    window.addEventListener("resize", () => { clearTimeout(fitT); fitT = setTimeout(fitStatValues, 150); });
+    wireTopup();
+    wireSettings();
+    wireProfileSave();
+    await settlePayment();
+    const out = document.querySelector('a[href="/login"]');
+    if (out) out.addEventListener("click", async (e) => { e.preventDefault(); await SMSPIN.auth.signOut(); location.href = "/login/"; });
+  });
+})();

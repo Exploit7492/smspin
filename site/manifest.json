@@ -1,0 +1,14 @@
+{
+  "name": "SMSPin — Online SMS Verification",
+  "short_name": "SMSPin",
+  "description": "Receive SMS verification codes from 10,000+ apps across 210+ countries. Cloud-based numbers, pay-per-use.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#F43F4E",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/favicon.ico", "sizes": "48x48", "type": "image/x-icon" }
+  ]
+}

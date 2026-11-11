@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — SMSPin</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/_next/static/css/da1ef2f87b5d85aa.css">
+<link rel="stylesheet" href="/_next/static/css/799dbddceaca5ff3.css">
+<link rel="stylesheet" href="/_next/static/css/99187c56f9c480d0.css">
+<link rel="stylesheet" href="/dashboard/dashboard.css">
+<style>
+.auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--surface);padding:24px 16px}
+.auth-card{width:100%;max-width:420px;background:var(--white);border:1px solid var(--border);border-radius:var(--radius-xl);box-shadow:var(--shadow-lg);padding:32px}
+.auth-card .logo{display:inline-flex;align-items:center;gap:10px;font-weight:800;font-size:20px;text-decoration:none;color:var(--text-primary);margin-bottom:6px}
+.auth-card h1{font-size:22px;font-weight:800;margin:14px 0 4px;letter-spacing:-.02em}
+.auth-card p.sub{color:var(--text-secondary);font-size:14px;margin:0 0 22px}
+.auth-msg{display:none;padding:10px 12px;border-radius:var(--radius-md);font-size:14px;margin-bottom:16px}
+.auth-msg.show{display:block}
+.auth-msg.err{background:var(--red-light);color:var(--red)}
+.auth-msg.ok{background:var(--emerald-light);color:var(--emerald)}
+.auth-foot{text-align:center;font-size:14px;color:var(--text-secondary);margin-top:18px}
+.auth-foot a{color:var(--accent-dark);font-weight:600;text-decoration:none}
+.btn-full{width:100%;justify-content:center}
+.row-between{display:flex;align-items:center;justify-content:space-between;margin:-6px 0 16px}
+.row-between a{font-size:13px;color:var(--accent-dark);text-decoration:none;font-weight:600}
+</style>
+<script>(function(){try{var d=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.setAttribute("data-theme",d?"dark":"light");}catch(e){}})();</script><link rel="stylesheet" href="/theme.css"><script defer src="/theme.js"></script></head>
+<body>
+<div class="auth-wrap"><div class="auth-card">
+  <a class="logo" aria-label="SMSPin home" href="/"><span aria-hidden="true" style="width:34px;height:34px;border-radius:9px;background:#E11D2E;box-shadow:0 6px 20px rgba(225,29,46,.40);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5C4 3.9 4.9 3 6 3H18C19.1 3 20 3.9 20 5V14C20 15.1 19.1 16 18 16H13L9.5 19.5C9 20 8 19.6 8 18.9V16H6C4.9 16 4 15.1 4 14V5Z" fill="#FFFFFF"></path><rect x="7.5" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect><rect x="10.8" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect><rect x="14.1" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect></svg></span><span>SMS<span class="logo-word-pin">Pin</span></span></a>
+  <h1>Welcome back</h1>
+  <p class="sub">Sign in to your account.</p>
+  <div id="msg" class="auth-msg"></div>
+  <form id="f">
+    <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+    <div class="field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required></div>
+    <div class="row-between"><span></span><a href="/forgot-password/">Forgot password?</a></div>
+    <button class="btn btn-primary btn-lg btn-full" type="submit">Sign in</button>
+  </form>
+  <div class="auth-foot">New here? <a href="/register/">Create an account</a></div>
+</div></div>
+<script src="/dashboard/config.js"></script>
+<script src="/dashboard/api.js"></script>
+<script>
+const msg = document.getElementById('msg');
+function show(t, cls){ msg.textContent=t; msg.className='auth-msg show '+cls; }
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const btn = e.target.querySelector('button'); btn.disabled = true;
+  try {
+    await SMSPIN.auth.signIn(email, password);
+    show('Signed in. Redirecting...', 'ok');
+    location.href = '/dashboard/';
+  } catch (err) {
+    show(err.message || 'Sign in failed', 'err');
+  } finally { btn.disabled = false; }
+});
+</script>
+
+<script src="/auth-brand.js"></script>
+
+</body>
+</html>

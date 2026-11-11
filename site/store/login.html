@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — SMSPin</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/theme.css">
+<link rel="stylesheet" href="/store/auth.css">
+<script>(function(){try{var d=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.setAttribute("data-theme",d?"dark":"light");}catch(e){}})();</script>
+<script defer src="/theme.js"></script>
+</head>
+<body>
+<header class="ta-top">
+  <a class="ta-brand" href="#" id="taHome">
+    <span class="ta-logo" data-tenant-name aria-hidden="true">S</span>
+    <span data-tenant-name>SMSPin</span>
+  </a>
+  <span class="ta-spacer"></span>
+  <a class="ta-link" id="taBack">← Store</a>
+</header>
+<main class="ta-wrap">
+  <div class="ta-card">
+    <span class="ta-badge">Secure sign in</span>
+    <h1>Welcome back</h1>
+    <p class="sub">Sign in to your <span data-tenant-name>SMSPin</span> account.</p>
+    <div id="msg" class="ta-msg"></div>
+    <form id="f" novalidate>
+      <div class="ta-field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+      <div class="ta-field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required></div>
+      <div class="ta-row"><span></span><a href="/forgot-password/" id="taForgot">Forgot password?</a></div>
+      <button class="ta-btn" type="submit">Sign in</button>
+    </form>
+    <div class="ta-foot">New here? <a id="taReg" href="#">Create an account</a></div>
+    <div class="ta-cross">Each store runs its own account system — the same email can sign in on every store independently.</div>
+  </div>
+</main>
+<script src="/dashboard/config.js"></script>
+<script src="/dashboard/api.js"></script>
+<script src="/store/auth.js"></script>
+<script>
+(function () {
+  var S = TENANT_AUTH.slug();
+  var msg = document.getElementById('msg');
+  var base = S ? ("/store/" + S) : "/dashboard";
+  document.getElementById('taHome').href = base + "/";
+  document.getElementById('taBack').href = base + "/";
+  document.getElementById('taReg').href = base + "/register/";
+  TENANT_AUTH.boot(function () {
+    if (S && SMSPIN.tenant.isAuthed(S)) location.href = "/store/" + S + "/account/";
+    else if (!S && SMSPIN.auth.isAuthed()) location.href = "/dashboard/";
+  });
+  document.getElementById('f').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var email = document.getElementById('email').value.trim();
+    var password = document.getElementById('password').value;
+    var btn = e.target.querySelector('button'); btn.disabled = true;
+    try {
+      if (S) {
+        await SMSPIN.tenant.login(email, password, S);
+        TENANT_AUTH.show(msg, 'Signed in. Redirecting…', 'ok');
+        location.href = "/store/" + S + "/account/";
+      } else {
+        await SMSPIN.auth.signIn(email, password);
+        TENANT_AUTH.show(msg, 'Signed in. Redirecting…', 'ok');
+        location.href = "/dashboard/";
+      }
+    } catch (err) {
+      TENANT_AUTH.show(msg, err.message || 'Sign in failed', 'err');
+    } finally { btn.disabled = false; }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+project_id = "sdoykujqzpppwpropsdo"
+
+[functions.funding]
+verify_jwt = true
+
+[functions.purchase]
+verify_jwt = true

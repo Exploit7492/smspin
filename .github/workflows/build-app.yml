@@ -1,0 +1,142 @@
+name: Build tenant app
+
+# Per-request branded Android build. Trigger from the API / dashboard wizard:
+#   POST /repos/Exploit7492/smspin/actions/workflows/build-app.yml/dispatches
+# with {"ref":"main","inputs":{ "slug":"nova-numbers", "name":"Nova Numbers", ... }}
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: "Tenant store slug (deep link + API path)"
+        required: true
+        default: "smspin"
+      name:
+        description: "Business / app display name"
+        required: true
+        default: "SMSPin"
+      primary:
+        description: "Primary brand colour (#RRGGBB)"
+        required: false
+        default: "#E11D2E"
+      secondary:
+        description: "Secondary brand colour (#RRGGBB)"
+        required: false
+        default: "#0EA5E9"
+      api_base:
+        description: "API / site base URL"
+        required: false
+        default: "https://smspin.io"
+      country:
+        description: "Default country (ISO-2)"
+        required: false
+        default: "NG"
+      currency:
+        description: "Default currency"
+        required: false
+        default: "NGN"
+      markup:
+        description: "Markup percent"
+        required: false
+        default: "0"
+      tagline:
+        description: "Splash tagline"
+        required: false
+        default: "Virtual numbers, instantly"
+      support_email:
+        description: "Support email"
+        required: false
+        default: "support@smspin.io"
+      logo_url:
+        description: "Uploaded logo URL (blank = auto-generate from initials)"
+        required: false
+        default: ""
+      notify_email:
+        description: "Email the download link to this address"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      TENANT_SLUG: ${{ inputs.slug }}
+      TENANT_NAME: ${{ inputs.name }}
+      BRAND_PRIMARY: ${{ inputs.primary }}
+      BRAND_SECONDARY: ${{ inputs.secondary }}
+      API_BASE: ${{ inputs.api_base }}
+      COUNTRY: ${{ inputs.country }}
+      CURRENCY: ${{ inputs.currency }}
+      MARKUP: ${{ inputs.markup }}
+      TAGLINE: ${{ inputs.tagline }}
+      SUPPORT_EMAIL: ${{ inputs.support_email }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Install ImageMagick (initials logo)
+        run: sudo apt-get update && sudo apt-get install -y imagemagick fonts-dejavu-core
+
+      - name: Download uploaded logo (if any)
+        if: ${{ inputs.logo_url != '' }}
+        run: |
+          mkdir -p .branding
+          curl -fsSL "${{ inputs.logo_url }}" -o .branding/logo.png
+          echo "LOGO_FILE=.branding/logo.png" >> "$GITHUB_ENV"
+
+      - name: Generate tenant branding
+        run: bash scripts/brand-app.sh
+
+      - name: Build release APK
+        run: |
+          gradle --no-daemon assembleRelease \
+            -PappId="io.smspin.${TENANT_SLUG//[^a-z0-9]/}" \
+            -PappName="${TENANT_NAME}" \
+            -PversionCode="${GITHUB_RUN_NUMBER}" \
+            -PversionName="1.0.${GITHUB_RUN_NUMBER}" \
+            -PbrandJson="$(tr -d '\n' < brand.json)"
+
+      - name: Rename APK
+        run: |
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          cp "$APK" "${TENANT_SLUG}-app.apk"
+          echo "APK_NAME=${TENANT_SLUG}-app.apk" >> "$GITHUB_ENV"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.slug }}-apk
+          path: ${{ env.APK_NAME }}
+          retention-days: 30
+
+      - name: Publish GitHub Release (download link)
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag: ${{ inputs.slug }}-v${{ github.run_number }}
+          name: ${{ inputs.name }} app v1.0.${{ github.run_number }}
+          body: |
+            Branded build for **${{ inputs.name }}** (`${{ inputs.slug }}`).
+            Primary `${{ inputs.primary }}` · API `${{ inputs.api_base }}`.
+          files: ${{ env.APK_NAME }}
+
+      - name: Email download link to the tenant
+        if: ${{ inputs.notify_email != '' }}
+        env:
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          TO: ${{ inputs.notify_email }}
+          LINK: ${{ steps.release.outputs.url }}
+          TENANT: ${{ inputs.name }}
+        run: python3 scripts/send-apk-email.py

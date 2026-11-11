@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name is injected per tenant by Gradle (resValue). -->
+    <string name="app_name_fallback">SMSPin</string>
+</resources>

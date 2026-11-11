@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create account — SMSPin</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/theme.css">
+<link rel="stylesheet" href="/store/auth.css">
+<script>(function(){try{var d=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.setAttribute("data-theme",d?"dark":"light");}catch(e){}})();</script>
+<script defer src="/theme.js"></script>
+</head>
+<body>
+<header class="ta-top">
+  <a class="ta-brand" href="#" id="taHome">
+    <span class="ta-logo" data-tenant-name aria-hidden="true">S</span>
+    <span data-tenant-name>SMSPin</span>
+  </a>
+  <span class="ta-spacer"></span>
+  <a class="ta-link" id="taBack">← Store</a>
+</header>
+<main class="ta-wrap">
+  <div class="ta-card">
+    <span class="ta-badge">Create account</span>
+    <h1>Join <span data-tenant-name>SMSPin</span></h1>
+    <p class="sub">Create your account to buy numbers and receive codes instantly.</p>
+    <div id="msg" class="ta-msg"></div>
+    <form id="f" novalidate>
+      <div class="ta-field"><label for="name">Full name</label><input id="name" type="text" autocomplete="name" required></div>
+      <div class="ta-field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+      <div class="ta-field"><label for="password">Password</label><input id="password" type="password" autocomplete="new-password" minlength="8" required></div>
+      <div class="ta-field"><label for="password2">Confirm password</label><input id="password2" type="password" autocomplete="new-password" minlength="8" required></div>
+      <button class="ta-btn" type="submit">Create account</button>
+    </form>
+    <div class="ta-foot">Already have an account? <a id="taLogin" href="#">Sign in</a></div>
+    <div class="ta-cross">This account lives on <span data-tenant-name>SMSPin</span> only. You can use the same email on any other store.</div>
+  </div>
+</main>
+<script src="/dashboard/config.js"></script>
+<script src="/dashboard/api.js"></script>
+<script src="/store/auth.js"></script>
+<script>
+(function () {
+  var S = TENANT_AUTH.slug();
+  var msg = document.getElementById('msg');
+  var base = S ? ("/store/" + S) : "/dashboard";
+  // carry any preselected service/country into the account page
+  var q = new URLSearchParams(location.search);
+  var carry = "";
+  if (q.get("service")) carry += "?service=" + encodeURIComponent(q.get("service")) + "&country=" + encodeURIComponent(q.get("country") || "");
+  document.getElementById('taHome').href = base + "/";
+  document.getElementById('taBack').href = base + "/";
+  document.getElementById('taLogin').href = S ? (base + "/login/") : "/login/";
+  TENANT_AUTH.boot(function () {
+    if (S && SMSPIN.tenant.isAuthed(S)) location.href = "/store/" + S + "/account/" + carry;
+  });
+  document.getElementById('f').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var name = document.getElementById('name').value.trim();
+    var email = document.getElementById('email').value.trim();
+    var p1 = document.getElementById('password').value;
+    var p2 = document.getElementById('password2').value;
+    if (p1 !== p2) { TENANT_AUTH.show(msg, 'Passwords do not match', 'err'); return; }
+    if (p1.length < 8) { TENANT_AUTH.show(msg, 'Use at least 8 characters', 'err'); return; }
+    var btn = e.target.querySelector('button'); btn.disabled = true;
+    try {
+      if (S) {
+        await SMSPIN.tenant.register({ email: email, password: p1, fullName: name, slug: S });
+        await SMSPIN.tenant.login(email, p1, S);
+        TENANT_AUTH.show(msg, 'Account created. Redirecting…', 'ok');
+        location.href = "/store/" + S + "/account/" + carry;
+      } else {
+        var s = await SMSPIN.auth.signUp(email, p1, name);
+        if (s && s.access_token) { TENANT_AUTH.show(msg, 'Account created. Redirecting…', 'ok'); location.href = "/dashboard/"; }
+        else { TENANT_AUTH.show(msg, 'Account created. You can now sign in.', 'ok'); setTimeout(function(){ location.href = "/login/"; }, 1200); }
+      }
+    } catch (err) {
+      TENANT_AUTH.show(msg, err.message || 'Sign up failed', 'err');
+    } finally { btn.disabled = false; }
+  });
+})();
+</script>
+</body>
+</html>

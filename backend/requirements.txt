@@ -1,0 +1,3 @@
+psycopg2-binary>=2.9
+forex-python>=1.9
+wbdata>=1.1

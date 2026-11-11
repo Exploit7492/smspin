@@ -1,0 +1,47 @@
+name: Branding preview
+
+# Fast check of the branding pipeline (no Android build, ~seconds).
+on:
+  workflow_dispatch:
+    inputs:
+      slug: { description: "Tenant slug", required: true, default: "nova-numbers" }
+      name: { description: "Business name", required: true, default: "Nova Numbers" }
+      primary: { description: "Primary colour", required: false, default: "#7C3AED" }
+      logo_url: { description: "Logo URL (blank = initials)", required: false, default: "" }
+  push:
+    paths:
+      - "scripts/brand-app.sh"
+      - ".github/workflows/branding-preview.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ImageMagick
+        run: sudo apt-get update && sudo apt-get install -y imagemagick fonts-dejavu-core
+      - name: Generate branding
+        env:
+          TENANT_SLUG: ${{ inputs.slug || 'nova-numbers' }}
+          TENANT_NAME: ${{ inputs.name || 'Nova Numbers' }}
+          BRAND_PRIMARY: ${{ inputs.primary || '#7C3AED' }}
+        run: |
+          if [ -n "${{ inputs.logo_url }}" ]; then
+            mkdir -p .branding && curl -fsSL "${{ inputs.logo_url }}" -o .branding/logo.png
+            export LOGO_FILE=.branding/logo.png
+          fi
+          bash scripts/brand-app.sh
+      - name: Show results
+        run: |
+          echo "--- brand.json ---"; cat brand.json
+          echo "--- icons ---"; find app/src/main/res/mipmap-* -name 'ic_launcher.png' -exec ls -l {} \;
+      - uses: actions/upload-artifact@v4
+        with:
+          name: branding-preview
+          path: |
+            brand.json
+            app/src/main/res/values/colors.xml
+            app/src/main/res/mipmap-*/ic_launcher.png

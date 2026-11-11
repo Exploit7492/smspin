@@ -1,0 +1,21 @@
+# Build outputs
+app/build/
+.gradle/
+build/
+.branding/
+*.apk
+*.aab
+*.keystore
+*.jks
+local.properties
+
+# Python
+__pycache__/
+*.pyc
+
+# Env / secrets
+.env
+.env.*
+
+# Generated per-build
+brand.json

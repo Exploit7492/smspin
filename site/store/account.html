@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My account — SMSPin</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/theme.css">
+<link rel="stylesheet" href="/store/auth.css">
+<script>(function(){try{var d=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.setAttribute("data-theme",d?"dark":"light");}catch(e){}})();</script>
+<script defer src="/theme.js"></script>
+</head>
+<body>
+<header class="ta-top">
+  <a class="ta-brand" href="#" id="taHome">
+    <span class="ta-logo" data-tenant-name aria-hidden="true">S</span>
+    <span data-tenant-name>SMSPin</span>
+  </a>
+  <span class="ta-spacer"></span>
+  <span class="ta-link" id="taWho"></span>
+  <a class="ta-link" id="taLogout" style="cursor:pointer">Sign out</a>
+</header>
+<main class="ta-wrap" style="align-items:flex-start">
+  <div class="ta-card wide">
+    <div id="msg" class="ta-msg"></div>
+    <div class="ta-grid">
+      <div>
+        <div class="ta-bal">
+          <div class="l">Wallet balance</div>
+          <div class="v" id="bal">₦0.00</div>
+          <div class="w" id="who"></div>
+        </div>
+        <div class="ta-sec">
+          <h2>Fund your wallet</h2>
+          <div class="ta-amt-row" id="amts"></div>
+          <div class="ta-field"><label for="custom">Or enter an amount (₦)</label><input id="custom" type="number" min="100" step="50" placeholder="e.g. 2500"></div>
+          <button class="ta-btn" id="fundBtn">Pay with card / transfer</button>
+          <p class="ta-note">Secured by KoraPay. Your balance is stored on this store and is only spendable here.</p>
+        </div>
+      </div>
+      <div>
+        <div class="ta-sec" style="margin-top:0">
+          <h2>Buy a number</h2>
+          <div class="ta-field">
+            <label for="svc">Service</label>
+            <select id="svc"></select>
+          </div>
+          <div class="ta-field">
+            <label for="ctry">Country</label>
+            <select id="ctry"></select>
+          </div>
+          <div class="ta-item" id="pick" style="margin-bottom:12px">
+            <b id="pickName">Pick a service & country</b>
+            <span id="pickPrice">—</span>
+          </div>
+          <button class="ta-btn" id="buyBtn">Buy number</button>
+        </div>
+        <div class="ta-sec">
+          <h2>Recent orders</h2>
+          <div id="orders" class="ta-note">Loading…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+<script src="/dashboard/config.js"></script>
+<script src="/dashboard/api.js"></script>
+<script src="/store/auth.js"></script>
+<script>
+(function () {
+  var S = TENANT_AUTH.slug();
+  if (!S) { location.href = "/"; return; }
+  var msg = document.getElementById('msg');
+  var base = "/store/" + S;
+  document.getElementById('taHome').href = base + "/";
+  if (!SMSPIN.tenant.isAuthed(S)) { location.href = base + "/login/"; return; }
+
+  var CAT = [];
+  function money(n){ return "₦" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function esc(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
+  function svcIcon(o){
+    var icon = (o && (o.service_icon || o.icon)) || "";
+    if (/^https?:\/\//i.test(icon)) return '<span class="ta-svc-ico"><img src="' + esc(icon) + '" alt="" loading="lazy"></span>';
+    if (icon) return '<span class="ta-svc-ico">' + esc(icon) + "</span>";
+    return '<span class="ta-svc-ico">' + esc(String((o && o.service) || "?").trim().slice(0,1).toUpperCase()) + "</span>";
+  }
+
+  async function loadOrders() {
+    var host = document.getElementById("orders");
+    try {
+      var rows = await SMSPIN.tenant.orders(S, 20);
+      if (!rows || !rows.length) { host.innerHTML = '<span class="ta-note">No orders yet.</span>'; return; }
+      host.innerHTML = '<div class="ta-orders">' + rows.map(function (o) {
+        var st = o.status === "received" ? "ok" : (o.status === "refunded" ? "wait" : "wait");
+        var label = o.status === "received" ? "Received" : (o.status === "refunded" ? "Refunded" : "Waiting");
+        return '<div class="ta-order">' + svcIcon(o) +
+          '<div class="ta-order-main"><b>' + esc(o.service || "Number") + ' · ' + esc((o.flag ? o.flag + " " : "") + (o.country || "")) + '</b>' +
+          '<span class="mono">' + esc(o.phone_number || "") + '</span></div>' +
+          '<span class="ta-badge2 ' + st + '">' + label + '</span></div>';
+      }).join("") + "</div>";
+    } catch (e) { host.innerHTML = '<span class="ta-note">Could not load orders.</span>'; }
+  }
+
+  async function refresh() {
+    try {
+      var me = await SMSPIN.tenant.me(S);
+      document.getElementById('who').textContent = (me.full_name || me.email) + " · " + me.email;
+      document.getElementById('taWho').textContent = me.full_name || me.email;
+    } catch (e) { location.href = base + "/login/"; return; }
+    try { var w = await SMSPIN.tenant.wallet(S); document.getElementById('bal').textContent = money(w.balance); } catch (e) {}
+  }
+
+  // Amount presets (₦). KoraPay expects NGN.
+  [500, 1000, 2500, 5000, 10000].forEach(function (a) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'ta-amt'; b.textContent = "₦" + a.toLocaleString();
+    b.onclick = function () {
+      document.querySelectorAll('.ta-amt').forEach(function (x) { x.classList.remove('on'); });
+      b.classList.add('on'); document.getElementById('custom').value = a;
+    };
+    document.getElementById('amts').appendChild(b);
+  });
+
+  document.getElementById('fundBtn').addEventListener('click', async function () {
+    var amt = Number(document.getElementById('custom').value || 0);
+    if (amt < 100) { TENANT_AUTH.show(msg, 'Enter at least ₦100', 'err'); return; }
+    var btn = this; btn.disabled = true;
+    try {
+      var res = await fetch("/api/payments/initialize", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: amt, tenant_token: SMSPIN.tenant.token(S) })
+      });
+      var d = await res.json();
+      if (!res.ok || !d.checkout_url) throw new Error((d && d.error) || "Could not start payment");
+      TENANT_AUTH.show(msg, 'Redirecting to secure checkout…', 'ok');
+      location.href = d.checkout_url;
+    } catch (e) { TENANT_AUTH.show(msg, e.message, 'err'); btn.disabled = false; }
+  });
+
+  function fill() {
+    var svcSel = document.getElementById('svc'), ctrySel = document.getElementById('ctry');
+    var svcs = {}, ctries = {};
+    CAT.forEach(function (c) { svcs[c.service] = c.service_name || c.service; ctries[c.country] = (c.flag ? c.flag + " " : "") + (c.country_name || c.country); });
+    svcSel.innerHTML = Object.keys(svcs).map(function (k) { return '<option value="' + k + '">' + svcs[k] + '</option>'; }).join("");
+    ctrySel.innerHTML = Object.keys(ctries).map(function (k) { return '<option value="' + k + '">' + ctries[k] + '</option>'; }).join("");
+    updatePick();
+  }
+  function updatePick() {
+    var svc = document.getElementById('svc').value, ctry = document.getElementById('ctry').value;
+    var row = CAT.filter(function (c) { return c.service === svc && c.country === ctry; })[0];
+    document.getElementById('pickName').textContent = row ? (row.service_name || svc) + " · " + (row.country_name || ctry) : 'Not available';
+    document.getElementById('pickPrice').textContent = row ? money(row.price_ngn) + " · " + (row.stock || 0) + " in stock" : "—";
+  }
+
+  document.getElementById('buyBtn').addEventListener('click', async function () {
+    var svc = document.getElementById('svc').value, ctry = document.getElementById('ctry').value;
+    var btn = this; btn.disabled = true;
+    try {
+      var r = await SMSPIN.tenant.buy(S, ctry, svc);
+      TENANT_AUTH.show(msg, 'Number reserved: ' + r.phone_number + ' — waiting for SMS.', 'ok');
+      refresh(); loadOrders();
+    } catch (e) { TENANT_AUTH.show(msg, e.message, 'err'); }
+    finally { btn.disabled = false; }
+  });
+
+  document.getElementById('taLogout').addEventListener('click', async function () {
+    await SMSPIN.tenant.logout(S); location.href = base + "/";
+  });
+
+  TENANT_AUTH.boot(function () {
+    SMSPIN.rpc("business_public", { p_slug: S }).then(function (d) {
+      if (d && d.catalog) { CAT = d.catalog; fill(); }
+      // honour a preselected service/country from the storefront
+      var q = new URLSearchParams(location.search);
+      if (q.get("service")) { var sv = document.getElementById('svc'); if (sv) sv.value = q.get("service"); }
+      if (q.get("country")) { var cv = document.getElementById('ctry'); if (cv) cv.value = q.get("country"); }
+      updatePick();
+    }).catch(function () {});
+    document.getElementById('svc').addEventListener('change', updatePick);
+    document.getElementById('ctry').addEventListener('change', updatePick);
+    refresh();
+    loadOrders();
+  });
+})();
+</script>
+</body>
+</html>
