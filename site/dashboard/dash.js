@@ -130,6 +130,15 @@
     el._t = setTimeout(() => el.remove(), 3500);
   }
 
+  // O6: teaching empty state — every empty page tells the user the next action.
+  function emptyState({ icon, title, body, cta, href }) {
+    return '<div class="empty-state"><span class="empty-ico" aria-hidden="true">' + (icon || "\u25CB") + "</span>" +
+      '<b class="empty-title">' + esc(title) + "</b>" +
+      '<span class="empty-body">' + esc(body) + "</span>" +
+      (cta ? '<a class="btn btn-primary empty-cta" href="' + esc(href || "#") + '">' + esc(cta) + "</a>" : "") +
+      "</div>";
+  }
+
   // Detect visitor region/currency so prices show in the local currency.
   let GEO = { country: null, currency: "NGN", country_name: null };
   async function loadGeo() {
@@ -295,8 +304,89 @@
       const cnt = $("#ovMsgCount"); if (cnt) cnt.textContent = msgs.length ? msgs.length + " recent" : "None yet";
       grid.innerHTML = msgs.length
         ? msgs.map(smsRow).join("")
-        : '<p class="muted sms-empty">No messages yet. Codes land here the moment they arrive.</p>';
+        : emptyState({ icon: "\u2709", title: "No messages yet",
+            body: "Codes land here the moment they arrive. Buy a number and keep this page open.",
+            cta: "Buy a number", href: "/dashboard/buy/" });
     }
+
+    // O2: activation checklist — nudges the user through the first-run steps.
+    await renderOnboarding();
+    // E6: notification centre.
+    await renderNotifications();
+    // O16: what's-new announcement banner + feature tour.
+    await renderWhatsNew();
+  }
+
+  // O16: surface the latest changelog entry once, with a "show me" tour.
+  const WN_LS = "smspin_seen_release";
+  async function renderWhatsNew() {
+    const panel = $("#ovWhatsNew");
+    if (!panel) return;
+    let items = [];
+    try { items = await SMSPIN.rpc("changelog_list", { p_limit: 1 }); } catch (e) { return; }
+    const latest = items && items[0];
+    if (!latest) { panel.hidden = true; return; }
+    let seen = null;
+    try { seen = localStorage.getItem(WN_LS); } catch (e) {}
+    if (seen === latest.version) { panel.hidden = true; return; }
+    panel.hidden = false;
+    $("#ovWnTitle").textContent = latest.title || "What's new";
+    $("#ovWnBody").textContent = latest.body || "";
+    $("#ovWnVer").textContent = latest.version || "";
+    $("#ovWnClose").onclick = () => {
+      try { localStorage.setItem(WN_LS, latest.version); } catch (e) {}
+      panel.hidden = true;
+    };
+    const tour = $("#ovWnTour");
+    if (tour) tour.onclick = () => {
+      try { localStorage.setItem(WN_LS, latest.version); } catch (e) {}
+      panel.hidden = true;
+      if (window.TOUR) TOUR.dashboard(true);
+    };
+  }
+
+  // ---------------------------------------------------------------- O2 onboarding
+  async function renderOnboarding() {
+    const panel = $("#ovOnboarding"), list = $("#ovOnbList");
+    if (!panel || !list) return;
+    let d;
+    try { d = await SMSPIN.rpc("my_onboarding"); } catch (e) { return; }
+    if (!d || !d.items) return;
+    if (d.dismissed || (d.done >= d.total)) { panel.hidden = true; return; }
+    panel.hidden = false;
+    $("#ovOnbProgress").textContent = d.done + " / " + d.total;
+    list.innerHTML = d.items.map(it =>
+      '<a class="onb-item' + (it.done ? " done" : "") + '" href="' + esc(it.href) + '">' +
+        '<span class="onb-check" aria-hidden="true">' + (it.done ? "✓" : "") + "</span>" +
+        '<span class="onb-label">' + esc(it.label) + "</span>" +
+        '<span class="onb-go" aria-hidden="true">' + (it.done ? "" : "→") + "</span></a>").join("");
+    $("#ovOnbDismiss").onclick = async (e) => {
+      e.preventDefault();
+      try { await SMSPIN.rpc("onboarding_mark", { p_key: "__dismissed", p_done: true }); } catch (err) {}
+      panel.hidden = true;
+    };
+  }
+
+  // ---------------------------------------------------------------- E6 notifications
+  async function renderNotifications() {
+    const panel = $("#ovNotifPanel"), list = $("#ovNotifList");
+    if (!panel || !list) return;
+    let d;
+    try { d = await SMSPIN.rpc("my_notifications", { p_limit: 20 }); } catch (e) { return; }
+    if (!d || !d.items || !d.items.length) { panel.hidden = true; return; }
+    panel.hidden = false;
+    list.innerHTML = d.items.map(n =>
+      '<a class="notif-item' + (n.read ? "" : " unread") + '" href="' + esc(n.href || "#") + '">' +
+        '<span class="notif-dot ' + esc(n.kind || "info") + '"></span>' +
+        '<span class="notif-text"><b>' + esc(n.title) + "</b>" +
+        (n.body ? '<span class="notif-sub">' + esc(n.body) + "</span>" : "") + "</span>" +
+        '<span class="notif-time">' + esc(fmtDate(n.created_at)) + "</span></a>").join("");
+    const rb = $("#ovNotifRead");
+    if (rb) rb.onclick = async (e) => {
+      e.preventDefault();
+      try { await SMSPIN.rpc("notification_read", { p_all: true }); } catch (err) {}
+      renderNotifications();
+    };
   }
 
   async function renderNumbers() {
@@ -305,7 +395,9 @@
     if (!host) return;
     const cnt = $("#numCount");
     if (cnt) cnt.textContent = (d || []).length + " number" + ((d || []).length === 1 ? "" : "s");
-    if (!d || !d.length) { host.innerHTML = '<p class="muted sms-empty">No numbers yet. Buy one to get started.</p>'; return; }
+    if (!d || !d.length) { host.innerHTML = emptyState({ icon: "\u260E", title: "No numbers yet",
+      body: "A number is reserved the second you buy it. Pick a service and country to begin.",
+      cta: "Buy your first number", href: "/dashboard/buy/" }); return; }
     host.innerHTML = d.map(numCard).join("");
     wireFlip(host);
   }
@@ -336,7 +428,9 @@
     if (!host) return;
     const b = $(".panel-h .badge");
     if (b) b.textContent = (d || []).length + " total";
-    if (!d || !d.length) { host.innerHTML = '<p class="muted sms-empty">No orders yet.</p>'; return; }
+    if (!d || !d.length) { host.innerHTML = emptyState({ icon: "\u25A4", title: "No orders yet",
+      body: "Your purchases show up here with the number, status and price.",
+      cta: "Start an order", href: "/dashboard/buy/" }); return; }
     host.innerHTML = d.map(orderCard).join("");
     wireFlip(host);
   }
@@ -391,6 +485,40 @@
     drawBars("#walletCtry", d.by_country || [], cur, "country", "flag");
     drawActivity(d.activity || [], cur);
     drawFunding(d, cur);
+    // B3: multi-currency balances + instant conversion.
+    await renderBalances(cur);
+  }
+
+  // B3: per-currency balances with a convert panel.
+  async function renderBalances(cur) {
+    const host = $("#walletBalances");
+    if (!host) return;
+    let b = null;
+    try { b = await SMSPIN.rpc("my_wallet_balances"); } catch (e) { return; }
+    if (!b || !b.balances) return;
+    host.innerHTML = b.balances.map(x =>
+      '<div class="wbal"><span class="wbal-cur">' + esc(x.currency) + "</span>" +
+      '<span class="wbal-amt">' + Number(x.balance || 0).toLocaleString(undefined,
+        { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "</span></div>").join("")
+      || '<p class="muted">No balances yet.</p>';
+    const from = $("#wcFrom"), to = $("#wcTo");
+    const currs = (b.balances || []).map(x => x.currency);
+    if (from) from.innerHTML = currs.map(c => '<option>' + esc(c) + "</option>").join("");
+    if (to) to.innerHTML = ["NGN", "USD", "GBP", "EUR"].map(c => '<option>' + esc(c) + "</option>").join("");
+    if (to && currs.length) to.value = currs.find(c => c !== (from && from.value)) || "USD";
+    const toggle = $("#walletConvertToggle");
+    if (toggle) toggle.onclick = () => { const c = $("#walletConvert"); if (c) c.hidden = !c.hidden; };
+    const go = $("#wcGo");
+    if (go) go.onclick = async () => {
+      go.disabled = true;
+      try {
+        const r = await SMSPIN.rpc("convert_balance", { p_from: from.value, p_to: to.value,
+          p_amount: Number($("#wcAmt").value || 0) });
+        $("#wcNote").textContent = "Converted to " + Number(r.out).toLocaleString() + " " + r.to;
+        renderWallet();
+      } catch (e) { $("#wcNote").textContent = e.message; }
+      finally { go.disabled = false; }
+    };
   }
 
   // 14-day cash-flow column chart (in vs out), built with divs (no chart lib).
@@ -606,6 +734,110 @@
     if (th) th.value = d.auto_topup_threshold || 1000;
     if (am) am.value = d.auto_topup_amount || 5000;
     if (st) { st.textContent = d.auto_topup ? "On" : "Off"; st.className = "badge " + (d.auto_topup ? "ok" : "info"); }
+    await renderGrowthSettings();
+  }
+
+  // I4/I5/B7/L4: coupons, saved payment methods and the product changelog.
+  async function renderGrowthSettings() {
+    const redeem = $("#stRedeem");
+    if (redeem) redeem.onclick = async () => {
+      const code = ($("#stCoupon").value || "").trim();
+      if (!code) return;
+      redeem.disabled = true;
+      try {
+        const r = await SMSPIN.rpc("redeem_coupon", { p_code: code });
+        $("#stRedeemNote").textContent = "Added " + money(r.credited || r.value || 0, SITE.currency);
+        toast("Coupon applied", "ok");
+        if (typeof fillSideBalance === "function") fillSideBalance();
+      } catch (e) { $("#stRedeemNote").textContent = e.message; }
+      finally { redeem.disabled = false; }
+    };
+    const payHost = $("#stPayList");
+    if (payHost) {
+      let m = [];
+      try { m = await SMSPIN.rpc("my_payment_methods"); } catch (e) {}
+      payHost.innerHTML = (m && m.length) ? m.map(p =>
+        '<div class="num-item"><div class="meta"><b>' + esc(p.brand || "Card") + " •••• " + esc(p.last4 || "") +
+        "</b><span>" + esc(p.expiry || "") + " · " + esc(p.method || "card") + "</span></div></div>").join("")
+        : '<p class="muted">No saved methods. Your last successful top-up is remembered here.</p>';
+    }
+    const newsHost = $("#stChangelog");
+    if (newsHost) {
+      let items = [];
+      try { items = await SMSPIN.rpc("changelog_list", { p_limit: 10 }); } catch (e) {}
+      newsHost.innerHTML = (items && items.length) ? items.map(c =>
+        '<div class="num-item"><div class="meta"><b>' + esc(c.title) + "</b><span>" +
+        esc(c.version) + " · " + esc(fmtDate(c.released_at)) + "</span></div></div>").join("")
+        : '<p class="muted">No announcements yet.</p>';
+    }
+    await renderOperator();
+  }
+
+  // O14: operator onboarding wizard — SIM registration, device pairing, revenue.
+  async function renderOperator() {
+    const badge = $("#opStatus");
+    if (!badge) return;
+    const panes = $$(".op-pane");
+    const steps = $$("#opSteps li");
+    const next = $("#opNext"), back = $("#opBack");
+    let cur = 1;
+    function show(n) {
+      cur = Math.max(1, Math.min(3, n));
+      panes.forEach(p => { p.hidden = Number(p.dataset.opPane) !== cur; });
+      steps.forEach(s => {
+        const k = Number(s.dataset.opStep);
+        s.classList.toggle("active", k === cur);
+        s.classList.toggle("done", k < cur);
+      });
+      if (back) back.hidden = cur === 1;
+      if (next) next.textContent = cur === 3 ? "Submit application" : "Continue";
+    }
+    function lock() {
+      ["opMsisdn", "opCountry", "opDevice", "opCarrier"].forEach(id => {
+        const el = document.getElementById(id); if (el) el.disabled = true;
+      });
+      if (next) next.disabled = true;
+      if (back) back.hidden = true;
+      $$("#opSteps li").forEach(s => s.classList.add("done"));
+    }
+
+    let o = null;
+    try { o = await SMSPIN.rpc("my_operator_status"); } catch (e) { return; }
+    if (o && o.id) {
+      badge.textContent = o.status;
+      badge.className = "badge " + (o.status === "active" ? "ok" : o.status === "rejected" ? "err" : "wait");
+      $("#opMsisdn").value = o.msisdn || ""; $("#opCountry").value = o.country || "";
+      $("#opDevice").value = o.device || ""; $("#opCarrier").value = o.carrier || "";
+      lock();
+      $("#opNote").textContent = "Revenue share " + (o.revenue_share || 60) + "%. Applied " + fmtDate(o.created_at) + ".";
+      if (o.status === "active" && o.pairing_code) {
+        const p = $("#opPair"); if (p) { p.hidden = false; const c = $("#opPairCode"); if (c) c.textContent = o.pairing_code; }
+      }
+      const econ = $("#opEcon");
+      if (econ) econ.innerHTML =
+        '<div class="wbal"><span class="wbal-cur">Revenue share</span><span class="wbal-amt">' + (o.revenue_share || 60) + '%</span></div>' +
+        '<div class="wbal"><span class="wbal-cur">Status</span><span class="wbal-amt" style="text-transform:capitalize">' + esc(o.status) + "</span></div>" +
+        '<div class="wbal"><span class="wbal-cur">Payouts</span><span class="wbal-amt">Weekly</span></div>';
+      return;
+    }
+    badge.textContent = "Not applied";
+    show(1);
+    if (back) back.onclick = () => show(cur - 1);
+    if (next) next.onclick = async () => {
+      if (cur === 1) {
+        if (!($("#opMsisdn").value || "").trim()) { $("#opNote").textContent = "Enter your SIM number."; return; }
+        show(2); return;
+      }
+      if (cur === 2) { show(3); return; }
+      next.disabled = true;
+      try {
+        await SMSPIN.rpc("apply_operator", { p_msisdn: $("#opMsisdn").value.trim(),
+          p_country: $("#opCountry").value.trim() || null, p_device: $("#opDevice").value.trim() || null,
+          p_carrier: $("#opCarrier").value.trim() || null });
+        toast("Application submitted", "ok");
+        await renderOperator();
+      } catch (e) { $("#opNote").textContent = e.message; next.disabled = false; }
+    };
   }
 
 
@@ -722,6 +954,37 @@
       } catch (e) { toast(e.message, "err"); }
       finally { claim.disabled = false; }
     });
+    await renderAffiliatePayouts();
+  }
+
+  // I2: affiliate payout panel — withdraw referral earnings to wallet.
+  async function renderAffiliatePayouts() {
+    const host = document.getElementById("refPayoutPanel");
+    if (!host) return;
+    let d = null;
+    try { d = await SMSPIN.rpc("my_affiliate_payouts"); } catch (e) { return; }
+    if (!d) return;
+    const when = iso => { try { return new Date(iso).toLocaleDateString(); } catch (e) { return "—"; } };
+    host.innerHTML = '<div class="panel"><div class="panel-h"><h2>Affiliate payouts</h2><span class="spacer"></span>' +
+      '<button class="btn btn-primary" type="button" id="refPayoutGo">Withdraw ' + money(d.available, SITE.currency) + "</button></div>" +
+      '<div class="panel-b"><div class="cards" style="margin-bottom:12px">' +
+      '<div class="card"><div class="k">Earned</div><div class="v">' + money(d.earned, SITE.currency) + "</div></div>" +
+      '<div class="card"><div class="k">Paid out</div><div class="v">' + money(d.paid, SITE.currency) + "</div></div>" +
+      '<div class="card"><div class="k">Available</div><div class="v">' + money(d.available, SITE.currency) + "</div></div></div>" +
+      '<div class="list-num">' + ((d.payouts || []).length ? d.payouts.map(p =>
+        '<div class="num-item"><div class="meta"><b>' + money(p.amount, SITE.currency) + "</b><span>" +
+        esc(p.method) + " · " + esc(p.status) + " · " + esc(when(p.created_at)) + "</span></div></div>").join("")
+        : '<p class="muted">No payouts yet.</p>') + "</div></div></div>";
+    const go = document.getElementById("refPayoutGo");
+    if (go) go.onclick = async () => {
+      go.disabled = true;
+      try {
+        const r = await SMSPIN.rpc("request_affiliate_payout", { p_method: "wallet" });
+        toast("Paid " + money(r.amount, SITE.currency) + " to wallet", "ok");
+        await renderAffiliatePayouts();
+      } catch (e) { toast(e.message, "err"); }
+      finally { go.disabled = false; }
+    };
   }
 
   function drawRefChart(monthly) {
@@ -872,6 +1135,138 @@
       'curl ' + base + '/order -H "x-api-key: sk_live_..." -d "service=whatsapp&country=gb"';
 
     await draw();
+    await devPlatform();
+  }
+
+  // H1-H7: developer platform — usage, sandbox, key settings, customer webhooks.
+  async function devPlatform() {
+    // H5 usage metering.
+    const usage = document.getElementById("devUsage");
+    if (usage) {
+      let u = null;
+      try { u = await SMSPIN.rpc("api_usage_summary", { p_days: 30 }); } catch (e) {}
+      if (u) {
+        const q = document.getElementById("devQuota");
+        if (q) q.textContent = u.total + " calls · quota " + (u.quota || 0) + "/mo";
+        usage.innerHTML = '<div class="wbal"><span class="wbal-cur">Calls (30d)</span><span class="wbal-amt">' +
+          Number(u.total || 0).toLocaleString() + "</span></div>";
+        const paths = document.getElementById("devUsagePaths");
+        if (paths && u.by_path) {
+          const max = Math.max(1, ...u.by_path.map(p => p.count));
+          paths.innerHTML = u.by_path.map(p =>
+            '<div class="wbar-row"><div class="wb-main"><div class="wb-top"><b>' + esc(p.path) + "</b>" +
+            "<span>" + p.count + "</span></div>" +
+            '<div class="wb-track"><span style="width:' + Math.round(p.count / max * 100) + '%"></span></div></div></div>').join("");
+        }
+      }
+    }
+    // H4 sandbox key.
+    const sb = document.getElementById("devSandbox");
+    if (sb) sb.onclick = async () => {
+      try {
+        const r = await SMSPIN.rpc("create_sandbox_key", { p_name: "sandbox-" + Date.now().toString(36) });
+        const rev = document.getElementById("devSandboxReveal");
+        rev.hidden = false;
+        rev.innerHTML = "<b>Sandbox key (never billed):</b><code>" + esc(r.key) + "</code>";
+      } catch (e) { toast(e.message, "err"); }
+    };
+    // H1 key settings for the active key.
+    const save = document.getElementById("ksSave");
+    if (save) save.onclick = async () => {
+      const keys = await SMSPIN.rpc("my_api_keys");
+      const active = (keys || []).find(k => !k.revoked);
+      if (!active) { toast("Create a key first", "err"); return; }
+      try {
+        const scopes = (document.getElementById("ksScopes").value || "read").split(",");
+        const ips = (document.getElementById("ksIps").value || "").split(",").map(s => s.trim()).filter(Boolean);
+        await SMSPIN.rpc("api_key_settings", {
+          p_id: active.id, p_scopes: scopes,
+          p_rate_limit: Number(document.getElementById("ksRate").value || 60),
+          p_quota: Number(document.getElementById("ksQuota").value || 10000),
+          p_ip_allowlist: ips,
+        });
+        toast("Key settings saved", "ok");
+      } catch (e) { toast(e.message, "err"); }
+    };
+    // H2 customer webhooks.
+    await drawWebhooks();
+    // O7 developer onboarding: playground + SDK snippets.
+    devPlayground();
+  }
+
+  // O7: a live API playground that calls the deployment's own /api/v1 with the
+  // caller's key, plus copy-ready snippets in four languages.
+  function devPlayground() {
+    const run = document.getElementById("pgRun");
+    const out = document.getElementById("pgOut");
+    const base = location.origin;
+    const key = ($(".copyrow .mono") && $(".copyrow .mono").textContent.trim()) || "sk_live_...";
+
+    const SNIPPETS = {
+      curl: 'curl "' + base + '/api/v1/catalog?service=whatsapp&country=gb" \\\n  -H "x-api-key: ' + key + '"',
+      node: 'const res = await fetch("' + base + '/api/v1/catalog?service=whatsapp&country=gb", {\n' +
+            '  headers: { "x-api-key": "' + key + '" },\n});\nconst catalog = await res.json();\nconsole.log(catalog);',
+      python: 'import requests\n\nr = requests.get(\n    "' + base + '/api/v1/catalog",\n' +
+              '    params={"service": "whatsapp", "country": "gb"},\n' +
+              '    headers={"x-api-key": "' + key + '"},\n)\nprint(r.json())',
+      php: '$ch = curl_init("' + base + '/api/v1/catalog?service=whatsapp&country=gb");\n' +
+           'curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\n' +
+           'curl_setopt($ch, CURLOPT_HTTPHEADER, ["x-api-key: ' + key + '"]);\n' +
+           '$catalog = json_decode(curl_exec($ch), true);',
+    };
+    function drawSnippet(lang) {
+      const host = document.getElementById("devSnippet");
+      if (host) host.textContent = SNIPPETS[lang] || SNIPPETS.curl;
+      $$("#devSnipTabs .dev-tab").forEach(t => t.classList.toggle("active", t.dataset.lang === lang));
+    }
+    if (document.getElementById("devSnippet")) {
+      $$("#devSnipTabs .dev-tab").forEach(t => t.onclick = () => drawSnippet(t.dataset.lang));
+      drawSnippet("curl");
+    }
+    if (!run) return;
+    run.onclick = async () => {
+      const spec = document.getElementById("pgMethod").value;
+      const sp = spec.indexOf(" ");
+      const method = spec.slice(0, sp), path = spec.slice(sp + 1);
+      out.textContent = "Running…";
+      try {
+        const r = await fetch(base + path, { method, headers: { "x-api-key": key } });
+        const txt = await r.text();
+        let pretty = txt;
+        try { pretty = JSON.stringify(JSON.parse(txt), null, 2); } catch (e) {}
+        out.textContent = "HTTP " + r.status + "\n\n" + pretty;
+      } catch (e) { out.textContent = "Request failed: " + e.message; }
+    };
+  }
+
+  async function drawWebhooks() {
+    const tb = document.querySelector("#whTbl tbody");
+    if (!tb) return;
+    let subs = [];
+    try { subs = await SMSPIN.rpc("my_webhook_subs"); } catch (e) { return; }
+    const when = iso => { try { return new Date(iso).toLocaleDateString(); } catch (e) { return "—"; } };
+    tb.innerHTML = (subs && subs.length) ? subs.map(s =>
+      "<tr><td class=\"mono\">" + esc(s.url) + "</td><td>" + esc((s.events || []).join(", ")) + "</td><td>" +
+      esc(when(s.created_at)) + '</td><td><button class="btn btn-danger-ghost" data-whdel="' + s.id + '">Remove</button></td></tr>').join("")
+      : '<tr><td colspan="4" class="muted" style="text-align:center;padding:18px">No webhooks yet. Add an endpoint above to get a signed POST on every order event.</td></tr>';
+    tb.querySelectorAll("[data-whdel]").forEach(b => b.onclick = async () => {
+      try { await SMSPIN.rpc("delete_webhook_sub", { p_id: Number(b.dataset.whdel) }); toast("Webhook removed", "ok"); drawWebhooks(); }
+      catch (e) { toast(e.message, "err"); }
+    });
+    const create = document.getElementById("whCreate");
+    if (create) create.onclick = async () => {
+      const url = document.getElementById("whUrl").value.trim();
+      if (!url) { toast("Enter a URL", "err"); return; }
+      try {
+        const events = (document.getElementById("whEvents").value || "").split(",").map(s => s.trim()).filter(Boolean);
+        const r = await SMSPIN.rpc("create_webhook_sub", { p_url: url, p_events: events });
+        const rev = document.getElementById("whReveal");
+        rev.hidden = false;
+        rev.innerHTML = "<b>Signing secret (store it securely):</b><code>" + esc(r.secret) + "</code>";
+        document.getElementById("whUrl").value = "";
+        drawWebhooks();
+      } catch (e) { toast(e.message, "err"); }
+    };
   }
 
   function pickerIco(el, icon) {
@@ -1009,6 +1404,31 @@
     paintService(); paintCountry();
     await updatePrice();
 
+    // O4: first-purchase tutorial + sample OTP demo (hidden once the user has ordered).
+    const tut = document.getElementById("buyTutorial");
+    if (tut) {
+      let hasOrders = false;
+      try { const o = await SMSPIN.rpc("my_orders", { p_limit: 1 }); hasOrders = !!(o && o.length); } catch (e) {}
+      let hidden = false;
+      try { hidden = localStorage.getItem("smspin_buy_tut_hidden") === "1"; } catch (e) {}
+      tut.hidden = hasOrders || hidden;
+      const dis = document.getElementById("buyTutDismiss");
+      if (dis) dis.onclick = () => { tut.hidden = true; try { localStorage.setItem("smspin_buy_tut_hidden", "1"); } catch (e) {} };
+      const demo = document.getElementById("buyDemoOtp");
+      if (demo) demo.onclick = () => {
+        const out = document.getElementById("buyDemoOut");
+        const code = String(Math.floor(100000 + Math.random() * 900000));
+        out.hidden = false;
+        out.textContent =
+          "Sample inbox (simulated, nothing is charged)\n\n" +
+          "From:  WhatsApp\n" +
+          "To:    +44 7•• ••• 214\n" +
+          "Code:  " + code + "\n" +
+          "Time:  " + new Date().toLocaleTimeString() + "\n\n" +
+          "Copy the code into the app you are verifying. Real codes arrive the same way.";
+      };
+    }
+
     if (btn) btn.addEventListener("click", async () => {
       btn.disabled = true;
       remember();
@@ -1058,6 +1478,24 @@
     });
     await loadTickets();
     await loadRefunds();
+    await loadKb();
+  }
+
+  // K3/O17: searchable knowledge base.
+  async function loadKb(q) {
+    const host = document.getElementById("kbList");
+    if (!host) return;
+    let arts = [];
+    try { arts = await SMSPIN.rpc("kb_search", { p_q: q || null }); } catch (e) {}
+    const search = document.getElementById("kbSearch");
+    if (search && !search._wired) {
+      search._wired = true;
+      let t; search.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => loadKb(search.value.trim()), 250); });
+    }
+    host.innerHTML = (arts && arts.length) ? arts.map(a =>
+      '<div class="num-item"><div class="meta"><b>' + esc(a.title) + "</b><span>" + esc(a.category) +
+      "</span></div></div>").join("")
+      : '<p class="muted">No matching articles.</p>';
   }
 
   async function loadTickets() {
@@ -1120,7 +1558,9 @@
     const orders = await SMSPIN.rpc("my_orders", { p_limit: 1 });
     const host = document.querySelector(".panel .panel-b");
     if (!orders || !orders.length) {
-      if (host) host.innerHTML = '<p class="muted sms-empty">No active number yet. Buy one to start receiving SMS.</p>';
+      if (host) host.innerHTML = emptyState({ icon: "\u260E", title: "No active number",
+        body: "Buy a number and incoming SMS codes appear on this page automatically.",
+        cta: "Buy a number", href: "/dashboard/buy/" });
       return;
     }
     const order = orders[0];
@@ -1136,7 +1576,8 @@
       '<div class="sms-list" id="smsList">' +
         (msgs && msgs.length
           ? msgs.map(smsRow).join("")
-          : '<p class="muted sms-empty">No messages yet. Codes usually arrive within 2 minutes.</p>') +
+          : emptyState({ icon: "\u2709", title: "Waiting for your first code",
+              body: "Codes usually arrive within 2 minutes. This page updates on its own." })) +
       "</div>" +
       '<div class="sms-actions"><button class="btn btn-secondary" id="smsCancelBtn" type="button">Cancel &amp; refund</button></div>';
     startExpiryCountdown(order.created_at, order.expires_at);
@@ -1381,7 +1822,62 @@
     wireSettings();
     wireProfileSave();
     await settlePayment();
+    wireLiveEvents();
+    await maybeWelcome();
+    maybeStartTour();
     const out = document.querySelector('a[href="/login"]');
     if (out) out.addEventListener("click", async (e) => { e.preventDefault(); await SMSPIN.auth.signOut(); location.href = "/login/"; });
   });
+
+  // O2: one-time welcome modal for first-login users, offering the tour.
+  async function maybeWelcome() {
+    if (page !== "overview" || !window.SMSPINUI) return;
+    let seen = null;
+    try { seen = localStorage.getItem("smspin_welcomed"); } catch (e) {}
+    if (seen === "1") return;
+    let d = null;
+    try { d = await SMSPIN.rpc("dashboard_overview"); } catch (e) { return; }
+    const firstRun = d && !d.total_orders && Number(d.balance) <= 0;
+    try { localStorage.setItem("smspin_welcomed", "1"); } catch (e) {}
+    const res = await SMSPINUI.modal({
+      title: firstRun ? "Welcome to SMSPin" : "Welcome back",
+      tone: "success",
+      html:
+        '<p class="mdl-msg">' + (firstRun
+          ? "You're three steps from your first code: fund your wallet, buy a number, and read the SMS here."
+          : "Your dashboard is ready. Take a quick tour any time from the Help button.") + "</p>" +
+        '<ol class="dev-steps" style="margin:10px 0 0"><li><b>Fund your wallet</b> — one top-up covers many numbers.</li>' +
+        '<li><b>Buy a number</b> — pick a service and country.</li>' +
+        '<li><b>Read the code</b> — it lands in your inbox in seconds.</li></ol>',
+      actions: firstRun
+        ? [{ id: "tour", label: "Take the tour", variant: "secondary" },
+           { id: "buy", label: "Buy my first number", variant: "primary" }]
+        : [{ id: "ok", label: "Get started", variant: "primary" }],
+    });
+    if (res === "tour" && window.TOUR) window.TOUR.dashboard(true);
+    else if (res === "buy") location.href = "/dashboard/buy/";
+  }
+
+  // O1: start the first-run dashboard tour once, on the overview page.
+  function maybeStartTour() {
+    if (page !== "overview" || !window.TOUR) return;
+    if (window.TOUR.seen("dashboard")) return;
+    setTimeout(() => window.TOUR.dashboard(), 900);
+  }
+
+  // E1: live order updates over Server-Sent Events. Codes appear the moment
+  // they arrive without a manual refresh; falls back silently if unsupported.
+  function wireLiveEvents() {
+    if (!window.EventSource || !SMSPIN.getSession || !SMSPIN.getSession()) return;
+    let es;
+    try { es = new EventSource("/api/events"); } catch (e) { return; }
+    es.addEventListener("sms", (ev) => {
+      let d = {}; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      document.dispatchEvent(new CustomEvent("smspin:sms", { detail: d }));
+      if (window.SMSPINUI && SMSPINUI.alert) {
+        SMSPINUI.alert("New SMS code", (d.sender || "A service") + " sent " + (d.code || "a message") + ".");
+      }
+    });
+    es.onerror = () => { try { es.close(); } catch (e) {} };
+  }
 })();

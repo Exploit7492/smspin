@@ -158,7 +158,8 @@
     .st-card{padding:14px}
   }
 </style>
-<script>(function(){try{var d=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.setAttribute("data-theme",d?"dark":"light");}catch(e){}})();</script><link rel="stylesheet" href="/theme.css"><script defer src="/theme.js"></script></head>
+<script>(function(){try{var d=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.setAttribute("data-theme",d?"dark":"light");}catch(e){}})();</script><link rel="stylesheet" href="/theme.css"><script defer src="/theme.js"></script><link rel="stylesheet" href="/tour.css">
+</head>
 <body>
 <a href="#catalog" class="sr">Skip to catalog</a>
 
@@ -334,6 +335,9 @@
 
 <script src="/dashboard/config.js"></script>
 <script src="/dashboard/api.js"></script>
+<script src="/ui.js"></script>
+<script src="/tour.js"></script>
+<script src="/help.js?v=1"></script>
 <script>
 (function(){
   const $ = s => document.querySelector(s);
@@ -476,6 +480,8 @@
     try{ stats = await SMSPIN.rpc("business_stats",{p_slug:s}); }catch(e){}
     if (!stats || stats===null) stats = {services:0,countries:0,orders:0};
     boot(d, stats, brand);
+    // O13: first-run guided tour for the storefront's visitors.
+    if (window.TOUR && !TOUR.seen("store")) setTimeout(() => TOUR.store(), 1200);
   }
   load();
 })();

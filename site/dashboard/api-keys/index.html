@@ -9,7 +9,8 @@
 <link rel="stylesheet" href="/_next/static/css/799dbddceaca5ff3.css">
 <link rel="stylesheet" href="/_next/static/css/99187c56f9c480d0.css">
 <link rel="stylesheet" href="/dashboard/dashboard.css?v=1794403343">
-<script>(function(){try{var d=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.setAttribute("data-theme",d?"dark":"light");}catch(e){}})();</script><link rel="stylesheet" href="/theme.css?v=1794403291"><script defer src="/theme.js"></script></head>
+<script>(function(){try{var d=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.setAttribute("data-theme",d?"dark":"light");}catch(e){}})();</script><link rel="stylesheet" href="/theme.css?v=1794403291"><script defer src="/theme.js"></script><link rel="stylesheet" href="/tour.css?v=1">
+</head>
 <body data-page="api-keys"><a class="dash-topbrand" href="/dashboard/" aria-label="SMSPin home"><span class="tb-mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5C4 3.9 4.9 3 6 3H18C19.1 3 20 3.9 20 5V14C20 15.1 19.1 16 18 16H13L9.5 19.5C9 20 8 19.6 8 18.9V16H6C4.9 16 4 15.1 4 14V5Z" fill="#FFFFFF"></path><rect x="7.5" y="8.5" width="2.5" height="3.5" rx="0.8" fill="currentColor"></rect><rect x="10.8" y="8.5" width="2.5" height="3.5" rx="0.8" fill="currentColor"></rect><rect x="14.1" y="8.5" width="2.5" height="3.5" rx="0.8" fill="currentColor"></rect></svg></span><span class="tb-name">SMSPin</span></a>
 <button class="dash-toggle" id="dashToggle" aria-label="Open menu" aria-expanded="false">☰</button>
 <div class="dash-scrim" id="dashScrim"></div>
@@ -21,7 +22,7 @@
 <h1 class="dash-h1">API Keys</h1>
 <p class="dash-sub">Programmatic access to the SMSPin API.</p>
 <div class="panel">
-  <div class="panel-h"><h2>Your keys</h2><span class="spacer"></span><button class="btn btn-primary" type="button">Generate key</button></div>
+  <div class="panel-h"><h2 data-tip="Keys authenticate your server. Keep them secret — anyone with a key can spend your balance.">Your keys</h2><span class="spacer"></span><button class="btn btn-primary" type="button">Generate key</button></div>
   <div class="panel-b">
     <div class="copyrow"><span class="mono">sk_live_9f2c••••••••••••••4a71</span><button class="btn btn-ghost" type="button">Copy</button><button class="btn btn-danger-ghost" type="button">Revoke</button></div>
     <p class="muted" style="margin-top:10px">Created 3 days ago · last used today 08:55</p>
@@ -35,12 +36,95 @@
       <textarea id="curl" rows="6" readonly></textarea></div>
   </div>
 </div>
+<div class="panel" id="devUsagePanel">
+  <div class="panel-h"><h2>Usage this month</h2><span class="spacer"></span>
+    <span class="muted" id="devQuota">—</span></div>
+  <div class="panel-b"><div class="wbal-grid" id="devUsage"></div>
+    <div class="wbars" id="devUsagePaths"></div></div>
+</div>
+<div class="panel" id="devSandboxPanel">
+  <div class="panel-h"><h2 data-tip="A test key that never bills and returns simulated SMS codes.">Sandbox</h2><span class="spacer"></span>
+    <button class="btn btn-ghost" type="button" id="devSandbox">Create sandbox key</button></div>
+  <div class="panel-b"><p class="muted">Sandbox keys simulate numbers and codes and are never billed.
+    Use them to build and test before going live.</p><div class="key-reveal" id="devSandboxReveal" hidden></div></div>
+</div>
+<div class="panel" id="devKeySettingsPanel">
+  <div class="panel-h"><h2>Key settings</h2><span class="spacer"></span>
+    <span class="muted">Scopes, rate limit, quota, IP allowlist</span></div>
+  <div class="panel-b">
+    <div class="key-form">
+      <div class="field"><label for="ksScopes">Scopes</label>
+        <select id="ksScopes"><option value="read">read</option><option value="read,write">read + write</option></select></div>
+      <div class="field"><label for="ksRate">Rate limit / min</label>
+        <input id="ksRate" type="number" min="1" value="60"></div>
+      <div class="field"><label for="ksQuota">Monthly quota</label>
+        <input id="ksQuota" type="number" min="1" value="10000"></div>
+      <div class="field"><label for="ksIps">IP allowlist (comma-sep)</label>
+        <input id="ksIps" type="text" placeholder="203.0.113.7, 198.51.100.0/24"></div>
+      <button class="btn btn-primary" type="button" id="ksSave">Save settings</button>
+    </div>
+  </div>
+</div>
+<div class="panel" id="devOnbPanel">
+  <div class="panel-h"><h2>Developer quickstart</h2><span class="spacer"></span>
+    <span class="muted">Three steps to your first order</span></div>
+  <div class="panel-b">
+    <ol class="dev-steps" id="devSteps">
+      <li><b>Create a key</b> — use the panel above. Keep it secret; it is shown once.</li>
+      <li><b>Try a call</b> — the playground below runs against your own account.</li>
+      <li><b>Ship it</b> — copy a snippet or import the Postman collection.</li>
+    </ol>
+    <div class="key-form">
+      <div class="field"><label for="pgMethod">Method &amp; endpoint</label>
+        <select id="pgMethod">
+          <option value="GET /api/v1/balance">GET /api/v1/balance</option>
+          <option value="GET /api/v1/catalog?service=whatsapp&amp;country=gb">GET /api/v1/catalog</option>
+          <option value="GET /api/v1/order?id=1">GET /api/v1/order</option>
+        </select></div>
+      <button class="btn btn-primary" type="button" id="pgRun">Run request</button>
+      <a class="btn btn-ghost" id="pgPostman" href="/api/postman" download="smspin.postman_collection.json">Download Postman</a>
+    </div>
+    <pre class="dev-out" id="pgOut" aria-live="polite">Pick an endpoint and press Run.</pre>
+  </div>
+</div>
+<div class="panel" id="devSnippetsPanel">
+  <div class="panel-h"><h2>SDK snippets</h2><span class="spacer"></span>
+    <span class="muted">Copy into your project</span></div>
+  <div class="panel-b">
+    <div class="dev-tabs" id="devSnipTabs">
+      <button class="dev-tab active" data-lang="curl">cURL</button>
+      <button class="dev-tab" data-lang="node">Node</button>
+      <button class="dev-tab" data-lang="python">Python</button>
+      <button class="dev-tab" data-lang="php">PHP</button>
+    </div>
+    <pre class="dev-out" id="devSnippet"></pre>
+  </div>
+</div>
+<div class="panel" id="devWebhookPanel">
+  <div class="panel-h"><h2>Webhooks</h2><span class="spacer"></span>
+    <span class="muted">Get a signed POST on every order event</span></div>
+  <div class="panel-b">
+    <div class="key-form">
+      <div class="field"><label for="whUrl">Endpoint URL</label>
+        <input id="whUrl" type="url" placeholder="https://yourapp.com/webhooks/smspin"></div>
+      <div class="field"><label for="whEvents">Events</label>
+        <input id="whEvents" type="text" value="order.created,order.received,order.refunded"></div>
+      <button class="btn btn-primary" type="button" id="whCreate">Add webhook</button>
+    </div>
+    <div class="key-reveal" id="whReveal" hidden></div>
+    <table class="tbl" id="whTbl">
+      <thead><tr><th>URL</th><th>Events</th><th>Added</th><th></th></tr></thead><tbody></tbody>
+    </table>
+  </div>
+</div>
 </main>
   </div>
 </div>
 <script src="/dashboard/config.js?v=1794394631"></script>
 <script src="/dashboard/api.js?v=1794401720"></script>
 <script src="/ui.js?v=1794402352"></script>
+<script src="/help.js?v=1"></script>
+<script src="/tour.js?v=1"></script>
 <script src="/dashboard/dash.js?v=1794403385"></script>
 </body>
 </html>

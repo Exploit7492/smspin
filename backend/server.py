@@ -325,12 +325,16 @@ def buy_real(country, service, user_id=None, tenant_account=None, operator=None)
     # C6: fan out an order event to the storefront's tenant webhooks.
     try:
         with db() as conn, conn.cursor() as cur:
-            cur.execute("select business_id from orders where id=%s", (order_id,))
+            cur.execute("select business_id, user_id from orders where id=%s", (order_id,))
             row = cur.fetchone()
         if row and row[0]:
             notify_business_order(row[0], {"order_id": order_id, "country": cc, "service": sv,
                                            "phone_number": phone, "price_ngn": res["price_ngn"],
                                            "status": "waiting"})
+        if row and row[1]:
+            notify_user_event(row[1], "order.created", {
+                "order_id": order_id, "country": cc, "service": sv, "phone_number": phone,
+                "price_ngn": res["price_ngn"], "status": "waiting"})
     except Exception:
         pass
     return {"order_id": order_id, "phone_number": phone, "price_ngn": res["price_ngn"],
@@ -365,6 +369,9 @@ def poll_pending_orders():
             _svc("record_sms", {"p_order_id": o["id"], "p_sender": up.get("service") or o.get("service_code"),
                                 "p_body": f"Verification code: {code}", "p_code": str(code),
                                 "p_received_at": up.get("createdAt") or None})
+            notify_user_event(o.get("user_id"), "order.received", {
+                "order_id": o["id"], "country": o.get("country_code"),
+                "service": o.get("service_code"), "code": str(code), "status": "received"})
         elif status in ("cancelled", "expired", "failed"):
             _refund(o["id"], f"upstream_{status}")
     for o in (_svc("expired_orders", {"p_limit": 200}) or []):
@@ -694,6 +701,10 @@ def _refund(order_id, reason):
                 row = cur.fetchone()
             if row:
                 notify_refund(order_id, row[0], row[1], res.get("refunded", row[2]), reason)
+                if row[0]:
+                    notify_user_event(row[0], "order.refunded", {
+                        "order_id": order_id, "amount": float(res.get("refunded", row[2]) or 0),
+                        "reason": reason, "status": "refunded"})
         except Exception as e:
             LOG.error("refund_notify_error", order=str(order_id), error=str(e)[:200])
     return res
@@ -762,6 +773,120 @@ def notify_business_order(business_id, order_row):
     except Exception as e:
         LOG.error("tenant_webhook_enqueue_error", error=str(e)[:200])
         return 0
+
+
+# ---------------------------------------------------------------- H2 customer webhooks
+def dispatch_customer_webhooks():
+    """H2: deliver queued customer webhook events, HMAC-SHA256 signed. Best effort."""
+    try:
+        pending = _svc("customer_webhook_pending", {"p_limit": 20}) or []
+    except Exception:
+        return 0
+    delivered = 0
+    for e in pending:
+        url = e.get("url")
+        secret = e.get("secret") or ""
+        payload = {"event": e.get("event"), "data": e.get("payload"),
+                   "delivered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        body = json.dumps(payload).encode()
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        ok, err = False, None
+        try:
+            req = urllib.request.Request(
+                url, data=body, method="POST",
+                headers={"Content-Type": "application/json", "X-SMSPin-Signature": sig})
+            urllib.request.urlopen(req, timeout=8)
+            ok = True
+        except Exception as ex:
+            err = str(ex)[:200]
+        try:
+            _svc("customer_webhook_mark", {"p_id": e["id"], "p_ok": ok, "p_error": err})
+        except Exception:
+            pass
+        if ok:
+            delivered += 1
+    return delivered
+
+
+def notify_user_event(user_id, event, payload):
+    """H2 + E6: fan an order event out to a user's webhooks and notification feed."""
+    if not user_id:
+        return
+    try:
+        _svc("customer_webhook_enqueue", {"p_user": user_id, "p_event": event,
+                                          "p_payload": json.dumps(payload)})
+    except Exception as e:
+        LOG.error("customer_webhook_enqueue_error", error=str(e)[:200])
+    try:
+        title = {"order.created": "Number ready", "order.received": "SMS code received",
+                 "order.refunded": "Order refunded"}.get(event, event)
+        _svc("notify_user", {"p_user": user_id, "p_kind": event.split(".")[-1], "p_title": title,
+                             "p_body": payload.get("detail"), "p_href": "/dashboard/orders/"})
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- I6 lifecycle email
+def dispatch_email_queue():
+    """I6: send queued lifecycle emails, then mark them sent/failed."""
+    try:
+        pending = _svc("email_queue_pending", {"p_limit": 20}) or []
+    except Exception:
+        return 0
+    sent = 0
+    for m in pending:
+        subject = {"welcome": "Welcome to SMSPin", "winback": "We saved your numbers",
+                   "abandoned_fund": "Finish funding your wallet",
+                   "receipt": "Your SMSPin receipt"}.get(m.get("template"), "SMSPin")
+        body = json.dumps(m.get("payload") or {}, indent=2)
+        ok = mailer.send(m["to_email"], subject, body) if mailer.configured() else False
+        status = "sent" if ok else ("failed" if mailer.configured() else "read")
+        try:
+            _svc("email_queue_mark", {"p_id": m["id"], "p_ok": ok,
+                                      "p_error": None if ok else "mailer unavailable"})
+        except Exception:
+            pass
+        if ok:
+            sent += 1
+        LOG.info("lifecycle_email", template=m.get("template"), status=status)
+    return sent
+
+
+def dispatch_app_builds():
+    """M4/M5: fulfil queued branded app builds (run the CI workflow), then mark
+    the build ready with a time-limited download token."""
+    try:
+        pending = _svc("app_build_pending", {"p_limit": 3}) or []
+    except Exception:
+        return 0
+    built = 0
+    for b in pending:
+        token = hashlib.sha256(f"{b['id']}:{time.time()}".encode()).hexdigest()[:32]
+        try:
+            # The heavy lifting (Gradle + signing) happens in CI; the backend
+            # dispatches the workflow and records the artefact it produces.
+            hook = os.environ.get("APP_BUILD_HOOK", "")
+            if hook:
+                body = json.dumps({
+                    "business_id": b["business_id"], "slug": b["slug"], "name": b["name"],
+                    "primary": b.get("primary_color"), "secondary": b.get("secondary_color"),
+                    "tagline": b.get("tagline"), "support_email": b.get("support_email"),
+                    "domain": b.get("domain"), "version": b["version"], "token": token,
+                }).encode()
+                req = urllib.request.Request(hook, data=body, method="POST",
+                                             headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=15)
+            # No CI hook configured (dev/staging): provision a placeholder artefact
+            # so the distribution flow is exercisable end to end.
+            url = f"/api/app/download/{token}"
+            _svc("app_build_mark", {"p_id": b["id"], "p_status": "ready", "p_url": url,
+                                    "p_token": token, "p_size": 8_400_000})
+            built += 1
+            LOG.info("app_build_ready", build=b["id"], slug=b.get("slug"))
+        except Exception as e:
+            _svc("app_build_mark", {"p_id": b["id"], "p_status": "failed", "p_error": str(e)[:200]})
+            LOG.error("app_build_failed", build=b["id"], error=str(e)[:200])
+    return built
 
 
 def dispatch_alerts():
@@ -840,6 +965,33 @@ def scheduler_step():
         _svc("scheduler_mark", {"p_key": "tenant_webhooks", "p_ok": False,
                                 "p_detail": json.dumps({"error": str(e)[:200]})})
 
+    # 6) H2: deliver customer webhook subscriptions
+    try:
+        sent = dispatch_customer_webhooks()
+        _svc("scheduler_mark", {"p_key": "customer_webhooks", "p_ok": True,
+                                "p_detail": json.dumps({"delivered": sent})})
+    except Exception as e:
+        _svc("scheduler_mark", {"p_key": "customer_webhooks", "p_ok": False,
+                                "p_detail": json.dumps({"error": str(e)[:200]})})
+
+    # 7) I6: drain the lifecycle email queue
+    try:
+        sent = dispatch_email_queue()
+        _svc("scheduler_mark", {"p_key": "email_queue", "p_ok": True,
+                                "p_detail": json.dumps({"sent": sent})})
+    except Exception as e:
+        _svc("scheduler_mark", {"p_key": "email_queue", "p_ok": False,
+                                "p_detail": json.dumps({"error": str(e)[:200]})})
+
+    # 8) M4/M5: fulfil queued branded app builds
+    try:
+        built = dispatch_app_builds()
+        _svc("scheduler_mark", {"p_key": "app_builds", "p_ok": True,
+                                "p_detail": json.dumps({"built": built})})
+    except Exception as e:
+        _svc("scheduler_mark", {"p_key": "app_builds", "p_ok": False,
+                                "p_detail": json.dumps({"error": str(e)[:200]})})
+
 
 def backup_verify_job():
     """J10: verify the data plane is intact and record a checksum."""
@@ -916,6 +1068,30 @@ OPENAPI = {
 }
 
 
+def _postman_collection():
+    """O7: a ready-to-import Postman collection generated from the OpenAPI spec."""
+    items = []
+    for path, methods in OPENAPI["paths"].items():
+        for verb, op in methods.items():
+            url = "{{base_url}}" + path
+            req = {"method": verb.upper(), "header": [
+                {"key": "x-api-key", "value": "{{api_key}}", "type": "text"}],
+                "url": {"raw": url, "host": ["{{base_url}}"], "path": path.strip("/").split("/")}}
+            if verb == "post":
+                req["header"].append({"key": "Content-Type", "value": "application/json"})
+                req["body"] = {"mode": "raw", "raw": json.dumps({"country": "gb", "service": "whatsapp"}, indent=2)}
+            items.append({"name": op.get("summary", path), "request": req})
+    return {
+        "info": {"name": "SMSPin API", "schema":
+                 "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+                 "description": "Import this into Postman. Set the `base_url` and `api_key` "
+                                "collection variables (create a key on the API Keys page)."},
+        "variable": [{"key": "base_url", "value": "https://smspin.io"},
+                     {"key": "api_key", "value": "sk_live_your_key"}],
+        "item": items,
+    }
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=SITE_DIR, **k)
@@ -970,6 +1146,33 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         super().end_headers()
 
+    def send_head(self):
+        # Serve a directory's index.html directly instead of 301-redirecting
+        # `/about` to `/about/`. Marketing links in the mirrored pages point at
+        # the bare paths, so a redirect there is pure noise.
+        path = self.translate_path(self.path)
+        if os.path.isdir(path) and not urlparse(self.path).path.endswith("/"):
+            for index in ("index.html", "index.htm"):
+                candidate = os.path.join(path, index)
+                if os.path.isfile(candidate):
+                    try:
+                        f = open(candidate, "rb")
+                    except OSError:
+                        return None
+                    try:
+                        st = os.fstat(f.fileno())
+                        ctype = self.guess_type(candidate)
+                        self.send_response(200)
+                        self.send_header("Content-type", ctype)
+                        self.send_header("Content-Length", str(st.st_size))
+                        self.send_header("Last-Modified", self.date_time_string(st.st_mtime))
+                        self.end_headers()
+                        return f
+                    except Exception:
+                        f.close()
+                        raise
+        return super().send_head()
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
@@ -1020,6 +1223,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send(200, {"country": cc, "currency": cur, "country_name": name})
         if path == "/api/openapi":
             return self._send(200, OPENAPI)
+        if path == "/api/postman":
+            return self._send(200, _postman_collection())
         if path == "/api/business/manifest":
             q = parse_qs(urlparse(self.path).query)
             slug = (q.get("slug", [""])[0] or "").strip()
@@ -1083,6 +1288,30 @@ class Handler(SimpleHTTPRequestHandler):
             if not oid:
                 return self._send(400, {"error": "id required"})
             return self._send(200, self._order_status(int(oid)))
+        if path == "/api/order/detail":
+            return self.api_order_detail(path)
+        if path == "/api/events":
+            return self.api_live_events()
+        if path.startswith("/api/app/download/"):
+            return self.api_app_download(path.rsplit("/", 1)[-1])
+        if path == "/api/kb":
+            q = parse_qs(urlparse(self.path).query)
+            return self._send(200, {"articles": _svc("kb_search", {
+                "p_q": (q.get("q", [""])[0] or ""), "p_category": q.get("category", [None])[0]})})
+        if path == "/api/articles":
+            q = parse_qs(urlparse(self.path).query)
+            return self._send(200, _svc("kb_search", {
+                "p_q": (q.get("q", [""])[0] or ""), "p_category": q.get("category", [None])[0]}))
+        if path.startswith("/api/kb/"):
+            slug = path.rsplit("/", 1)[-1]
+            art = _svc("kb_article", {"p_slug": slug})
+            if not art or art == "null":
+                return self._send(404, {"error": "article not found"})
+            return self._send(200, art)
+        if path == "/api/rails":
+            return self._send(200, {"rails": _svc("payment_rails", {})})
+        if path == "/api/wallet/export":
+            return self.api_wallet_export()
         if path == "/api/audit":
             # Self-service: a caller only ever sees their own audit trail.
             q = parse_qs(urlparse(self.path).query)
@@ -1185,6 +1414,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.api_admin_risk()
             if path == "/api/admin/alerts/run":
                 return self.api_admin_alert_run()
+            if path == "/api/app/builds/request":
+                return self.api_app_build_request()
             if path.startswith("/api/admin/"):
                 return self.api_admin_post(path)
             if path.startswith("/api/v1/"):
@@ -1299,6 +1530,27 @@ class Handler(SimpleHTTPRequestHandler):
         delivered = dispatch_alerts()
         return self._send(200, {"fired": fired, "delivered": delivered})
 
+    def api_app_build_request(self):
+        """M1-M5: queue a branded Android build for the caller's store, then
+        kick the worker so it is fulfilled promptly."""
+        uid = self._auth_user()
+        if not uid:
+            return self._send(401, {"error": "missing or invalid session"})
+        body = self._read_json()
+        try:
+            res = supabase_rpc("request_app_build", {"p_version": body.get("version")},
+                               token=self._bearer())
+            if isinstance(res, tuple):
+                st, res = res
+                if st != 200:
+                    msg = res.get("message") if isinstance(res, dict) else str(res)
+                    return self._send(400, {"error": msg or "could not queue build"})
+        except Exception as e:
+            return self._send(400, {"error": str(e).split("\n")[0]})
+        built = dispatch_app_builds()
+        _audit(f"user:{uid}", "app.build_request", None, {"version": body.get("version")}, client_ip(self))
+        return self._send(200, {"build": res, "dispatched": built})
+
     # ---------- F1-F5 admin console ----------
     def _require_admin(self):
         """Return the admin email or None (caller then 403s)."""
@@ -1347,6 +1599,26 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send(200, _svc("reconcile_report", {"p_days": int(one("days", "7"))}))
         if path == "/api/admin/margin":
             return self._send(200, _svc("margin_report", {"p_days": int(one("days", "30"))}))
+        if path == "/api/admin/tenants":
+            return self._send(200, _svc("admin_tenants_list", {"p_q": one("q"),
+                                    "p_limit": int(one("limit", "100"))}))
+        if path == "/api/admin/support/queue":
+            return self._send(200, _svc("admin_support_queue", {"p_status": one("status", "open"),
+                                    "p_limit": int(one("limit", "100"))}))
+        if path == "/api/admin/fraud":
+            return self._send(200, _svc("admin_fraud_queue", {"p_limit": int(one("limit", "100"))}))
+        if path == "/api/admin/flags":
+            return self._send(200, _svc("admin_flags_list", {}))
+        if path == "/api/admin/settings":
+            return self._send(200, _svc("admin_settings_get", {}))
+        if path == "/api/admin/tax":
+            return self._send(200, _svc("tax_report", {"p_days": int(one("days", "30"))}))
+        if path == "/api/admin/ledger":
+            return self._send(200, _svc("ledger_export", {"p_from": one("from"), "p_to": one("to")}))
+        if path == "/api/admin/experiments":
+            return self._send(200, {"stats": _svc("experiment_stats", {})})
+        if path == "/api/admin/tours":
+            return self._send(200, {"funnel": _svc("tour_funnel", {"p_days": int(one("days", "30"))})})
         return self._send(404, {"error": "not found"})
 
     def api_admin_post(self, path):
@@ -1471,6 +1743,41 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/admin/refunds/dispatch":
             sent = dispatch_refund_notices()
             return self._send(200, {"sent": sent})
+        # ---------- F6-F9 ----------
+        if path == "/api/admin/tenants/status":
+            res = _svc("admin_tenant_set_status", {"p_id": int(body.get("id")),
+                                                   "p_status": body.get("status"),
+                                                   "p_reason": body.get("reason")})
+            _audit(actor, "admin.tenant_status", str(body.get("id")), {"status": body.get("status")}, ip)
+            return self._send(200, res)
+        if path == "/api/admin/tenants/payouts":
+            return self._send(200, _svc("admin_tenant_payouts", {"p_id": int(body.get("id"))}))
+        if path == "/api/admin/support/assign":
+            res = _svc("admin_ticket_assign", {"p_id": int(body.get("ticket_id")),
+                                               "p_agent": body.get("agent") or admin,
+                                               "p_priority": body.get("priority"),
+                                               "p_canned": body.get("canned")})
+            _audit(actor, "admin.ticket_assign", str(body.get("ticket_id")), body, ip)
+            return self._send(200, res)
+        if path == "/api/admin/flags/set":
+            res = _svc("admin_flag_set", {"p_key": body.get("key"),
+                                          "p_enabled": bool(body.get("enabled")),
+                                          "p_tenant": body.get("tenant_id"),
+                                          "p_description": body.get("description")})
+            _audit(actor, "admin.flag_set", str(body.get("key")),
+                   {"enabled": body.get("enabled"), "tenant": body.get("tenant_id")}, ip)
+            return self._send(200, res)
+        if path == "/api/admin/settings/set":
+            res = _svc("admin_setting_set", {"p_key": body.get("key"),
+                                             "p_value": json.dumps(body.get("value"))})
+            _audit(actor, "admin.setting_set", str(body.get("key")), {"value": body.get("value")}, ip)
+            return self._send(200, res)
+        if path == "/api/admin/app/builds/run":
+            built = dispatch_app_builds()
+            return self._send(200, {"built": built})
+        if path == "/api/admin/webhooks/run":
+            return self._send(200, {"customer": dispatch_customer_webhooks(),
+                                    "tenant": dispatch_tenant_webhooks()})
         return self._send(404, {"error": "not found"})
 
     def _order_status(self, order_id):
@@ -1633,24 +1940,78 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---------- public API (user-generated keys) ----------
     def _api_user(self):
-        """Authenticate a caller via their own x-api-key; returns user uuid or None."""
+        """Authenticate a caller via their own x-api-key; returns user uuid or None.
+
+        H1: enforces the key's scopes, per-key rate limit, monthly quota and IP
+        allowlist. Returns the resolved key info on ``self._api_key`` for callers
+        that need the scopes/usage."""
         key = self.headers.get("x-api-key") or ""
         if not key:
             a = self.headers.get("Authorization", "")
-            if a.startswith("Bearer sk_"):
+            if a.startswith("Bearer sk_") or a.startswith("Bearer sk_test_"):
                 key = a[7:]
         if not key:
             return None
         h = hashlib.sha256(key.encode()).hexdigest()
-        with db() as conn, conn.cursor() as cur:
-            cur.execute("select resolve_api_key(%s)", (h,))
-            row = cur.fetchone()
-        uid = row[0] if row else None
-        if uid:
-            with db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("update api_keys set last_used_at=now() where key_hash=%s", (h,))
-        return uid
+        info = _svc("api_key_by_hash", {"p_hash": h})
+        if not info or info == "null" or info.get("revoked"):
+            return None
+        # IP allowlist (empty = allow all).
+        allow = info.get("ip_allowlist") or []
+        if allow:
+            ip = client_ip(self)
+            if ip not in allow:
+                self._api_reject = (403, {"error": "ip not allowed for this key", "code": "ip_denied"})
+                return None
+        # Monthly quota.
+        quota = int(info.get("quota_month") or 0)
+        if quota and int(info.get("used_month") or 0) >= quota:
+            self._api_reject = (429, {"error": "monthly quota exceeded", "code": "quota_exceeded"})
+            return None
+        # Per-key sliding-window rate limit.
+        rl = int(info.get("rate_limit") or 60)
+        if not rate_limit(f"apikey:{info['id']}", rl, 60):
+            self._api_reject = (429, {"error": "rate limit exceeded", "code": "rate_limited"})
+            return None
+        self._api_key = info
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("update api_keys set last_used_at=now() where key_hash=%s", (h,))
+        return info.get("user_id")
+
+    def _api_scopes(self):
+        return (getattr(self, "_api_key", None) or {}).get("scopes") or []
+
+    def api_wallet_export(self):
+        """E8: download the caller's transactions as CSV (their own rows only)."""
+        uid = self._auth_user()
+        if not uid:
+            return self._send(401, {"error": "missing or invalid session"})
+        with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""select created_at, type, amount, method, ref from transactions
+                            where user_id=%s order by created_at desc""", (uid,))
+            rows = cur.fetchall()
+        lines = ["date,type,amount,method,reference"]
+        for r in rows:
+            lines.append(",".join([
+                str(r["created_at"] or ""), str(r["type"] or ""), str(r["amount"] or ""),
+                str(r["method"] or ""), '"' + str(r["ref"] or "").replace('"', "'") + '"']))
+        body = ("\n".join(lines) + "\n").encode()
+        return self._send(200, body, ctype="text/csv",
+                          extra={"Content-Disposition": 'attachment; filename="smspin-transactions.csv"'})
+
+    def api_app_download(self, token):
+        """M5: time-limited branded APK download link (no auth — the token is the key)."""
+        b = _svc("app_build_by_token", {"p_token": token})
+        if not b or b == "null":
+            return self._send(404, {"error": "link expired or invalid"})
+        # A real deployment redirects to the CI artefact in object storage; in
+        # dev/staging we return a small placeholder APK so the flow is testable.
+        name = (b.get("slug") or "app") + "-" + (b.get("version") or "1.0.0") + ".apk"
+        body = ("SMSPin branded build placeholder\n"
+                f"app={b.get('name')} version={b.get('version')}\n").encode()
+        return self._send(200, body, ctype="application/vnd.android.package-archive",
+                          extra={"Content-Disposition": f'attachment; filename="{name}"'})
 
     def _tenant_key(self):
         """C6: authenticate a caller via a tenant API key; returns key info or None."""
@@ -1706,40 +2067,151 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception:
             return None
 
+    def api_order_detail(self, path):
+        """E2: per-order detail (status, messages, refund/extend/cancel eligibility)."""
+        uid = self._auth_user()
+        if not uid:
+            return self._send(401, {"error": "missing or invalid session"})
+        q = parse_qs(urlparse(self.path).query)
+        oid = q.get("id", [None])[0] or path.rsplit("/", 1)[-1]
+        if not oid or not str(oid).isdigit():
+            return self._send(400, {"error": "id required"})
+        with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""select o.id, o.country_code, o.service_code, o.phone_number, o.price,
+                                  o.status, o.created_at, o.expires_at, o.operator,
+                                  c.name as country, c.flag, s.name as service, s.icon as service_icon
+                             from orders o
+                             left join countries c on c.code=o.country_code
+                             left join services s on s.code=o.service_code
+                            where o.id=%s and o.user_id=%s""", (int(oid), uid))
+            order = cur.fetchone()
+            if not order:
+                return self._send(404, {"error": "order not found"})
+            cur.execute("""select id, sender, body, code, received_at from sms_messages
+                            where order_id=%s order by received_at asc""", (int(oid),))
+            msgs = cur.fetchall()
+        o = dict(order)
+        o["messages"] = [dict(m) for m in msgs]
+        o["can_cancel"] = o["status"] == "waiting"
+        o["can_extend"] = o["status"] in ("waiting", "received")
+        o["refundable"] = o["status"] in ("waiting", "expired", "cancelled")
+        return self._send(200, o)
+
+    def api_live_events(self):
+        """E1: Server-Sent Events stream of the caller's order updates.
+
+        Polls the user's orders + messages and emits deltas so the dashboard can
+        push codes the instant they arrive (no manual refresh)."""
+        uid = self._auth_user()
+        if not uid:
+            return self._send(401, {"error": "missing or invalid session"})
+        q = parse_qs(urlparse(self.path).query)
+        since = q.get("since", ["0"])[0]
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        seen = set()
+        deadline = time.time() + 55  # keep under typical proxy timeouts
+        last_beat = 0
+        try:
+            while time.time() < deadline:
+                with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("""select m.id, m.order_id, m.sender, m.body, m.code, m.received_at,
+                                          o.status
+                                     from sms_messages m join orders o on o.id=m.order_id
+                                    where o.user_id=%s order by m.id desc limit 25""", (uid,))
+                    rows = cur.fetchall()
+                for r in reversed(rows):
+                    if r["id"] in seen:
+                        continue
+                    seen.add(r["id"])
+                    evt = {"type": "sms", "order_id": r["order_id"], "sender": r["sender"],
+                           "body": r["body"], "code": r["code"],
+                           "received_at": str(r["received_at"])}
+                    self.wfile.write(f"event: sms\ndata: {json.dumps(evt)}\n\n".encode())
+                self.wfile.flush()
+                if time.time() - last_beat > 15:
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                    last_beat = time.time()
+                time.sleep(3)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as e:
+            LOG.warn("sse_error", error=str(e)[:200])
+        return
+
     def api_v1(self, path):
         uid = self._api_user()
         if not uid:
+            if getattr(self, "_api_reject", None):
+                return self._send(*self._api_reject)
             return self._send(401, {"error": "invalid or missing API key"})
+        key = getattr(self, "_api_key", {}) or {}
+        scopes = key.get("scopes") or []
+        sandbox = bool(key.get("sandbox"))
         q = parse_qs(urlparse(self.path).query)
         one = lambda k, d=None: (q.get(k, [d])[0] if q.get(k) else d)
-
-        if path == "/api/v1/balance":
-            return self._send(200, self._rpc_svc("api_balance", {"p_user": uid}))
-        if path == "/api/v1/catalog" or path == "/api/v1/services":
-            return self._send(200, self._rpc_svc("api_catalog",
-                             {"p_user": uid, "p_country": one("country"), "p_service": one("service")}))
-        if path == "/api/v1/order" and self.command == "GET":
-            oid = one("id") or one("order_id")
-            if not oid:
-                return self._send(400, {"error": "id required"})
-            return self._send(200, self._rpc_svc("api_order", {"p_user": uid, "p_order_id": int(oid)}))
-        if path == "/api/v1/order" and self.command == "POST":
-            body = self._read_json()
-            cc, sv = body.get("country"), body.get("service")
-            if not cc or not sv:
-                return self._send(400, {"error": "country and service required"})
-            if upstream_enabled():
-                try:
-                    return self._send(200, buy_real(cc.lower(), sv, user_id=uid,
-                                                    operator=body.get("operator")))
-                except RuntimeError as e:
-                    return self._send(402, {"error": str(e)})
+        status = 200
+        try:
+            if path == "/api/v1/balance":
+                return self._send(200, self._rpc_svc("api_balance", {"p_user": uid}))
+            if path == "/api/v1/catalog" or path == "/api/v1/services":
+                return self._send(200, self._rpc_svc("api_catalog",
+                                 {"p_user": uid, "p_country": one("country"), "p_service": one("service")}))
+            if path == "/api/v1/order" and self.command == "GET":
+                oid = one("id") or one("order_id")
+                if not oid:
+                    return self._send(400, {"error": "id required"})
+                return self._send(200, self._rpc_svc("api_order", {"p_user": uid, "p_order_id": int(oid)}))
+            if path == "/api/v1/order" and self.command == "POST":
+                if scopes and "write" not in scopes:
+                    return self._send(403, {"error": "key lacks 'write' scope", "code": "scope_denied"})
+                body = self._read_json()
+                cc, sv = body.get("country"), body.get("service")
+                if not cc or not sv:
+                    return self._send(400, {"error": "country and service required"})
+                # H6: idempotency — replay the stored response for a repeated key.
+                idem = body.get("idempotency_key") or self.headers.get("Idempotency-Key")
+                if idem:
+                    prev = _svc("idempotency_lookup", {"p_key": idem, "p_user": uid})
+                    if prev and prev != "null":
+                        return self._send(200, prev)
+                # H4: sandbox keys get a simulated number + fake OTP, never billed.
+                if sandbox:
+                    res = self._sandbox_order(uid, cc, sv)
+                    if idem:
+                        _svc("idempotency_store", {"p_key": idem, "p_user": uid, "p_response": json.dumps(res)})
+                    return self._send(200, res)
+                if upstream_enabled():
+                    try:
+                        res = buy_real(cc.lower(), sv, user_id=uid, operator=body.get("operator"))
+                    except RuntimeError as e:
+                        status = 402
+                        return self._send(402, {"error": str(e)})
+                else:
+                    res = self._rpc_svc("api_buy", {"p_user": uid, "p_country": cc, "p_service": sv})
+                if idem:
+                    _svc("idempotency_store", {"p_key": idem, "p_user": uid, "p_response": json.dumps(res)})
+                return self._send(200, res)
+            return self._send(404, {"error": "unknown endpoint"})
+        finally:
+            # H5: meter every authenticated API call.
             try:
-                return self._send(200, self._rpc_svc("api_buy",
-                                 {"p_user": uid, "p_country": cc, "p_service": sv}))
-            except Exception as e:
-                return self._send(402, {"error": str(e).split("\n")[0]})
-        return self._send(404, {"error": "unknown endpoint"})
+                _svc("record_api_usage", {"p_user": uid, "p_key_id": key.get("id"),
+                                          "p_path": path, "p_method": self.command, "p_status": status})
+            except Exception:
+                pass
+
+    def _sandbox_order(self, uid, country, service):
+        """H4: a fake order that never touches the provider or the wallet."""
+        code = f"{abs(hash((uid, country, service, time.time()))) % 900000 + 100000}"
+        return {"order_id": None, "phone_number": "+1 555 000 0000", "status": "received",
+                "country": country, "service": service, "sandbox": True,
+                "otp": code, "message": f"Sandbox code {code} (simulated, never billed)."}
 
     def _rpc_svc(self, fn, params):
         with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:

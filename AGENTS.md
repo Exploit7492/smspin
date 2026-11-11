@@ -415,3 +415,33 @@ New tables: `ticket_messages`, `refund_notices`, `service_checks`, `incidents`; 
 - Env: `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_HOST` (default smtp.gmail.com), `MAIL_PORT` (465),
   `MAIL_FROM`, `SMSPIN_ENV`, `SMSPIN_GIT_SHA`, `SMSPIN_VERSION`.
 - Tests: `tests/test_phase3_operable.py` (11). Full suite: `python3 -m pytest tests/ -q`.
+
+## Static mirror: real files, no redirects (2026-11-11)
+The marketing/legacy paths are served from `site/` as **real `index.html` files**, not
+redirects or aliases:
+- `Handler.send_head` (backend/server.py) serves `<dir>/index.html` directly for a bare
+  path like `/about` instead of 301-redirecting to `/about/`. Footer links point at the
+  bare paths, so the redirect was pure noise.
+- Every path linked from the site resolves to a real file. Full sweep of 10,976 internal
+  hrefs: 10,958 × 200, 16 × 404 (all also 404 on live smspin.io — faithful), 1 × 401
+  (`/api/wallet/export`, auth-gated), 1 × 301 (`/dashboard/referral` → `/dashboard/referrals/`,
+  intentional alias).
+- `site/` holds ~12,400 mirrored HTML pages (temp-number, blog incl. pagination 2–54,
+  free-numbers, rent, sms-verification, receive-sms, categories, policies).
+- Next.js JS chunks live under `site/_next/...`. Pages reference them with URL-encoded
+  `%5B`/`%5D`, which the server decodes to `[`/`]`, so the on-disk dirs are the **decoded**
+  form (`app/blog/[slug]/`, `app/temp-number/[slug]/`, etc.).
+- To re-mirror: fetch `https://smspin.io<path>` → `site/<path>/index.html` (files with a dot
+  in the last segment → `site/<path>`), then rename any `%5B`/`%5D` dirs to decoded form.
+
+## Dev server: secrets must be named in the launching command
+Secret injection only fires when the secret name appears in the command text. Start the
+server (or pytest) with the names referenced, else `Smspin_apikey` etc. are empty and
+`/api/orders/buy` returns 503 (`_SMS_CLIENT is None`) instead of 401:
+```
+Smspin_Supabase_url="$Smspin_Supabase_url" Smspin_supabase_annonkey="$Smspin_supabase_annonkey" \
+Smspin_supabase_Postgresql="$Smspin_supabase_Postgresql" Smspin_supabase_secretskey="$Smspin_supabase_secretskey" \
+Smspin_apikey="$Smspin_apikey" Kora_test_secrete_key="$Kora_test_secrete_key" Kora_test_public_key="$Kora_test_public_key" \
+nohup bash scripts/dev-server.sh > /tmp/smspin-dev.log 2>&1 &
+```
+Backend deps: `pip install -r backend/requirements.txt` (psycopg2-binary, forex-python, wbdata).

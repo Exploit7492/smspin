@@ -382,6 +382,159 @@
       "</tbody></table></div></div>";
   };
 
+  // ---------------------------------------------------------------- tenants (F6)
+  tabs.tenants = async (root) => {
+    root.innerHTML = '<div class="adm-panel"><h2>White-label tenants</h2>' +
+      '<div class="adm-bar"><input id="tnQ" placeholder="Store name or slug">' +
+      '<button class="adm-btn primary" id="tnGo">Search</button></div>' +
+      '<div class="adm-tablewrap" id="tnTable"></div></div>';
+    const load = async () => {
+      const q = encodeURIComponent($("#tnQ").value.trim());
+      const rows = await get("/api/admin/tenants?q=" + q + "&limit=200");
+      $("#tnTable").innerHTML = rows.length ? '<table class="adm"><thead><tr>' +
+        ["Store", "Slug", "Owner", "Orders", "Earned", "Markup", "Domain", "Status", ""].map(h => "<th>" + h + "</th>").join("") +
+        "</tr></thead><tbody>" + rows.map(t => "<tr>" +
+          "<td>" + esc(t.name) + "</td><td><code>" + esc(t.slug) + "</code></td><td>" + esc(t.owner_email || "") + "</td>" +
+          "<td>" + t.orders + "</td><td>" + money(t.earned_ngn) + "</td><td>" + (t.markup_percent || 0) + "%</td>" +
+          "<td>" + esc(t.domain || "\u2014") + "</td><td>" + statusPill(t.status) + "</td>" +
+          '<td><button class="adm-btn" data-tstatus="' + t.id + '" data-cur="' + esc(t.status) + '">Toggle</button> ' +
+          '<button class="adm-btn" data-tpay="' + t.id + '">Payouts</button></td></tr>').join("") +
+        "</tbody></table>" : '<div class="adm-empty">No tenants.</div>';
+      root.querySelectorAll("[data-tstatus]").forEach(b => b.onclick = async () => {
+        const next = b.dataset.cur === "active" ? "suspended" : "active";
+        await post("/api/admin/tenants/status", { id: +b.dataset.tstatus, status: next });
+        toast("Tenant " + next); load();
+      });
+      root.querySelectorAll("[data-tpay]").forEach(b => b.onclick = async () => {
+        const rows2 = await post("/api/admin/tenants/payouts", { id: +b.dataset.tpay });
+        toast("Payouts: " + (rows2 || []).length);
+      });
+    };
+    $("#tnGo").onclick = load;
+    await load();
+  };
+
+  // ---------------------------------------------------------------- fraud (F8)
+  tabs.fraud = async (root) => {
+    const rows = await get("/api/admin/fraud?limit=200");
+    root.innerHTML = '<div class="adm-panel"><h2>Fraud review queue</h2>' +
+      '<div class="adm-tablewrap">' + (rows.length ? '<table class="adm"><thead><tr>' +
+        ["When", "User", "Kind", "Score", "Reasons"].map(h => "<th>" + h + "</th>").join("") + "</tr></thead><tbody>" +
+        rows.map(r => "<tr><td>" + when(r.created_at) + "</td><td>" + esc(r.email || r.user_id || "") + "</td>" +
+          "<td>" + esc(r.kind) + "</td><td>" + r.score + "</td><td>" + esc((r.reasons || []).join(", ")) + "</td></tr>").join("") +
+        "</tbody></table>" : '<div class="adm-empty">No blocked events.</div>') + "</div></div>";
+  };
+
+  // ---------------------------------------------------------------- flags + settings (F9)
+  // O15 internal runbooks: step-by-step playbooks for common ops.
+  const RUNBOOKS = [
+    { key: "refund", title: "Issue a manual refund", steps: [
+      "Open the Orders tab and search the order id or phone number.",
+      "Confirm the SMS never arrived (no code, status waiting/expired).",
+      "Open the order drawer and choose Refund — the wallet is credited instantly.",
+      "Reply on the linked ticket so the customer knows the credit landed." ] },
+    { key: "provider_outage", title: "Provider outage / degraded stock", steps: [
+      "Check the Status tab for provider health and the last incident.",
+      "Set the feature flag `provider_paused` to true to stop new purchases.",
+      "Update the public status page with an investigating incident.",
+      "Notify affected users from the Growth tab broadcast.",
+      "When stock returns, clear the flag and resolve the incident." ] },
+    { key: "fraud", title: "Fraud spike response", steps: [
+      "Open the Fraud tab and sort by risk score.",
+      "Block confirmed abusers from the user drawer (blocklist).",
+      "Enable the `risk_strict` flag to raise the velocity threshold.",
+      "File the incident with the accounts and loss figure." ] },
+    { key: "payouts", title: "Approve tenant payouts", steps: [
+      "Open Tenants and review pending payout requests.",
+      "Verify the earnings ledger totals match the request.",
+      "Approve — the tenant wallet is credited and the payout marked paid." ] },
+    { key: "email_queue", title: "Stalled email queue", steps: [
+      "Check the DLQ count on the Overview tab.",
+      "Re-run delivery from Settings → retry queue.",
+      "If failures persist, inspect the template payload and provider key." ] },
+  ];
+
+  tabs.runbooks = async (root) => {
+    root.innerHTML = '<div class="adm-card"><div class="k">Internal runbooks</div>' +
+      '<p class="adm-note">Step-by-step playbooks for the most common operations.</p></div>' +
+      '<div class="adm-runbooks">' + RUNBOOKS.map(r =>
+        '<details class="adm-runbook"><summary>' + esc(r.title) + "</summary><ol>" +
+        r.steps.map(s => "<li>" + esc(s) + "</li>").join("") + "</ol></details>").join("") + "</div>";
+  };
+
+  // O15 admin onboarding tour trigger.
+  tabs.onboarding = async (root) => {
+    root.innerHTML = '<div class="adm-card"><div class="k">Admin onboarding</div>' +
+      '<p class="adm-note">New to the console? Take the 60-second tour, then keep the runbooks handy.</p>' +
+      '<button class="adm-btn primary" id="admTourStart">Start tour</button></div>' +
+      '<div class="adm-runbooks">' + RUNBOOKS.map(r =>
+        '<details class="adm-runbook"><summary>' + esc(r.title) + "</summary><ol>" +
+        r.steps.map(s => "<li>" + esc(s) + "</li>").join("") + "</ol></details>").join("") + "</div>";
+    const b = $("#admTourStart", root);
+    if (b) b.onclick = () => { if (window.TOUR && TOUR.admin) TOUR.admin(true); };
+  };
+
+  tabs.flags = async (root) => {
+    const [flags, settings] = await Promise.all([get("/api/admin/flags"), get("/api/admin/settings")]);
+    root.innerHTML = '<div class="adm-panel"><h2>Feature flags</h2>' +
+      '<div class="adm-tablewrap"><table class="adm"><thead><tr>' +
+      ["Key", "Scope", "Description", "Enabled", ""].map(h => "<th>" + h + "</th>").join("") + "</tr></thead><tbody>" +
+      (flags.length ? flags.map(f => "<tr><td><code>" + esc(f.key) + "</code></td>" +
+        "<td>" + (f.tenant_id ? "tenant " + f.tenant_id : "global") + "</td><td>" + esc(f.description || "") + "</td>" +
+        "<td>" + (f.enabled ? '<span class="adm-pill ok">on</span>' : '<span class="adm-pill bad">off</span>') + "</td>" +
+        '<td><button class="adm-btn" data-flag="' + esc(f.key) + '" data-on="' + (f.enabled ? 1 : 0) +
+        '" data-tenant="' + (f.tenant_id || 0) + '">Toggle</button></td></tr>').join("")
+        : '<tr><td class="adm-note">No flags.</td></tr>') + "</tbody></table></div></div>" +
+      '<div class="adm-panel"><h2>Platform settings</h2><div class="adm-tablewrap"><table class="adm"><thead><tr>' +
+      "<th>Key</th><th>Value</th><th></th></tr></thead><tbody>" +
+      Object.entries(settings || {}).map(([k, v]) => "<tr><td><code>" + esc(k) + "</code></td>" +
+        '<td><input data-setkey="' + esc(k) + '" value="' + esc(JSON.stringify(v)) + '" style="min-width:220px"></td>' +
+        '<td><button class="adm-btn" data-setsave="' + esc(k) + '">Save</button></td></tr>').join("") +
+      "</tbody></table></div></div>";
+    root.querySelectorAll("[data-flag]").forEach(b => b.onclick = async () => {
+      await post("/api/admin/flags/set", { key: b.dataset.flag, enabled: b.dataset.on !== "1",
+        tenant_id: +b.dataset.tenant || null });
+      toast("Flag updated"); tabs.flags(root);
+    });
+    root.querySelectorAll("[data-setsave]").forEach(b => b.onclick = async () => {
+      const k = b.dataset.setsave;
+      const input = root.querySelector('[data-setkey="' + k + '"]');
+      let val; try { val = JSON.parse(input.value); } catch (e) { val = input.value; }
+      await post("/api/admin/settings/set", { key: k, value: val });
+      toast("Setting saved");
+    });
+  };
+
+  // ---------------------------------------------------------------- growth (G5/I/G/L)
+  tabs.growth = async (root) => {
+    const [exp, tours, tax, ledger] = await Promise.all([
+      get("/api/admin/experiments"), get("/api/admin/tours"),
+      get("/api/admin/tax?days=30"), get("/api/admin/ledger"),
+    ]);
+    root.innerHTML = '<div class="adm-panel"><h2>Experiments (G5)</h2><div class="adm-tablewrap"><table class="adm"><thead><tr>' +
+      ["Key", "Variant", "Assigned"].map(h => "<th>" + h + "</th>").join("") + "</tr></thead><tbody>" +
+      ((exp.stats || []).length ? exp.stats.map(s => "<tr><td><code>" + esc(s.key) + "</code></td><td>" +
+        esc(s.variant) + "</td><td>" + s.assigned + "</td></tr>").join("")
+        : '<tr><td class="adm-note">No assignments yet.</td></tr>') + "</tbody></table></div></div>" +
+      '<div class="adm-panel"><h2>Onboarding funnel (O18)</h2><div class="adm-tablewrap"><table class="adm"><thead><tr>' +
+      ["Tour", "Starts", "Steps", "Completes", "Skips", "Completion %"].map(h => "<th>" + h + "</th>").join("") +
+      "</tr></thead><tbody>" + ((tours.funnel || []).length ? tours.funnel.map(t => "<tr><td><code>" + esc(t.tour_key) +
+        "</code></td><td>" + t.starts + "</td><td>" + t.steps + "</td><td>" + t.completes + "</td><td>" + t.skips +
+        "</td><td>" + t.completion_pct + "%</td></tr>").join("")
+        : '<tr><td class="adm-note">No tour data.</td></tr>') + "</tbody></table></div></div>" +
+      '<div class="adm-panel"><h2>Tax &amp; accounting (L2/L3)</h2>' +
+      '<div class="adm-cards"><div class="adm-card"><div class="k">Fees (30d)</div><div class="v">' + money(tax.fees_ngn) +
+      '</div></div><div class="adm-card"><div class="k">VAT rate</div><div class="v">' + ((tax.vat_rate || 0) * 100) + "%</div></div>" +
+      '<div class="adm-card"><div class="k">Revenue (30d)</div><div class="v">' + money(tax.revenue_ngn) + "</div></div>" +
+      '<div class="adm-card"><div class="k">Ledger entries</div><div class="v">' + (ledger || []).length + "</div></div></div>" +
+      '<div class="adm-bar"><button class="adm-btn" id="grLedger">Export ledger JSON</button></div></div>';
+    $("#grLedger").onclick = () => {
+      const blob = new Blob([JSON.stringify(ledger, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = "smspin-ledger.json"; a.click();
+    };
+  };
+
   // ---------------------------------------------------------------- boot
   async function boot() {
     if (!S || !S.auth.isAuthed()) { location.href = "/login/"; return; }
@@ -406,6 +559,8 @@
     document.querySelectorAll("#admTabs button").forEach(b => b.onclick = () => go(b.dataset.tab));
     $("#admDrawer").onclick = e => { if (e.target.id === "admDrawer") $("#admDrawer").classList.remove("in"); };
     await go("overview");
+    // O15: offer the console tour to a first-time admin.
+    if (window.TOUR && TOUR.admin && !TOUR.seen("admin")) setTimeout(() => TOUR.admin(), 900);
   }
   boot();
 })();

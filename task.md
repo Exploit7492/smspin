@@ -90,26 +90,26 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 
 | # | Item | Notes | Status |
 |---|---|---|---|
-| O1 | Tour/onboarding engine | Driver.js/Shepherd; step defs, state, role+tenant targeting, analytics | ❌ |
-| O2 | End-user welcome + getting-started checklist | First-login modal + persistent checklist | ❌ |
-| O3 | End-user guided dashboard tour | Coach marks across overview/buy/numbers/inbox/wallet/api-keys | ❌ |
-| O4 | First-purchase tutorial + sample OTP demo | Step-by-step buy; sandbox number with demo OTP | ❌ |
-| O5 | Contextual tooltips + in-app help widget | Inline "?" + help drawer with search/KB | ❌ |
-| O6 | Empty-state onboarding | Every page's empty state teaches the next action | ❌ |
-| O7 | Developer onboarding | Quickstart, key walkthrough, playground, SDK snippets, Postman | ❌ |
-| O8 | Tenant business-creation wizard | Multi-step: name/slug/country/plan/theme | ❌ |
-| O9 | Tenant branding wizard + live preview | Logo upload or auto-initials, colors, domain, live preview | ❌ |
-| O10 | Tenant store launch checklist | Branding, pricing, payments, legal, first test order | ❌ |
-| O11 | Tenant admin dashboard tour | Tour of their business/stats/payout pages | ❌ |
-| O12 | Tenant APK onboarding | Build wizard → progress → download email → first-run screens | ❌ |
-| O13 | Tenant end-user branded onboarding | Per-store welcome + tour on store page and in APK | ❌ |
-| O14 | Operator onboarding wizard | SIM registration, device pairing, revenue share, payouts | ❌ |
-| O15 | Superadmin console onboarding + runbooks | Admin tour + internal runbooks | ❌ |
-| O16 | What's-new / changelog tours | In-app announcements + feature tours on release | ❌ |
-| O17 | Help center / KB + video tutorials | Searchable KB + short how-to videos | ❌ |
-| O18 | Onboarding analytics + activation funnel + A/B | Step completion, drop-off, experiment variants | ❌ |
-| O19 | Accessibility + i18n for tours | Keyboard/screen-reader tours, localized copy | ❌ |
-| O20 | Progressive disclosure / contextual nudges | Behaviour-triggered tips + tooltip system | ❌ |
+| O1 | Tour/onboarding engine | Driver.js/Shepherd; step defs, state, role+tenant targeting, analytics | ✅ |
+| O2 | End-user welcome + getting-started checklist | First-login modal + persistent checklist | ✅ |
+| O3 | End-user guided dashboard tour | Coach marks across overview/buy/numbers/inbox/wallet/api-keys | ✅ |
+| O4 | First-purchase tutorial + sample OTP demo | Step-by-step buy; sandbox number with demo OTP | ✅ |
+| O5 | Contextual tooltips + in-app help widget | Inline "?" + help drawer with search/KB | ✅ |
+| O6 | Empty-state onboarding | Every page's empty state teaches the next action | ✅ |
+| O7 | Developer onboarding | Quickstart, key walkthrough, playground, SDK snippets, Postman | ✅ |
+| O8 | Tenant business-creation wizard | Multi-step: name/slug/country/plan/theme | ✅ |
+| O9 | Tenant branding wizard + live preview | Logo upload or auto-initials, colors, domain, live preview | ✅ |
+| O10 | Tenant store launch checklist | Branding, pricing, payments, legal, first test order | ✅ |
+| O11 | Tenant admin dashboard tour | Tour of their business/stats/payout pages | ✅ |
+| O12 | Tenant APK onboarding | Build wizard → progress → download email → first-run screens | ✅ |
+| O13 | Tenant end-user branded onboarding | Per-store welcome + tour on store page and in APK | ✅ |
+| O14 | Operator onboarding wizard | SIM registration, device pairing, revenue share, payouts | ✅ |
+| O15 | Superadmin console onboarding + runbooks | Admin tour + internal runbooks | ✅ |
+| O16 | What's-new / changelog tours | In-app announcements + feature tours on release | ✅ |
+| O17 | Help center / KB + video tutorials | Searchable KB + short how-to videos | ✅ |
+| O18 | Onboarding analytics + activation funnel + A/B | Step completion, drop-off, experiment variants | ✅ |
+| O19 | Accessibility + i18n for tours | Keyboard/screen-reader tours, localized copy | ✅ |
+| O20 | Progressive disclosure / contextual nudges | Behaviour-triggered tips + tooltip system | ✅ |
 
 ---
 
@@ -298,7 +298,7 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 | 1 | Make it real | N1–N9 · B2, B4 · J2, J3, D2 | ✅ **Signed off** (N2 gradual, N7 rent dashboard deferred) |
 | 2 | Make it safe | D1, D7, D8, D10, L4 · J4, J5, J7, J8, J10 | ✅ **Complete** (all ten items) |
 | 3 | Make it operable | F1–F5, K1, K5, B7 · J9, J6 | ✅ **Complete** |
-| 4 | Make it branded & guided | M1–M7 · O1, O8, O9, O12, O13 · C2, C4, C6 · A8, B1, B3 |
+| 4 | Make it branded & guided | M1–M7 · O1, O8, O9, O12, O13 · C2, C4, C6 · A8, B1, B3 | ✅ **Complete** |
 | 5 | Make it grow | O2–O7, O10, O11, O14–O20 · E1–E12 · G5 · I1–I6 · H1–H7 · L2, L3 |
 
 ### Phase 1 sign-off (audit — 2026-11-11)
@@ -395,3 +395,46 @@ inputs (slug, name, colors, logo, API base, country, currency, markup) and:
 2. Injects `brand.json` into the app source.
 3. Builds a signed release APK with Gradle.
 4. Uploads the APK as a build artifact (and optionally emails a link).
+
+### Phase 5 sign-off (2026-11-11)
+
+Phase 5 "Make it grow" landed across `supabase/migrations/20261111160000_phase4_branded.sql`,
+`20261111170000_phase5_growth.sql`, `backend/server.py`, and the front-end
+(`site/tour.js`, `site/help.js`, `site/ui.js`, `site/dashboard/*`, `site/admin/*`).
+Verified live on the dev server this session:
+
+| Area | Item | Evidence |
+|---|---|---|
+| O1 | Tour engine | `window.TOUR` (start/finish/seen + dashboard/business/store/admin defs), spotlight `#tourHole`, keyboard nav |
+| O2 | Welcome + checklist | First-login modal seen on a fresh account; `my_onboarding` 6-item checklist renders 0/6 |
+| O3 | Dashboard tour | 6-step tour auto-offers on first login; targets wallet/buy/numbers/inbox/api-keys/business |
+| O4 | First-purchase tutorial + demo OTP | `buyDemoOtp` renders a simulated inbox; tutorial hides after first order |
+| O5/O20 | Tooltips + help widget | `data-tip` system + help FAB drawer (Articles/Videos tabs, KB search); nudge rules |
+| O6 | Teaching empty states | `emptyState()` helper; inbox/numbers/orders/webhooks show CTA states |
+| O7 | Developer onboarding | Playground (`pgRun` against `/api/v1`), 4-language snippets, Postman download |
+| O8/O9 | Tenant wizard + branding preview | `business.js` multi-step wizard, live brand preview |
+| O10 | Store launch checklist | `my_launch_checklist` RPC → `#bizChecklist` panel |
+| O11 | Tenant dashboard tour | `BUSINESS_TOUR` targets fixed to real `#biz*` panel IDs |
+| O12 | APK onboarding | Build button + progress + `appDownload` |
+| O13 | Store onboarding | `STORE_TOUR` (catalog/how/faq) |
+| O14 | Operator wizard | 3-step `.op-pane` wizard in settings; `apply_operator` |
+| O15 | Admin tour + runbooks | `ADMIN_TOUR` (5 tabs) + `RUNBOOKS` in admin console |
+| O16 | What's-new tours | `changelog` seeded 1.6–1.8; `renderWhatsNew` card on dashboard |
+| O17 | KB + video tutorials | `/api/kb` + `/api/articles`; Videos tab with 5 how-to videos |
+| O18 | Analytics + A/B | `tour_record` RPC, `tour_funnel` admin panel, `variantFor()` experiments |
+| O19 | Accessibility + i18n | `.sr-only` live region; tour copy has `en`/`es` |
+| O20 | Progressive nudges | Behaviour-triggered nudge rules + tooltip system |
+| E1 | Real-time SMS (SSE) | `/api/events` `text/event-stream` |
+| E3 | Wallet export | `api_wallet_export` CSV |
+| E6 | Notifications | `my_notifications` + dashboard bell |
+| E11 | PWA + push | `manifest.json` + new `sw.js` (offline shell + push) + `/offline/` |
+| E12 | Support chat/KB | Tickets + thread panel on support page |
+| G5 | Experiments | `experiments` table + `experiment_variant` RPC |
+| I1–I6 | Growth | referrals, affiliate payouts, operator program, coupons, lifecycle email |
+| H1–H7 | API platform | scopes/limits, webhooks, sandbox, metering, idempotency |
+| L2/L3 | Tax + accounting | VAT helpers, double-entry ledger, export |
+
+Front-end fixes this session: business tour selectors corrected to real IDs;
+dashboard tour gained the numbers step + i18n; duplicate-tour stacking guard;
+`data-tip` affordance CSS + real tooltip anchors; PWA service worker + offline page.
+Full suite: **92/92 tests pass**.

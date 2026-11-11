@@ -70,3 +70,10 @@ table.adm tr:hover td { background: var(--glass-bg-soft); }
 .adm-bar-mini { display: inline-block; height: 8px; border-radius: 99px; max-width: 120px;
   background: linear-gradient(90deg, var(--accent, #E11D2E), #F26B7A); }
 @media (max-width: 640px) { .adm-wrap { padding: 14px; } .adm-kv { grid-template-columns: 1fr; } }
+
+/* O15 runbooks + admin onboarding */
+.adm-runbooks { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.adm-runbook { border: 1px solid var(--glass-border); background: var(--glass-bg); border-radius: 14px; padding: 4px 16px; }
+.adm-runbook summary { cursor: pointer; padding: 12px 0; font-weight: 700; font-size: 14px; color: var(--text-primary); }
+.adm-runbook ol { margin: 0 0 14px; padding-left: 20px; color: var(--text-secondary); font-size: 13.5px; line-height: 1.7; }
+.adm-runbook li { margin: 4px 0; }

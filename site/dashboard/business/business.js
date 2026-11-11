@@ -323,9 +323,14 @@
     $("#bizBrandPanel").hidden = false;
     $("#bizPayoutPanel").hidden = false;
     $("#bizKeyPanel").hidden = false;
+    $("#bizChecklistPanel").hidden = false;
+    $("#bizAppPanel").hidden = false;
     loadBranding();
     loadPayouts();
     loadKeys();
+    loadChecklist();
+    loadAppBuilds(s.slug);
+    if (window.TOUR && !TOUR.seen("business")) setTimeout(() => TOUR.business(), 1200);
     const open = $("#bizOpenStore"); if (open) open.href = "/store/" + s.slug;
     const open2 = $("#bizOpenStore2"); if (open2) open2.href = "/store/" + s.slug;
     drawDonut(s.by_status || []);
@@ -342,6 +347,58 @@
         "<td>" + money(r.price) + "</td><td>" + esc(when(r.created_at)) + "</td></tr>").join("")
         : '<tr><td colspan="5" class="muted" style="text-align:center;padding:18px">No storefront orders yet.</td></tr>';
     }
+  }
+
+  // ---------------- O10 store launch checklist ----------------
+  async function loadChecklist() {
+    let d = null;
+    try { d = await SMSPIN.rpc("my_launch_checklist"); } catch (e) { return; }
+    const host = $("#bizChecklist"), panel = $("#bizChecklistPanel");
+    if (!d || !d.items || !host) return;
+    if (panel) panel.hidden = false;
+    const done = d.items.filter(i => i.done).length;
+    const prog = $("#bizCheckProgress"); if (prog) prog.textContent = done + " / " + d.items.length + " done";
+    host.innerHTML = d.items.map(it =>
+      '<a class="onb-item' + (it.done ? " done" : "") + '" href="' + esc(it.href) + '">' +
+        '<span class="onb-check" aria-hidden="true">' + (it.done ? "✓" : "") + "</span>" +
+        '<span class="onb-label">' + esc(it.label) + "</span>" +
+        '<span class="onb-go" aria-hidden="true">' + (it.done ? "" : "→") + "</span></a>").join("");
+  }
+
+  // ---------------- M5-M7 branded app distribution ----------------
+  async function loadAppBuilds(slug) {
+    const dl = $("#appDownload");
+    if (slug) { const d = $("#appDeepLink"); if (d) d.textContent = "/store/" + slug; }
+    let builds = [];
+    try { builds = await SMSPIN.rpc("my_app_builds"); } catch (e) { return; }
+    const when = iso => { try { return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch (e) { return "—"; } };
+    const kb = n => n ? (n / 1048576).toFixed(1) + " MB" : "—";
+    const tb = $("#appTbl tbody");
+    const rows = builds || [];
+    if (tb) tb.innerHTML = rows.length ? rows.map(b =>
+      "<tr><td>" + esc(b.version) + '</td><td><span class="badge ' +
+        (b.status === "ready" ? "ok" : b.status === "failed" ? "err" : "wait") + '">' + esc(b.status) + "</span></td>" +
+      "<td>" + kb(b.size_bytes) + "</td><td>" + esc(when(b.built_at || b.created_at)) + "</td><td>" +
+      (b.download_url ? '<a class="btn btn-ghost" href="' + esc(b.download_url) + '" download>Download</a>' : "") +
+      "</td></tr>").join("")
+      : '<tr><td colspan="5" class="muted" style="text-align:center;padding:18px">No builds yet. Build your first app above.</td></tr>';
+    // Surface the newest ready build's download button.
+    const ready = rows.find(b => b.status === "ready" && b.download_url);
+    if (dl && ready) { dl.hidden = false; dl.href = ready.download_url; }
+    const btn = $("#appBuildBtn");
+    if (btn) btn.addEventListener("click", async () => {
+      btn.disabled = true; btn.textContent = "Building…";
+      try {
+        const r = await fetch("/api/app/builds/request", { method: "POST",
+          headers: { "Authorization": "Bearer " + (SMSPIN.getSession() || {}).access_token, "Content-Type": "application/json" },
+          body: JSON.stringify({ version: "1.0.0" }) });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || "build failed");
+        toast("Build queued — it will be ready in a moment", "ok");
+        setTimeout(() => loadAppBuilds(slug), 2500);
+      } catch (e) { toast(e.message, "err"); }
+      finally { btn.disabled = false; btn.textContent = "Build my app"; }
+    });
   }
 
   document.addEventListener("DOMContentLoaded", async () => {
