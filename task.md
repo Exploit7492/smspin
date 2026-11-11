@@ -299,7 +299,8 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 | 2 | Make it safe | D1, D7, D8, D10, L4 · J4, J5, J7, J8, J10 | ✅ **Complete** (all ten items) |
 | 3 | Make it operable | F1–F5, K1, K5, B7 · J9, J6 | ✅ **Complete** |
 | 4 | Make it branded & guided | M1–M7 · O1, O8, O9, O12, O13 · C2, C4, C6 · A8, B1, B3 | ✅ **Complete** |
-| 5 | Make it grow | O2–O7, O10, O11, O14–O20 · E1–E12 · G5 · I1–I6 · H1–H7 · L2, L3 |
+| 5 | Make it grow | O2–O7, O10, O11, O14–O20 · E1–E12 · G5 · I1–I6 · H1–H7 · L2, L3 | ✅ **Complete** |
+| 6 | Make it findable & fast | G1, G2, G3, G6 · J11, J13 · D2 · E9 | 🚧 In progress |
 
 ### Phase 1 sign-off (audit — 2026-11-11)
 

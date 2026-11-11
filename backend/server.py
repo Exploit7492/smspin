@@ -29,6 +29,68 @@ import mailer  # transactional email (SMTP)
 
 SITE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "site")
 PORT = int(os.environ.get("PORT", "12000"))
+# G1: canonical host used for sitemap URLs and robots.txt's Sitemap directive.
+SITE_URL = os.environ.get("SMSPIN_SITE_URL", "https://smspin.io").rstrip("/")
+
+# Paths never listed in the sitemap and blocked in robots.txt: authenticated
+# surfaces and API endpoints, which must not be indexed.
+_PRIVATE_PREFIXES = ("/dashboard", "/admin", "/api", "/store", "/login",
+                     "/register", "/reset-password", "/verify")
+
+
+def _sitemap_urls():
+    """Walk SITE_DIR and yield every public page URL (dir/index.html -> dir/).
+
+    Cached for an hour: the tree holds ~12k pages and walking it on every
+    request would be wasteful, but it changes only when the mirror is refreshed.
+    """
+    now = time.time()
+    cache = getattr(_sitemap_urls, "_cache", None)
+    if cache and now - cache[0] < 3600:
+        return cache[1]
+    urls = []
+    for root, dirs, files in os.walk(SITE_DIR):
+        dirs[:] = [d for d in dirs if d not in ("_next", "node_modules")]
+        if "index.html" not in files:
+            continue
+        rel = os.path.relpath(root, SITE_DIR).replace(os.sep, "/")
+        if rel == ".":
+            loc = "/"
+        else:
+            loc = "/" + rel.strip("/") + "/"
+        if loc.startswith(_PRIVATE_PREFIXES):
+            continue
+        try:
+            mtime = os.path.getmtime(os.path.join(root, "index.html"))
+        except OSError:
+            mtime = now
+        urls.append((loc, mtime))
+    urls.sort()
+    _sitemap_urls._cache = (now, urls)
+    return urls
+
+
+def build_sitemap():
+    """G1: sitemap.xml over the whole public mirror (max 50k URLs per file)."""
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for loc, mtime in _sitemap_urls()[:50000]:
+        lastmod = time.strftime("%Y-%m-%d", time.gmtime(mtime))
+        parts.append(f"<url><loc>{SITE_URL}{loc}</loc>"
+                     f"<lastmod>{lastmod}</lastmod></url>")
+    parts.append("</urlset>")
+    return "\n".join(parts).encode()
+
+
+def build_robots():
+    """G1: robots.txt — allow the marketing mirror, block private surfaces."""
+    lines = ["User-agent: *", "Allow: /"]
+    for p in _PRIVATE_PREFIXES:
+        lines.append(f"Disallow: {p}")
+    lines.append("Disallow: /*?")
+    lines.append("")
+    lines.append(f"Sitemap: {SITE_URL}/sitemap.xml")
+    return ("\n".join(lines) + "\n").encode()
 
 
 # ---------------------------------------------------------------- J4 structured logs
@@ -1183,6 +1245,11 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         self._tick()
         path = urlparse(self.path).path
+        # G1: dynamic SEO files generated from the mirrored tree.
+        if path == "/robots.txt":
+            return self._send(200, build_robots(), "text/plain; charset=utf-8")
+        if path == "/sitemap.xml":
+            return self._send(200, build_sitemap(), "application/xml; charset=utf-8")
         # Alias legacy marketing links onto the real dashboard routes.
         if path == "/dashboard/referral":
             self.send_response(301)
