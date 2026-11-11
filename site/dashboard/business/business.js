@@ -198,12 +198,134 @@
     }).join("");
   }
 
+  // ---------------- C2 branding + live preview ----------------
+  let brandState = {};
+  function paintPreview() {
+    const p = $("#brPrimary").value, s = $("#brSecondary").value;
+    const wrap = $("#brandPreview");
+    if (wrap) { wrap.style.setProperty("--bp1", p); wrap.style.setProperty("--bp2", s); }
+    const logo = $("#brLogo").value.trim();
+    const name = ($("#bizName").value.trim()) || "Your store";
+    $("#bpName").textContent = name;
+    $("#bpTag").textContent = $("#brTagline").value.trim() || "Instant numbers for every app";
+    $("#bpMail").textContent = $("#brSupport").value.trim() || "support@smspin.io";
+    const el = $("#bpLogo");
+    if (logo) el.innerHTML = '<img src="' + esc(logo) + '" alt="">';
+    else el.textContent = name[0].toUpperCase();
+  }
+
+  async function loadBranding() {
+    let b = null;
+    try { const mine = await SMSPIN.rpc("my_business"); if (mine && mine.slug) brandState.slug = mine.slug; } catch (e) {}
+    if (brandState.slug) { try { b = await SMSPIN.rpc("business_branding", { p_slug: brandState.slug }); } catch (e) {} }
+    if (b && b.slug) {
+      brandState = b;
+      if (b.logo_url) $("#brLogo").value = b.logo_url;
+      if (b.tagline) $("#brTagline").value = b.tagline;
+      if (b.support_email) $("#brSupport").value = b.support_email;
+      if (b.primary_color) $("#brPrimary").value = b.primary_color;
+      if (b.secondary_color) $("#brSecondary").value = b.secondary_color;
+      if (b.domain) $("#brDomain").value = b.domain;
+    }
+    paintPreview();
+    ["#brLogo", "#brTagline", "#brSupport", "#brPrimary", "#brSecondary"].forEach(sel => {
+      const el = $(sel); if (el) el.addEventListener("input", paintPreview);
+    });
+    const save = $("#brandSave");
+    if (save) save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        await SMSPIN.rpc("business_set_branding", {
+          p_logo_url: $("#brLogo").value.trim() || null,
+          p_tagline: $("#brTagline").value.trim() || null,
+          p_support_email: $("#brSupport").value.trim() || null,
+          p_primary: $("#brPrimary").value,
+          p_secondary: $("#brSecondary").value,
+          p_domain: $("#brDomain").value.trim() || null,
+        });
+        $("#brandSaved").textContent = "Saved";
+        toast("Branding saved", "ok");
+        setTimeout(() => { const e = $("#brandSaved"); if (e) e.textContent = ""; }, 2500);
+      } catch (e) { toast(e.message, "err"); }
+      finally { save.disabled = false; }
+    });
+  }
+
+  // ---------------- C4 payouts ----------------
+  async function loadPayouts() {
+    let p = null;
+    try { p = await SMSPIN.rpc("my_payouts"); } catch (e) { return; }
+    if (!p) return;
+    $("#payEarned").textContent = money(p.earned_ngn);
+    $("#payPaid").textContent = money(p.paid_ngn);
+    $("#payAvail").textContent = money(p.available_ngn);
+    const when = iso => { try { return new Date(iso).toLocaleDateString(); } catch (e) { return ""; } };
+    const tb = $("#payTbl tbody");
+    const rows = p.payouts || [];
+    if (tb) tb.innerHTML = rows.length ? rows.map(r =>
+      "<tr><td>" + esc(when(r.created_at)) + "</td><td>" + money(r.amount) + "</td><td>" + esc(r.method) +
+      '</td><td><span class="badge ok">' + esc(r.status) + "</span></td><td class=\"mono\">" + esc(r.reference || "") + "</td></tr>").join("")
+      : '<tr><td colspan="5" class="muted" style="text-align:center;padding:18px">No payouts yet.</td></tr>';
+    const btn = $("#payoutRequest");
+    if (btn) btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const r = await SMSPIN.rpc("request_payout", {});
+        toast("Paid out " + money(r.amount) + " to your wallet", "ok");
+        loadPayouts();
+      } catch (e) { toast(e.message, "err"); }
+      finally { btn.disabled = false; }
+    });
+  }
+
+  // ---------------- C6 tenant API keys ----------------
+  async function loadKeys() {
+    let keys = [];
+    try { keys = await SMSPIN.rpc("tenant_api_keys_list"); } catch (e) { return; }
+    const tb = $("#tkTbl tbody");
+    const when = iso => { try { return new Date(iso).toLocaleDateString(); } catch (e) { return ""; } };
+    if (tb) tb.innerHTML = (keys && keys.length) ? keys.map(k =>
+      "<tr><td>" + esc(k.name) + '</td><td class="mono">' + esc(k.prefix) + "</td><td>" + esc((k.scopes || []).join(", ")) +
+      "</td><td>" + (k.webhook_url ? esc(k.webhook_url) : '<span class="muted">—</span>') + "</td><td>" + esc(when(k.created_at)) +
+      '</td><td>' + (k.revoked ? '<span class="badge err">revoked</span>'
+        : '<button class="btn btn-ghost" data-revoke="' + k.id + '">Revoke</button>') + "</td></tr>").join("")
+      : '<tr><td colspan="6" class="muted" style="text-align:center;padding:18px">No keys yet.</td></tr>';
+    $$("[data-revoke]").forEach(b => b.addEventListener("click", async () => {
+      try { await SMSPIN.rpc("tenant_api_key_revoke", { p_id: Number(b.dataset.revoke) }); toast("Key revoked", "ok"); loadKeys(); }
+      catch (e) { toast(e.message, "err"); }
+    }));
+    const create = $("#tkCreate");
+    if (create) create.addEventListener("click", async () => {
+      create.disabled = true;
+      try {
+        const scopes = ($("#tkScopes").value || "read").split(",");
+        const r = await SMSPIN.rpc("tenant_api_key_create", {
+          p_name: $("#tkName").value.trim() || "default",
+          p_scopes: scopes,
+          p_webhook_url: $("#tkWebhook").value.trim() || null,
+        });
+        const rev = $("#tkReveal");
+        rev.hidden = false;
+        rev.innerHTML = "<b>Copy your key now — it won't be shown again.</b><code>" + esc(r.key) + "</code>";
+        $("#tkName").value = ""; $("#tkWebhook").value = "";
+        loadKeys();
+      } catch (e) { toast(e.message, "err"); }
+      finally { create.disabled = false; }
+    });
+  }
+
   async function loadPerf() {
     let s;
     try { s = await SMSPIN.rpc("my_business_stats"); } catch (e) { return; }
     if (!s || s === null || !s.slug) return;
     const panel = $("#bizPerfPanel"); if (!panel) return;
     panel.hidden = false;
+    $("#bizBrandPanel").hidden = false;
+    $("#bizPayoutPanel").hidden = false;
+    $("#bizKeyPanel").hidden = false;
+    loadBranding();
+    loadPayouts();
+    loadKeys();
     const open = $("#bizOpenStore"); if (open) open.href = "/store/" + s.slug;
     const open2 = $("#bizOpenStore2"); if (open2) open2.href = "/store/" + s.slug;
     drawDonut(s.by_status || []);

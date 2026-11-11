@@ -322,6 +322,17 @@ def buy_real(country, service, user_id=None, tenant_account=None, operator=None)
     _svc("set_order_upstream", {"p_order_id": order_id, "p_phone": phone,
                                 "p_upstream_id": up_id, "p_operator": up.get("operator"),
                                 "p_cost_usd": up.get("price")})
+    # C6: fan out an order event to the storefront's tenant webhooks.
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("select business_id from orders where id=%s", (order_id,))
+            row = cur.fetchone()
+        if row and row[0]:
+            notify_business_order(row[0], {"order_id": order_id, "country": cc, "service": sv,
+                                           "phone_number": phone, "price_ngn": res["price_ngn"],
+                                           "status": "waiting"})
+    except Exception:
+        pass
     return {"order_id": order_id, "phone_number": phone, "price_ngn": res["price_ngn"],
             "base_ngn": res["base_ngn"], "markup_ngn": res["markup_ngn"],
             "status": "waiting", "upstream_order_id": up_id}
@@ -707,6 +718,52 @@ def setting_get(key, default=None):
         return default
 
 
+def dispatch_tenant_webhooks():
+    """C6: deliver queued tenant webhook events to each key's URL, signed with
+    an HMAC-SHA256 of the body using the key's secret. Best effort."""
+    try:
+        pending = _svc("tenant_webhook_pending", {"p_limit": 20}) or []
+    except Exception:
+        return 0
+    delivered = 0
+    for e in pending:
+        url = e.get("webhook_url")
+        secret = e.get("webhook_secret") or ""
+        payload = {"event": e.get("event"), "data": e.get("payload"),
+                   "business_id": e.get("business_id"),
+                   "delivered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        body = json.dumps(payload).encode()
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        ok, err = False, None
+        try:
+            req = urllib.request.Request(
+                url, data=body, method="POST",
+                headers={"Content-Type": "application/json", "X-SMSPin-Signature": sig})
+            urllib.request.urlopen(req, timeout=8)
+            ok = True
+        except Exception as ex:
+            err = str(ex)[:200]
+        try:
+            _svc("tenant_webhook_mark", {"p_id": e["id"], "p_ok": ok, "p_error": err})
+        except Exception:
+            pass
+        if ok:
+            delivered += 1
+    return delivered
+
+
+def notify_business_order(business_id, order_row):
+    """C6: enqueue an order event for a storefront's tenant webhooks."""
+    if not business_id:
+        return 0
+    try:
+        return _svc("tenant_webhook_enqueue", {"p_business": business_id, "p_event": "order.created",
+                                               "p_payload": json.dumps(order_row)}) or 0
+    except Exception as e:
+        LOG.error("tenant_webhook_enqueue_error", error=str(e)[:200])
+        return 0
+
+
 def dispatch_alerts():
     """J5: send undelivered alert_events to the configured webhook (best effort)."""
     url = setting_get("alerts_webhook_url", "") or ""
@@ -773,6 +830,15 @@ def scheduler_step():
         dispatch_refund_notices()
     except Exception as e:
         LOG.error("refund_dispatch_error", error=str(e)[:200])
+
+    # 5) C6: deliver queued tenant webhook events
+    try:
+        sent = dispatch_tenant_webhooks()
+        _svc("scheduler_mark", {"p_key": "tenant_webhooks", "p_ok": True,
+                                "p_detail": json.dumps({"delivered": sent})})
+    except Exception as e:
+        _svc("scheduler_mark", {"p_key": "tenant_webhooks", "p_ok": False,
+                                "p_detail": json.dumps({"error": str(e)[:200]})})
 
 
 def backup_verify_job():
@@ -920,6 +986,21 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Location", "/dashboard/referrals/")
             self.end_headers()
             return
+        # C2: a request on a tenant's custom domain serves that store's pages.
+        host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(":")[0].lower()
+        if host and "all-hands.dev" not in host and host not in ("localhost", "127.0.0.1"):
+            try:
+                slug = _svc("resolve_domain", {"p_host": host})
+            except Exception:
+                slug = None
+            if slug and slug != "null":
+                rest = path.strip("/")
+                tail = {"": "", "login": "login", "register": "register", "account": "account"}.get(rest)
+                if tail is not None:
+                    qs = urlparse(self.path).query
+                    extra = ("&" if qs else "?") + "store=" + slug
+                    self.path = (f"/store/{tail}.html" if tail else "/store/index.html") + qs + extra
+                    path = urlparse(self.path).path
         # White-label storefronts live at /store/<slug>; serve the single store page.
         # Real files (e.g. /store/auth.css) are served as-is.
         if path.startswith("/store/") and not os.path.isfile(os.path.join(SITE_DIR, path.lstrip("/"))):
@@ -976,6 +1057,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send(200, pricing.quote(amount, cc, cur))
             except Exception as e:
                 return self._send(500, {"error": str(e)})
+        if path.startswith("/api/tenant/"):
+            return self.api_tenant_get(path)
         if path.startswith("/api/v1/"):
             return self.api_v1(path)
         if path == "/api/catalog/live":
@@ -1262,6 +1345,8 @@ class Handler(SimpleHTTPRequestHandler):
                                                        "p_actor": one("actor")}))
         if path == "/api/admin/refunds":
             return self._send(200, _svc("reconcile_report", {"p_days": int(one("days", "7"))}))
+        if path == "/api/admin/margin":
+            return self._send(200, _svc("margin_report", {"p_days": int(one("days", "30"))}))
         return self._send(404, {"error": "not found"})
 
     def api_admin_post(self, path):
@@ -1566,6 +1651,60 @@ class Handler(SimpleHTTPRequestHandler):
                 with conn.cursor() as cur:
                     cur.execute("update api_keys set last_used_at=now() where key_hash=%s", (h,))
         return uid
+
+    def _tenant_key(self):
+        """C6: authenticate a caller via a tenant API key; returns key info or None."""
+        key = self.headers.get("x-tenant-key") or ""
+        if not key:
+            a = self.headers.get("Authorization", "")
+            if a.startswith("Bearer tk_"):
+                key = a[7:]
+        if not key:
+            return None
+        h = hashlib.sha256(key.encode()).hexdigest()
+        info = _svc("tenant_resolve_api_key", {"p_hash": h})
+        if not info or info == "null":
+            return None
+        try:
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("update tenant_api_keys set last_used_at=now() where key_hash=%s", (h,))
+        except Exception:
+            pass
+        return info
+
+    def api_tenant_get(self, path):
+        """C6: read-only tenant API surface authenticated by a tenant API key."""
+        info = self._tenant_key()
+        if not info:
+            return self._send(401, {"error": "invalid or missing tenant API key"})
+        scopes = info.get("scopes") or []
+        if "read" not in scopes:
+            return self._send(403, {"error": "key lacks 'read' scope"})
+        biz = info.get("business_id")
+        q = parse_qs(urlparse(self.path).query)
+        one = lambda k, d=None: (q.get(k, [d])[0] if q.get(k) else d)
+        if path == "/api/tenant/account":
+            return self._send(200, _svc("business_branding", {"p_slug": self._slug_for_biz(biz)}))
+        if path == "/api/tenant/orders":
+            limit = int(one("limit", "50"))
+            with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""select id, country_code, service_code, phone_number, price, status,
+                                      created_at from orders where business_id=%s
+                                order by created_at desc limit %s""", (biz, max(1, min(limit, 200))))
+                rows = cur.fetchall()
+            return self._send(200, {"orders": [dict(r) for r in rows]})
+        if path == "/api/tenant/stats":
+            return self._send(200, _svc("my_business_stats_by_id", {"p_business": biz}))
+        return self._send(404, {"error": "unknown endpoint"})
+
+    def _slug_for_biz(self, business_id):
+        try:
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("select slug from businesses where id=%s", (business_id,))
+                row = cur.fetchone()
+            return row[0] if row else None
+        except Exception:
+            return None
 
     def api_v1(self, path):
         uid = self._api_user()

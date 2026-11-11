@@ -349,7 +349,9 @@
 
   function slug(){
     const m = location.pathname.match(/\/store\/([^\/?#]+)/);
-    return m ? decodeURIComponent(m[1]) : (new URLSearchParams(location.search).get("slug") || "");
+    if (m) return decodeURIComponent(m[1]);
+    const q = new URLSearchParams(location.search);
+    return q.get("store") || q.get("slug") || "";
   }
 
   function applyFilters(){
@@ -396,14 +398,24 @@
     $("#stCov").innerHTML = top.map(c => '<div class="c"><span class="f">'+esc(c.flag||"")+'</span>'+esc(c.name)+'</div>').join("");
   }
 
-  function boot(d, stats){
+  function boot(d, stats, brand){
     THEME = d.theme || "crimson";
     const t = THEMES[THEME] || THEMES.crimson;
-    document.documentElement.style.setProperty("--brand", t[0]);
-    document.documentElement.style.setProperty("--brand-2", t[1]);
+    const primary = (brand && brand.primary_color) || t[0];
+    const secondary = (brand && brand.secondary_color) || t[1];
+    document.documentElement.style.setProperty("--brand", primary);
+    document.documentElement.style.setProperty("--brand-2", secondary);
     document.title = d.name + " — Store";
     $("#stName").textContent = d.name; $("#stName2").textContent = d.name;
-    $("#stLogo").textContent = d.name[0].toUpperCase(); $("#stLogo2").textContent = d.name[0].toUpperCase();
+    const initial = d.name[0].toUpperCase();
+    if (brand && brand.logo_url) {
+      ["#stLogo","#stLogo2"].forEach(sel => {
+        const el = $(sel); if (!el) return;
+        el.innerHTML = '<img src="'+esc(brand.logo_url)+'" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:inherit">';
+      });
+    } else {
+      $("#stLogo").textContent = initial; $("#stLogo2").textContent = initial;
+    }
     $("#stFoot").textContent = d.name;
 
     CAT = (d.catalog || []);
@@ -457,12 +469,13 @@
     const s = slug();
     $("#stYear").textContent = new Date().getFullYear();
     if (!s){ $("#stTitle").textContent="Store not found"; $("#stSub").textContent="This store link is incomplete."; $("#stSkel").hidden=true; return; }
-    let d=null, stats=null;
+    let d=null, stats=null, brand=null;
     try{ d = await SMSPIN.rpc("business_public",{p_slug:s}); }catch(e){}
     if (!d || !d.name){ $("#stSkel").hidden=true; $("#stTitle").textContent="Store not found"; $("#stSub").textContent="This store is not live yet."; return; }
+    try{ brand = await SMSPIN.rpc("business_branding",{p_slug:s}); }catch(e){}
     try{ stats = await SMSPIN.rpc("business_stats",{p_slug:s}); }catch(e){}
     if (!stats || stats===null) stats = {services:0,countries:0,orders:0};
-    boot(d, stats);
+    boot(d, stats, brand);
   }
   load();
 })();

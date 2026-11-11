@@ -112,6 +112,82 @@
           </table>
         </div>
       </div>
+
+      <!-- C2: branding + custom domain -->
+      <div class="panel" id="bizBrandPanel" hidden>
+        <div class="panel-h"><h2>Branding &amp; domain</h2><span class="spacer"></span>
+          <span class="muted" id="brandSaved"></span></div>
+        <div class="panel-b">
+          <div class="brand-grid">
+            <div class="brand-form">
+              <div class="field"><label for="brLogo">Logo URL</label>
+                <input id="brLogo" type="url" placeholder="https://…/logo.png" autocomplete="off"></div>
+              <div class="field"><label for="brTagline">Tagline</label>
+                <input id="brTagline" type="text" placeholder="Instant numbers for every app"></div>
+              <div class="field"><label for="brSupport">Support email</label>
+                <input id="brSupport" type="email" placeholder="support@yourstore.com" autocomplete="off"></div>
+              <div class="field-row">
+                <div class="field"><label for="brPrimary">Primary colour</label>
+                  <input id="brPrimary" type="color" value="#E11D2E"></div>
+                <div class="field"><label for="brSecondary">Secondary colour</label>
+                  <input id="brSecondary" type="color" value="#F26B7A"></div>
+              </div>
+              <div class="field"><label for="brDomain">Custom domain</label>
+                <input id="brDomain" type="text" placeholder="numbers.yourbrand.com" autocomplete="off">
+                <small class="muted">Point a CNAME at this platform; we serve your store on the domain.</small></div>
+              <button class="btn btn-primary" type="button" id="brandSave">Save branding</button>
+            </div>
+            <div class="brand-preview" id="brandPreview">
+              <div class="bp-top"><span class="bp-logo" id="bpLogo">S</span><span class="bp-name" id="bpName">Your store</span></div>
+              <p class="bp-tag" id="bpTag">Instant numbers for every app</p>
+              <div class="bp-btn">Buy a number</div>
+              <small class="bp-mail" id="bpMail">support@smspin.io</small>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- C4: payouts -->
+      <div class="panel" id="bizPayoutPanel" hidden>
+        <div class="panel-h"><h2>Payouts</h2><span class="spacer"></span>
+          <button class="btn btn-primary" type="button" id="payoutRequest">Withdraw earnings</button></div>
+        <div class="panel-b">
+          <div class="pay-kpis">
+            <div class="biz-kpi"><span class="bk-l">Earned</span><span class="bk-v" id="payEarned">₦ 0.00</span></div>
+            <div class="biz-kpi"><span class="bk-l">Paid out</span><span class="bk-v" id="payPaid">₦ 0.00</span></div>
+            <div class="biz-kpi"><span class="bk-l">Available</span><span class="bk-v" id="payAvail">₦ 0.00</span></div>
+          </div>
+          <table class="tbl" id="payTbl">
+            <thead><tr><th>Date</th><th>Amount</th><th>Method</th><th>Status</th><th>Reference</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- C6: tenant API keys -->
+      <div class="panel" id="bizKeyPanel" hidden>
+        <div class="panel-h"><h2>Store API keys</h2><span class="spacer"></span>
+          <span class="muted">Scoped keys for your storefront</span></div>
+        <div class="panel-b">
+          <div class="key-form">
+            <div class="field"><label for="tkName">Key name</label>
+              <input id="tkName" type="text" placeholder="production" autocomplete="off"></div>
+            <div class="field"><label for="tkScopes">Scopes</label>
+              <select id="tkScopes">
+                <option value="read">read</option>
+                <option value="read,write">read + write</option>
+              </select></div>
+            <div class="field"><label for="tkWebhook">Webhook URL (optional)</label>
+              <input id="tkWebhook" type="url" placeholder="https://yourbrand.com/webhooks/smspin" autocomplete="off"></div>
+            <button class="btn btn-primary" type="button" id="tkCreate">Create key</button>
+          </div>
+          <div class="key-reveal" id="tkReveal" hidden></div>
+          <table class="tbl" id="tkTbl">
+            <thead><tr><th>Name</th><th>Key</th><th>Scopes</th><th>Webhook</th><th>Created</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
     </main>
   </div>
 </div>
@@ -119,6 +195,6 @@
 <script src="/dashboard/api.js?v=1794401720"></script>
 <script src="/ui.js?v=1794402352"></script>
 <script src="/dashboard/dash.js?v=1794403385"></script>
-<script src="/dashboard/business/business.js"></script>
+<script src="/dashboard/business/business.js?v=2"></script>
 </body>
 </html>

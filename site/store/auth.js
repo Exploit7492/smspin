@@ -11,9 +11,10 @@
 
   function slug() {
     var parts = location.pathname.split("/").filter(Boolean); // ["store","<slug>","login"]
-    var fromPath = parts[0] === "store" ? parts[1] : "";
+    var fromPath = parts[0] === "store" ? (parts[1] || "").replace(/\.html$/, "") : "";
     if (fromPath && fromPath !== "login" && fromPath !== "register" && fromPath !== "account") return fromPath;
-    return new URLSearchParams(location.search).get("store") || "";
+    var q = new URLSearchParams(location.search);
+    return q.get("store") || q.get("slug") || "";
   }
 
   function applyTheme(theme) {
@@ -36,6 +37,13 @@
     if (S) SMSPIN.rpc("business_public", { p_slug: S }).then(function (b) {
       if (b && b.name) { applyName(b.name); if (b.theme) applyTheme(b.theme); }
       if (cb) cb(b);
+      SMSPIN.rpc("business_branding", { p_slug: S }).then(function (br) {
+        if (br && br.primary_color) {
+          var r = document.documentElement.style;
+          r.setProperty("--brand", br.primary_color);
+          if (br.secondary_color) r.setProperty("--brand-2", br.secondary_color);
+        }
+      }).catch(function () {});
     }).catch(function () { if (cb) cb(null); });
     else {
       SMSPIN.rpc("site_config").then(function (c) { if (c && c.brand_name) applyName(c.brand_name); if (cb) cb(null); })

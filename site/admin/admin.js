@@ -349,6 +349,39 @@
     };
   };
 
+  // ---------------------------------------------------------------- margin (A8)
+  tabs.margin = async (root) => {
+    const days = 30;
+    const d = await get("/api/admin/margin?days=" + days);
+    const svc = d.by_service || [];
+    const day = d.by_day || [];
+    const maxRev = Math.max.apply(null, [1].concat(day.map(r => Number(r.revenue_ngn) || 0)));
+    root.innerHTML = '<div class="adm-cards">' +
+      [["Revenue", money(d.revenue_ngn)], ["COGS", money(d.cogs_ngn)],
+       ["Gross margin", money(d.gross_margin_ngn)], ["Margin %", (d.margin_percent ?? 0) + "%"]]
+        .map(([k, v]) => '<div class="adm-card"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + "</div></div>").join("") +
+      "</div>" +
+      '<div class="adm-panel"><h2>Margin by service <span class="adm-note">last ' + days + " days</span></h2>" +
+      '<div class="adm-tablewrap"><table class="adm"><thead><tr>' +
+      ["Service", "Orders", "Revenue", "COGS", "Margin", "Margin %"].map(h => "<th>" + h + "</th>").join("") +
+      "</tr></thead><tbody>" +
+      (svc.length ? svc.map(r => {
+        const pct = Number(r.revenue_ngn) > 0 ? Math.round(Number(r.margin_ngn) / Number(r.revenue_ngn) * 1000) / 10 : 0;
+        return "<tr><td>" + esc(r.service || r.service_code) + "</td><td>" + (r.orders ?? 0) +
+          "</td><td>" + money(r.revenue_ngn) + "</td><td>" + money(r.cogs_ngn) + "</td><td>" + money(r.margin_ngn) +
+          "</td><td>" + pct + "%</td></tr>";
+      }).join("") : '<tr><td colspan="6" class="adm-note">No orders in range.</td></tr>') +
+      "</tbody></table></div></div>" +
+      '<div class="adm-panel"><h2>Daily revenue</h2><div class="adm-tablewrap"><table class="adm"><thead><tr>' +
+      ["Day", "Orders", "Revenue", "Margin", ""].map(h => "<th>" + h + "</th>").join("") + "</tr></thead><tbody>" +
+      (day.length ? day.map(r => {
+        const w = Math.round((Number(r.revenue_ngn) || 0) / maxRev * 100);
+        return "<tr><td>" + esc(r.day) + "</td><td>" + (r.orders ?? 0) + "</td><td>" + money(r.revenue_ngn) +
+          "</td><td>" + money(r.margin_ngn) + '</td><td><span class="adm-bar-mini" style="width:' + w + 'px"></span></td></tr>';
+      }).join("") : '<tr><td colspan="5" class="adm-note">No data.</td></tr>') +
+      "</tbody></table></div></div>";
+  };
+
   // ---------------------------------------------------------------- boot
   async function boot() {
     if (!S || !S.auth.isAuthed()) { location.href = "/login/"; return; }
