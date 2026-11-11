@@ -1042,8 +1042,7 @@
 
   async function renderSupport() {
     const btn = document.querySelector(".panel-b .btn-primary");
-    if (!btn) return;
-    btn.addEventListener("click", async () => {
+    if (btn) btn.addEventListener("click", async () => {
       const sub = document.getElementById("s1").value.trim() || "Support request";
       const ref = document.getElementById("s2").value.trim();
       const msg = document.getElementById("s3").value.trim();
@@ -1053,9 +1052,68 @@
         await SMSPIN.rpc("create_ticket", { p_subject: sub, p_message: msg, p_order_ref: ref || null });
         toast("Ticket created. We will be in touch.", "ok");
         document.getElementById("s3").value = "";
+        await loadTickets();
       } catch (e) { toast(e.message, "err"); }
       finally { btn.disabled = false; }
     });
+    await loadTickets();
+    await loadRefunds();
+  }
+
+  async function loadTickets() {
+    const host = document.getElementById("ticketList");
+    if (!host) return;
+    let tickets = [];
+    try { tickets = (await SMSPIN.rpc("my_tickets")) || []; } catch (e) {}
+    if (!tickets.length) { host.innerHTML = '<p class="muted">No tickets yet. Send us a message and it will appear here.</p>'; return; }
+    host.innerHTML = '<div class="list-num">' + tickets.map(t =>
+      '<div class="num-item"><div class="meta"><b>' + esc(t.subject) + "</b><span>" +
+      esc(t.status) + " \u00b7 " + t.messages + " message" + (t.messages === 1 ? "" : "s") +
+      (t.agent_replies ? ' \u00b7 <b>' + t.agent_replies + " repl" + (t.agent_replies === 1 ? "y" : "ies") + "</b>" : "") +
+      "</span></div><button class='btn btn-secondary' type='button' data-ticket='" + t.id + "'>Open</button></div>").join("") + "</div>";
+    $$("[data-ticket]", host).forEach(b => b.addEventListener("click", () => openThread(b.dataset.ticket)));
+  }
+
+  async function openThread(id) {
+    const panel = document.getElementById("ticketThreadPanel");
+    const msgs = document.getElementById("threadMsgs");
+    if (!panel || !msgs) return;
+    panel.hidden = false;
+    msgs.innerHTML = '<p class="muted">Loading\u2026</p>';
+    let d = null;
+    try { d = await SMSPIN.rpc("ticket_thread", { p_ticket_id: Number(id) }); } catch (e) { msgs.innerHTML = '<p class="muted">' + esc(e.message) + "</p>"; return; }
+    document.getElementById("threadSubject").textContent = "#" + id + " \u00b7 " + ((d.ticket && d.ticket.subject) || "Ticket");
+    msgs.innerHTML = (d.messages || []).map(m =>
+      '<div class="adm-msg ' + (m.author_type === "agent" ? "agent" : "") + '" style="border:1px solid var(--glass-border);border-radius:12px;padding:10px 12px;margin:6px 0;max-width:82%' +
+      (m.author_type === "agent" ? ";margin-left:auto;background:color-mix(in srgb, var(--accent) 10%, transparent)" : "") + '">' +
+      '<div class="muted" style="font-size:11px">' + esc(m.author_type === "agent" ? (m.author_name || "support") : "you") +
+      " \u00b7 " + new Date(m.created_at).toLocaleString() + "</div>" +
+      '<div style="font-size:13.5px;white-space:pre-wrap">' + esc(m.body) + "</div></div>").join("");
+    const send = document.getElementById("threadSend");
+    send.onclick = async () => {
+      const body = document.getElementById("threadReply").value.trim();
+      if (!body) return;
+      send.disabled = true;
+      try {
+        await SMSPIN.rpc("ticket_reply", { p_ticket_id: Number(id), p_body: body });
+        document.getElementById("threadReply").value = "";
+        await openThread(id); await loadTickets();
+      } catch (e) { toast(e.message, "err"); }
+      finally { send.disabled = false; }
+    };
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  async function loadRefunds() {
+    const host = document.getElementById("refundList");
+    if (!host) return;
+    let rows = [];
+    try { rows = (await SMSPIN.rpc("my_refund_notices", { p_limit: 20 })) || []; } catch (e) {}
+    if (!rows.length) { host.innerHTML = '<p class="muted">No refunds yet. Anything we refund lands back in your wallet instantly.</p>'; return; }
+    host.innerHTML = '<div class="list-num">' + rows.map(r =>
+      '<div class="num-item"><div class="meta"><b>' + money(r.amount, r.currency) + " \u00b7 order #" + esc(r.order_id) + "</b><span>" +
+      esc(r.reason || "refund") + " \u00b7 " + new Date(r.created_at).toLocaleDateString() + "</span></div>" +
+      '<span class="badge">' + esc(r.status) + "</span></div>").join("") + "</div>";
   }
 
   async function renderInbox() {

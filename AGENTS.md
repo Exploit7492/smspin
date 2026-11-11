@@ -373,3 +373,45 @@ All RPCs are `security definer`, revoked from anon/authenticated, service_role o
   `fraud_max_orders_hour` (20), `fraud_max_orders_day` (200), `fraud_max_failed_pay_hour` (10),
   `alerts_webhook_url`.
 - Tests: `tests/test_phase2_safe.py` (21). Full suite 59 tests: `python3 -m pytest tests/ -q`.
+
+## Phase 3 — "Make it operable" (admin console, support, refunds, status, envs)
+
+Migration: `supabase/migrations/20261111150000_phase3_operable.sql` (applied to live).
+New tables: `ticket_messages`, `refund_notices`, `service_checks`, `incidents`; new columns
+`profiles.suspended*`, `support_tickets.{updated_at,priority,assigned_to,last_author_type}`.
+
+- **F1 admin console** — `site/admin/` (`index.html`, `admin.js`, `admin.css`). Talks to
+  `/api/admin/*` (Bearer session). Backend gates every route with `_require_admin()`
+  (`is_admin(caller email)`), so non-admins get `403`. Tabs: Overview, Users, Orders & SMS,
+  Support, Payments, Pricing, Status. Grant access by inserting into `admins(email)`.
+- **F2 user management** — `admin_users_list/admin_user_detail/admin_user_suspend/
+  admin_adjust_balance/is_suspended`. Balance adjust is ledger-backed (`admin_credit`/
+  `admin_debit` transactions) and refuses to go negative. Suspended users get
+  `403 account_suspended` on buy.
+- **F3 order/SMS ops** — `admin_orders_list/admin_order_mark_received/admin_sms_inject`;
+  replay runs the existing `upstream_webhook` mapping. `POST /api/admin/orders/{mark-received,
+  replay,sms,refund}`.
+- **F4 pricing/inventory** — `admin_catalog_list/admin_catalog_update/admin_set_markup`
+  (writes `settings.markup_percent`).
+- **F5 payments** — `admin_payments_list/admin_payment_reconcile/admin_payment_mark`;
+  `GET /api/admin/payments/reconcile?days=7` returns gross/fees/net.
+- **B7 refunds** — `refund_order_partial(order, amount, reason)`; `POST /api/admin/orders/refund`
+  with `amount` = partial, blank = full. All refund paths (provider error, expiry, webhook,
+  user cancel, admin) funnel through backend `_refund()`.
+- **K1 support threads** — `ticket_messages` + `ticket_ensure_seed/ticket_reply/ticket_thread/
+  my_tickets` (user, `authenticated`) and `admin_tickets_list/admin_ticket_thread/
+  admin_ticket_reply/admin_ticket_update` (service_role). Dashboard `support` page renders the
+  thread + reply box; admin console has a Support tab.
+- **K5 refund comms** — `refund_notices` queued on every refund; `dispatch_refund_notices()`
+  (also run by the scheduler) emails via `backend/mailer.py` when `MAIL_USERNAME`/`MAIL_PASSWORD`
+  are set, otherwise the notice is still visible in-app (`my_refund_notices`).
+- **J6 status page** — `service_checks` + `incidents`; `synthetic_check()` probes db/provider/
+  webhooks/payments and is run by the scheduler; `status_report()` powers `GET /api/status`
+  (public) and `site/status/`. Footer links to `/status` site-wide.
+- **J9 environments** — `SMSPIN_ENV` = dev|staging|prod (default dev). Outside prod the backend
+  forces KoraPay into test mode. `GET /api/env` + `/api/health` expose env/git sha/version.
+  `.github/workflows/preview-deploy.yml` boots a staging build on every PR, smokes `/status/`,
+  `/admin/` and the admin 403 gate, and comments a summary on the PR.
+- Env: `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_HOST` (default smtp.gmail.com), `MAIL_PORT` (465),
+  `MAIL_FROM`, `SMSPIN_ENV`, `SMSPIN_GIT_SHA`, `SMSPIN_VERSION`.
+- Tests: `tests/test_phase3_operable.py` (11). Full suite: `python3 -m pytest tests/ -q`.

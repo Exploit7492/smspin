@@ -22,7 +22,7 @@ jobs:
 
       - name: Lint (compile + syntax)
         run: |
-          python -m py_compile backend/server.py backend/smspin_api.py
+          python -m py_compile backend/server.py backend/smspin_api.py backend/mailer.py
           python -m compileall -q backend
 
       - name: Unit tests (offline)

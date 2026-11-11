@@ -1,0 +1,99 @@
+name: Preview deploy
+
+# J9: every pull request gets an isolated preview environment. Preview builds
+# run with SMSPIN_ENV=staging so live payment keys are never used. Production is
+# deployed only from `main` via the deploy workflow.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      ref: { description: "Git ref to preview", required: false, default: "" }
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest psycopg2-binary
+
+      - name: Boot the app in staging mode
+        env:
+          SMSPIN_ENV: staging
+          KORA_MODE: test
+          Smspin_Supabase_url: ${{ secrets.Smspin_Supabase_url }}
+          Smspin_supabase_annonkey: ${{ secrets.Smspin_supabase_annonkey }}
+          Smspin_supabase_secretskey: ${{ secrets.Smspin_supabase_secretskey }}
+          Smspin_supabase_Postgresql: ${{ secrets.Smspin_Supabase_Postgresql }}
+          Kora_test_secrete_key: ${{ secrets.Kora_test_secrete_key }}
+          Kora_test_public_key: ${{ secrets.Kora_test_public_key }}
+        run: |
+          if [ -z "$Smspin_supabase_Postgresql" ]; then
+            echo "Supabase secrets not configured - skipping preview boot."
+            exit 0
+          fi
+          python backend/server.py > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:12000/api/health >/dev/null && break
+            sleep 1
+          done
+          echo "--- /api/env ---"
+          curl -sf http://127.0.0.1:12000/api/env | tee env.json
+          echo
+          echo "--- /api/status ---"
+          curl -sf http://127.0.0.1:12000/api/status | head -c 400; echo
+
+      - name: Smoke the new surfaces
+        run: |
+          set -e
+          # Public status page + admin gate must respond on a preview build.
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:12000/status/)
+          echo "GET /status/ -> $code"; [ "$code" = "200" ]
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:12000/admin/)
+          echo "GET /admin/ -> $code"; [ "$code" = "200" ]
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:12000/api/admin/overview)
+          echo "GET /api/admin/overview (anon) -> $code"; [ "$code" = "403" ]
+
+      - name: Comment the preview summary on the PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let env = {};
+            try { env = JSON.parse(fs.readFileSync('env.json', 'utf8')); } catch (e) {}
+            const body = [
+              '### Preview build is healthy :white_check_mark:',
+              '',
+              `| field | value |`,
+              `| --- | --- |`,
+              `| environment | \`${env.environment || 'staging'}\` |`,
+              `| korapay mode | \`${env.korapay_mode || 'test'}\` |`,
+              `| version | \`${env.version || 'dev'}\` |`,
+              `| git sha | \`${env.git_sha || 'dev'}\` |`,
+              '',
+              '_Posted by an AI agent (OpenHands)._',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, body,
+            });

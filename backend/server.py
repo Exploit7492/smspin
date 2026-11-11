@@ -25,6 +25,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pricing  # real-time FX + PPP funding fees (forex-python + wbdata)
 import smspin_api  # upstream SMS provider client
+import mailer  # transactional email (SMTP)
 
 SITE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "site")
 PORT = int(os.environ.get("PORT", "12000"))
@@ -109,6 +110,21 @@ KORA_MODE = os.environ.get("KORA_MODE", "test")  # test | live
 KORA_SECRET = os.environ["Kora_test_secrete_key"] if KORA_MODE == "test" else os.environ["Kora_secrete_key"]
 KORA_PUBLIC = os.environ["Kora_test_public_key"] if KORA_MODE == "test" else os.environ["Kora_public_key"]
 KORA_BASE = "https://api.korapay.com/merchant/api/v1"
+
+# J9: environment identity. dev | staging | prod. Drives safe defaults so a
+# non-prod deploy can never take live payments or hit the live provider.
+ENVIRONMENT = os.environ.get("SMSPIN_ENV", "dev").lower()
+IS_PROD = ENVIRONMENT == "prod"
+IS_PREVIEW = ENVIRONMENT in ("dev", "staging")
+# Refuse live payment keys outside prod: preview/staging always run KoraPay test.
+if not IS_PROD and KORA_MODE != "test":
+    LOG.warn("kora_mode_forced_test", environment=ENVIRONMENT, requested=KORA_MODE)
+    KORA_MODE = "test"
+    KORA_SECRET = os.environ["Kora_test_secrete_key"]
+    KORA_PUBLIC = os.environ["Kora_test_public_key"]
+# Deploy identity surfaced at /api/health + /api/env.
+GIT_SHA = os.environ.get("SMSPIN_GIT_SHA", "dev")
+VERSION = os.environ.get("SMSPIN_VERSION", "dev")
 
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
@@ -296,12 +312,12 @@ def buy_real(country, service, user_id=None, tenant_account=None, operator=None)
     try:
         up = _SMS_CLIENT.create_order(cc, sv, operator)
     except smspin_api.SmspinError as e:
-        _svc("refund_order", {"p_order_id": order_id, "p_reason": "provider_error"})
+        _refund(order_id, "provider_error")
         raise RuntimeError(str(e))
     phone = up.get("phoneNumber") or up.get("phone_number") or ""
     up_id = str(up.get("id") or "")
     if not phone or not up_id:
-        _svc("refund_order", {"p_order_id": order_id, "p_reason": "no_number"})
+        _refund(order_id, "no_number")
         raise RuntimeError("provider did not return a number")
     _svc("set_order_upstream", {"p_order_id": order_id, "p_phone": phone,
                                 "p_upstream_id": up_id, "p_operator": up.get("operator"),
@@ -339,7 +355,7 @@ def poll_pending_orders():
                                 "p_body": f"Verification code: {code}", "p_code": str(code),
                                 "p_received_at": up.get("createdAt") or None})
         elif status in ("cancelled", "expired", "failed"):
-            _svc("refund_order", {"p_order_id": o["id"], "p_reason": f"upstream_{status}"})
+            _refund(o["id"], f"upstream_{status}")
     for o in (_svc("expired_orders", {"p_limit": 200}) or []):
         up_id = o.get("upstream_order_id")
         if up_id:
@@ -347,7 +363,7 @@ def poll_pending_orders():
                 _SMS_CLIENT.cancel_order(up_id)
             except smspin_api.SmspinError:
                 pass
-        _svc("refund_order", {"p_order_id": o["id"], "p_reason": "expired"})
+        _refund(o["id"], "expired")
 
 
 def warm_popular():
@@ -600,6 +616,78 @@ def job_worker_step(budget=5):
     return done
 
 
+def dispatch_refund_notices():
+    """K5: email pending refund notices, then mark them sent (or failed)."""
+    try:
+        pending = _svc("refund_notices_pending", {"p_limit": 20}) or []
+    except Exception:
+        return 0
+    sent = 0
+    for n in pending:
+        to = n.get("email")
+        subject = "Your SMSPin refund"
+        body = (
+            f"We've refunded {n.get('currency', 'NGN')} {n.get('amount')} to your wallet "
+            f"for order #{n.get('order_id')}.\n\n"
+            f"Reason: {n.get('reason') or 'order could not be completed'}\n\n"
+            "The amount is available now and can be used for another number or withdrawn "
+            "per our refund policy.\n\n— SMSPin"
+        )
+        ok = mailer.send(to, subject, body) if (to and mailer.configured()) else False
+        # With no mailer configured the notice still becomes visible in-app.
+        status = "sent" if ok else ("failed" if (to and mailer.configured()) else "read")
+        try:
+            _svc("refund_notice_mark", {"p_id": n["id"], "p_status": status,
+                                        "p_error": None if ok else "mailer unavailable"})
+        except Exception:
+            pass
+        if ok:
+            sent += 1
+        LOG.info("refund_notice", order=str(n.get("order_id")), status=status)
+    return sent
+
+
+def notify_refund(order_id, user_id, tenant_account, amount, reason):
+    """K5: queue a refund notice (resolved to an email where we have one)."""
+    email = None
+    if user_id:
+        try:
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("select email from profiles where id=%s", (user_id,))
+                row = cur.fetchone()
+                email = row[0] if row else None
+        except Exception:
+            email = None
+    try:
+        nid = _svc("refund_notice_create", {"p_order_id": order_id, "p_user": user_id,
+                                            "p_tenant": tenant_account, "p_email": email,
+                                            "p_amount": amount, "p_reason": reason})
+    except Exception as e:
+        LOG.error("refund_notice_create_error", error=str(e)[:200])
+        return None
+    dispatch_refund_notices()
+    return nid
+
+
+def _refund(order_id, reason):
+    """Refund an order and queue the K5 refund notice in one step."""
+    try:
+        res = _svc("refund_order", {"p_order_id": order_id, "p_reason": reason}) or {}
+    except Exception as e:
+        LOG.error("refund_error", order=str(order_id), error=str(e)[:200])
+        return {}
+    if not res.get("already"):
+        try:
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("select user_id, tenant_account_id, price from orders where id=%s", (order_id,))
+                row = cur.fetchone()
+            if row:
+                notify_refund(order_id, row[0], row[1], res.get("refunded", row[2]), reason)
+        except Exception as e:
+            LOG.error("refund_notify_error", order=str(order_id), error=str(e)[:200])
+    return res
+
+
 def setting_get(key, default=None):
     """Read a single `settings` value (jsonb) with a safe default."""
     try:
@@ -674,6 +762,18 @@ def scheduler_step():
         except Exception:
             pass
 
+    # 4) J6 synthetic checks + K5 refund-notice dispatch
+    try:
+        _svc("synthetic_check", {})
+        _svc("scheduler_mark", {"p_key": "synthetic_check", "p_ok": True, "p_detail": "{}"})
+    except Exception as e:
+        _svc("scheduler_mark", {"p_key": "synthetic_check", "p_ok": False,
+                                "p_detail": json.dumps({"error": str(e)[:200]})})
+    try:
+        dispatch_refund_notices()
+    except Exception as e:
+        LOG.error("refund_dispatch_error", error=str(e)[:200])
+
 
 def backup_verify_job():
     """J10: verify the data plane is intact and record a checksum."""
@@ -713,7 +813,7 @@ def upstream_webhook(payload):
                             "p_received_at": payload.get("createdAt") or None})
         return {"received": True, "matched": True, "otp": True}
     if status in ("cancelled", "expired", "failed"):
-        _svc("refund_order", {"p_order_id": order_id, "p_reason": f"webhook_{status}"})
+        _refund(order_id, f"webhook_{status}")
         return {"received": True, "matched": True, "refunded": True}
     return {"received": True, "matched": True}
 
@@ -923,6 +1023,13 @@ class Handler(SimpleHTTPRequestHandler):
                                     "ops": _svc("ops_metrics", {"p_window_min": 15})})
         if path == "/api/health":
             return self._send(200, self._health())
+        if path == "/api/env":
+            # J9: which environment this build is serving + its safety posture.
+            return self._send(200, {
+                "environment": ENVIRONMENT, "is_prod": IS_PROD, "preview": IS_PREVIEW,
+                "korapay_mode": KORA_MODE, "git_sha": GIT_SHA, "version": VERSION,
+                "upstream_enabled": upstream_enabled(),
+            })
         if path == "/api/alerts":
             if not self._is_admin():
                 return self._send(403, {"error": "admin only"})
@@ -931,6 +1038,11 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/scheduler":
             # J2: last-run state for the recurring ops tasks.
             return self._send(200, {"tasks": _svc("scheduler_status", {})})
+        if path == "/api/status":
+            # J6: public status page feed.
+            return self._send(200, _svc("status_report", {}))
+        if path.startswith("/api/admin/"):
+            return self.api_admin_get(path)
         if path == "/api/policies":
             # Public: current policy versions + the caller's acceptance state.
             uid = self._auth_user()
@@ -990,6 +1102,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.api_admin_risk()
             if path == "/api/admin/alerts/run":
                 return self.api_admin_alert_run()
+            if path.startswith("/api/admin/"):
+                return self.api_admin_post(path)
             if path.startswith("/api/v1/"):
                 return self.api_v1(path)
         except Exception as e:
@@ -1044,7 +1158,7 @@ class Handler(SimpleHTTPRequestHandler):
         checks["error_rate"] = round(snap["errors_5xx"] / max(1, snap["requests_total"]), 4)
         ok = checks["db"]
         return {"ok": ok, "checks": checks, "uptime_s": snap["uptime_s"],
-                "version": os.environ.get("SMSPIN_VERSION", "dev")}
+                "version": VERSION, "environment": ENVIRONMENT, "git_sha": GIT_SHA}
 
     def _aup_text(self, version):
         return aup_text(version)
@@ -1102,6 +1216,178 @@ class Handler(SimpleHTTPRequestHandler):
         delivered = dispatch_alerts()
         return self._send(200, {"fired": fired, "delivered": delivered})
 
+    # ---------- F1-F5 admin console ----------
+    def _require_admin(self):
+        """Return the admin email or None (caller then 403s)."""
+        email = self._caller_email()
+        return email if is_admin(email) else None
+
+    def _q(self):
+        return parse_qs(urlparse(self.path).query)
+
+    def api_admin_get(self, path):
+        """F1-F5 + J6 read endpoints (admin only)."""
+        admin = self._require_admin()
+        if not admin:
+            return self._send(403, {"error": "admin only"})
+        q = self._q()
+        one = lambda k, d=None: (q.get(k, [d])[0] if q.get(k) else d)
+        if path == "/api/admin/overview":
+            return self._send(200, _svc("admin_overview", {}))
+        if path == "/api/admin/users":
+            return self._send(200, _svc("admin_users_list", {"p_q": one("q"),
+                                    "p_limit": int(one("limit", "50"))}))
+        if path.startswith("/api/admin/users/"):
+            uid = path.rsplit("/", 1)[-1]
+            return self._send(200, _svc("admin_user_detail", {"p_user": uid}))
+        if path == "/api/admin/orders":
+            return self._send(200, _svc("admin_orders_list", {"p_status": one("status"),
+                                    "p_q": one("q"), "p_limit": int(one("limit", "100"))}))
+        if path == "/api/admin/catalog":
+            return self._send(200, _svc("admin_catalog_list", {"p_q": one("q"),
+                                    "p_limit": int(one("limit", "100"))}))
+        if path == "/api/admin/payments":
+            return self._send(200, _svc("admin_payments_list", {"p_status": one("status"),
+                                    "p_limit": int(one("limit", "100"))}))
+        if path == "/api/admin/payments/reconcile":
+            return self._send(200, _svc("admin_payment_reconcile", {"p_days": int(one("days", "7"))}))
+        if path == "/api/admin/tickets":
+            return self._send(200, _svc("admin_tickets_list", {"p_status": one("status"),
+                                    "p_limit": int(one("limit", "100"))}))
+        if path.startswith("/api/admin/tickets/"):
+            tid = path.rsplit("/", 1)[-1]
+            return self._send(200, _svc("admin_ticket_thread", {"p_ticket_id": int(tid)}))
+        if path == "/api/admin/audit":
+            return self._send(200, _svc("audit_list", {"p_limit": int(one("limit", "100")),
+                                                       "p_actor": one("actor")}))
+        if path == "/api/admin/refunds":
+            return self._send(200, _svc("reconcile_report", {"p_days": int(one("days", "7"))}))
+        return self._send(404, {"error": "not found"})
+
+    def api_admin_post(self, path):
+        """F1-F5 + B7/J6 write endpoints (admin only)."""
+        admin = self._require_admin()
+        if not admin:
+            return self._send(403, {"error": "admin only"})
+        body = self._read_json()
+        ip = client_ip(self)
+        actor = f"admin:{admin}"
+
+        if path == "/api/admin/users/suspend":
+            res = _svc("admin_user_suspend", {"p_user": body.get("user_id"),
+                                              "p_suspended": bool(body.get("suspended")),
+                                              "p_reason": body.get("reason")})
+            _audit(actor, "admin.user_suspend", str(body.get("user_id")),
+                   {"suspended": body.get("suspended"), "reason": body.get("reason")}, ip)
+            return self._send(200, res)
+        if path == "/api/admin/users/adjust":
+            try:
+                res = _svc("admin_adjust_balance", {"p_user": body.get("user_id"),
+                                                    "p_amount": body.get("amount"),
+                                                    "p_reason": body.get("reason")})
+            except Exception as e:
+                return self._send(400, {"error": str(e).split("\n")[0]})
+            _audit(actor, "admin.balance_adjust", str(body.get("user_id")),
+                   {"amount": body.get("amount"), "reason": body.get("reason")}, ip)
+            return self._send(200, res)
+        if path == "/api/admin/orders/refund":
+            order_id = int(body.get("order_id"))
+            amount = body.get("amount")
+            reason = body.get("reason") or "admin_refund"
+            try:
+                if amount is None:
+                    res = _refund(order_id, reason)
+                else:
+                    res = _svc("refund_order_partial", {"p_order_id": order_id,
+                                                        "p_amount": amount, "p_reason": reason})
+                    if not res.get("already"):
+                        with db() as conn, conn.cursor() as cur:
+                            cur.execute("select user_id, tenant_account_id from orders where id=%s", (order_id,))
+                            row = cur.fetchone()
+                        if row:
+                            notify_refund(order_id, row[0], row[1], res.get("refunded"), reason)
+            except Exception as e:
+                return self._send(400, {"error": str(e).split("\n")[0]})
+            _audit(actor, "admin.refund", str(order_id),
+                   {"amount": amount, "reason": reason}, ip)
+            return self._send(200, res)
+        if path == "/api/admin/orders/mark-received":
+            res = _svc("admin_order_mark_received", {"p_order_id": int(body.get("order_id"))})
+            _audit(actor, "admin.order_mark_received", str(body.get("order_id")), None, ip)
+            return self._send(200, res)
+        if path == "/api/admin/orders/replay":
+            # Re-run the upstream webhook mapping for an order (idempotent).
+            order_id = int(body.get("order_id"))
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("select upstream_order_id from orders where id=%s", (order_id,))
+                row = cur.fetchone()
+            if not row or not row[0]:
+                return self._send(400, {"error": "order has no upstream id"})
+            payload = body.get("payload") or {"id": row[0], "status": body.get("status", "received")}
+            res = upstream_webhook(payload)
+            _audit(actor, "admin.order_replay", str(order_id), {"payload": payload}, ip)
+            return self._send(200, res)
+        if path == "/api/admin/orders/sms":
+            res = _svc("admin_sms_inject", {"p_order_id": int(body.get("order_id")),
+                                            "p_sender": body.get("sender") or "admin",
+                                            "p_body": body.get("body") or "",
+                                            "p_code": body.get("code")})
+            _audit(actor, "admin.sms_inject", str(body.get("order_id")), None, ip)
+            return self._send(200, res)
+        if path == "/api/admin/catalog/update":
+            res = _svc("admin_catalog_update", {"p_id": int(body.get("id")),
+                                                "p_price": body.get("price"),
+                                                "p_stock": body.get("stock"),
+                                                "p_active": body.get("active")})
+            _audit(actor, "admin.catalog_update", str(body.get("id")), body, ip)
+            return self._send(200, res)
+        if path == "/api/admin/pricing/markup":
+            res = _svc("admin_set_markup", {"p_percent": body.get("percent")})
+            _audit(actor, "admin.markup", None, {"percent": body.get("percent")}, ip)
+            return self._send(200, res)
+        if path == "/api/admin/payments/mark":
+            res = _svc("admin_payment_mark", {"p_reference": body.get("reference"),
+                                              "p_status": body.get("status")})
+            _audit(actor, "admin.payment_mark", str(body.get("reference")), {"status": body.get("status")}, ip)
+            return self._send(200, res)
+        if path == "/api/admin/tickets/reply":
+            res = _svc("admin_ticket_reply", {"p_ticket_id": int(body.get("ticket_id")),
+                                              "p_body": body.get("body") or "",
+                                              "p_agent": admin,
+                                              "p_attachment_url": body.get("attachment_url")})
+            _audit(actor, "admin.ticket_reply", str(body.get("ticket_id")), None, ip)
+            return self._send(200, res)
+        if path == "/api/admin/tickets/update":
+            res = _svc("admin_ticket_update", {"p_ticket_id": int(body.get("ticket_id")),
+                                               "p_status": body.get("status"),
+                                               "p_priority": body.get("priority"),
+                                               "p_assignee": body.get("assignee")})
+            _audit(actor, "admin.ticket_update", str(body.get("ticket_id")), body, ip)
+            return self._send(200, res)
+        if path == "/api/admin/incidents":
+            res = _svc("admin_incident_create", {"p_title": body.get("title"),
+                                                 "p_body": body.get("body"),
+                                                 "p_severity": body.get("severity", "minor"),
+                                                 "p_status": body.get("status", "investigating"),
+                                                 "p_affected": json.dumps(body.get("affected", []))})
+            _audit(actor, "admin.incident_create", str(res), body, ip)
+            return self._send(200, {"id": res})
+        if path == "/api/admin/incidents/update":
+            res = _svc("admin_incident_update", {"p_id": int(body.get("id")),
+                                                 "p_status": body.get("status"),
+                                                 "p_body": body.get("body"),
+                                                 "p_severity": body.get("severity")})
+            _audit(actor, "admin.incident_update", str(body.get("id")), body, ip)
+            return self._send(200, res)
+        if path == "/api/admin/checks/run":
+            res = _svc("synthetic_check", {})
+            _audit(actor, "admin.synthetic_check", None, res, ip)
+            return self._send(200, res)
+        if path == "/api/admin/refunds/dispatch":
+            sent = dispatch_refund_notices()
+            return self._send(200, {"sent": sent})
+        return self._send(404, {"error": "not found"})
+
     def _order_status(self, order_id):
         with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""select o.id, o.status, o.phone_number, o.price, o.expires_at,
@@ -1147,6 +1433,12 @@ class Handler(SimpleHTTPRequestHandler):
             _audit(actor, "order.buy_blocked", None, {"reason": "email_unverified"}, ip)
             return self._send(403, {"error": "email not verified",
                                     "code": "email_unverified"})
+
+        # F2: suspended accounts cannot purchase.
+        if user_id and _svc("is_suspended", {"p_user": user_id}):
+            _audit(actor, "order.buy_blocked", None, {"reason": "suspended"}, ip)
+            return self._send(403, {"error": "account suspended",
+                                    "code": "account_suspended"})
 
         # L4: acceptable-use policy must be accepted for the current version.
         if aup_required(user_id, tenant_account, body):
@@ -1249,7 +1541,7 @@ class Handler(SimpleHTTPRequestHandler):
                 _SMS_CLIENT.cancel_order(o["upstream_order_id"])
             except smspin_api.SmspinError:
                 pass
-        res = _svc("refund_order", {"p_order_id": order_id, "p_reason": "user_cancel"})
+        res = _refund(order_id, "user_cancel")
         _audit(f"tenant:{tenant_account}" if tenant_account else f"user:{user_id}",
                "order.cancel", str(order_id), {"reason": "user_cancel"}, client_ip(self))
         return self._send(200, res)

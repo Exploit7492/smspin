@@ -134,7 +134,7 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 | B3 | Multi-currency wallet | Per-currency balances or auto-convert; settlement currency | ❌ |
 | B1 | More payment rails | Paystack/Flutterwave/Monnify + Stripe/PayPal + USDT | ❌ |
 | B6 | Receipts, invoices + VAT/tax | PDF/email receipts, VAT on fees, statements | ❌ |
-| B7 | Admin refunds / partial refunds | Ops-initiated refunds with reason + ledger | ❌ |
+| B7 | Admin refunds / partial refunds | Ops-initiated refunds with reason + ledger | ✅ |
 | B9 | Auto-topup execution | Low balance → charge saved method | ❌ |
 | E5 | Saved payment methods | Vault cards/methods, default, remove | ❌ |
 | B8 | Double-entry ledger + accounting export | Append-only ledger, derived balances, revenue/COGS export | ❌ |
@@ -195,11 +195,11 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 
 | # | Item | Notes | Status |
 |---|---|---|---|
-| F1 | Admin console | Back-office with role-gated access | ❌ |
-| F2 | User management | Search, view, suspend, adjust balance with reason | ❌ |
-| F3 | Order/SMS ops | Replay webhook, force-refund, resend, mark received | ❌ |
-| F4 | Pricing/inventory admin | Edit markup/prices/stock, enable/disable | ❌ |
-| F5 | Payments reconciliation console | Pending/settled, provider reconciliation, refunds | ❌ |
+| F1 | Admin console | Back-office with role-gated access | ✅ |
+| F2 | User management | Search, view, suspend, adjust balance with reason | ✅ |
+| F3 | Order/SMS ops | Replay webhook, force-refund, resend, mark received | ✅ |
+| F4 | Pricing/inventory admin | Edit markup/prices/stock, enable/disable | ✅ |
+| F5 | Payments reconciliation console | Pending/settled, provider reconciliation, refunds | ✅ |
 | F6 | Tenant/business admin | Approve/suspend stores, payouts, plans | ❌ |
 | F7 | Support console | Queue, assignment, canned replies, SLA | ❌ |
 | F8 | Fraud/abuse console | Flags queue, blocklists, manual review | ❌ |
@@ -254,10 +254,10 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 | J3 | Durable worker/queue | Queue with retries + DLQ | ✅ |
 | J4 | Observability | Structured logs, metrics, tracing, error tracking | ✅ |
 | J5 | Alerting / on-call | Error rate, payment failures, stock alerts | ✅ |
-| J6 | Status / uptime page | Public status page, synthetic checks | ❌ |
+| J6 | Status / uptime page | Public status page, synthetic checks | ✅ |
 | J7 | Test suite + coverage | Unit + integration + e2e (Playwright) | ✅ |
 | J8 | CI/CD pipelines | Lint, test, build, migrate, deploy | ✅ |
-| J9 | Environments + preview deploys | dev/staging/prod isolation | ❌ |
+| J9 | Environments + preview deploys | dev/staging/prod isolation | ✅ |
 | J10 | Backups / DR | PITR, tested restore, RTO/RPO | ✅ |
 | J11 | Scaling / CDN / WAF | Horizontal scale, CDN, WAF, caching | ❌ |
 | J12 | IaC | Terraform/Compose reproducible infra | ❌ |
@@ -269,11 +269,11 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 
 | # | Item | Notes | Status |
 |---|---|---|---|
-| K1 | Support ticket threads | Two-way thread, agent reply, attachments, status | ❌ |
+| K1 | Support ticket threads | Two-way thread, agent reply, attachments, status | ✅ |
 | K2 | SLA + routing | Priority, SLA timers, escalation | ❌ |
 | K3 | Knowledge base | Help center with search (feeds O17) | ❌ |
 | K4 | Live chat | Widget + agent console | ❌ |
-| K5 | Refund communication | Auto email/in-app notice on refund | ❌ |
+| K5 | Refund communication | Auto email/in-app notice on refund | ✅ |
 | K6 | Incident comms | Status page + email on outage | ❌ |
 
 ---
@@ -297,7 +297,7 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 |---|---|---|---|
 | 1 | Make it real | N1–N9 · B2, B4 · J2, J3, D2 | ✅ **Signed off** (N2 gradual, N7 rent dashboard deferred) |
 | 2 | Make it safe | D1, D7, D8, D10, L4 · J4, J5, J7, J8, J10 | ✅ **Complete** (all ten items) |
-| 3 | Make it operable | F1–F5, K1, K5, B7 · J9, J6 |
+| 3 | Make it operable | F1–F5, K1, K5, B7 · J9, J6 | ✅ **Complete** |
 | 4 | Make it branded & guided | M1–M7 · O1, O8, O9, O12, O13 · C2, C4, C6 · A8, B1, B3 |
 | 5 | Make it grow | O2–O7, O10, O11, O14–O20 · E1–E12 · G5 · I1–I6 · H1–H7 · L2, L3 |
 
