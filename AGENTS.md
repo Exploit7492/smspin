@@ -322,13 +322,27 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
   into `sms_messages` (`record_sms`) and auto-refunds orders past `expires_at`
   (`expired_orders` + upstream `DELETE /orders/{id}`).
 - HTTP surface: `POST /api/orders/buy`, `POST /api/orders/cancel`, `GET /api/order/status`,
-  `GET /api/catalog/live`. Auth is a dashboard bearer token OR `x-tenant-token`.
-  Frontend helpers: `SMSPIN.buyOrder / cancelOrder / orderStatus` (`dashboard/api.js`).
+  `GET /api/catalog/live`, `GET /api/rent/prices`. Auth is a dashboard bearer token OR
+  `x-tenant-token`. Frontend helpers: `SMSPIN.buyOrder / cancelOrder / orderStatus /
+  rentPrices / rentCountries / rentOrder` (`dashboard/api.js`).
+- **Display price is our stored model, never a live sync.** `GET /api/catalog/live` reads
+  `number_catalog.price` (cheapest in-stock operator + platform markup) and applies the
+  buyer's business markup + whole-dollar rounding via `sell_price_ngn`. It must NOT call
+  `sync_pair()`: a live provider call there both slowed every render and drifted the shown
+  amount to whatever the provider returned that minute. `sync_pair()` only refreshes stock
+  during normal operation; price is written by the crawler/backfill.
+- **Rentals are country-gated.** The provider rents each service only in a subset of
+  countries. `GET /api/rent/prices?service=...` (no country) returns that list as
+  `countries`; the buy page filters its country picker to it and auto-snaps the current
+  pick to a rentable country so the duration list is never empty. `rent_real` sends the
+  provider's *raw* price as `maxPrice` (not our rounded-up display price) so the cap can
+  never sit below the real cost. Provider error codes are mapped to plain language via
+  `_friendly_upstream_error()`.
 - The new RPCs are service-role only (revoked from anon/authenticated); the browser never
   calls them directly. Migration: `supabase/migrations/20261111120000_upstream_integration.sql`.
 - `settings.upstream_live` gates live ordering; set to `false` to fall back to the legacy
-  `api_buy` RPC. The provider account must be funded (else orders auto-refund with
-  `SMSPin API 402: NO_BALANCE`).
+  `api_buy` RPC. The provider account must be funded (else orders auto-refund; the buyer
+  sees "This service is temporarily unavailable", not the raw `NO_BALANCE` code).
 
 ## Phase 1 closure + Phase 2 (safe platform)
 Migration `supabase/migrations/20261111130000_phase1_closure.sql` adds the operational

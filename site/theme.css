@@ -809,11 +809,13 @@ table.tbl tr:hover td { background: var(--glass-bg-soft); }
 
 /* ---------- Active numbers: separate tap-to-flip cards ---------- */
 .num-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-.num-flip { perspective: 1100px; height: 132px; cursor: pointer; }
-.num-flip-inner { position: relative; width: 100%; height: 100%;
+.num-flip { perspective: 1100px; cursor: pointer; }
+/* Both faces stack in one grid cell so the card auto-sizes to the taller face —
+   a fixed height let the back's rows overflow and collide on small screens. */
+.num-flip-inner { position: relative; width: 100%; display: grid;
   transition: transform .55s cubic-bezier(.2,.7,.2,1); transform-style: preserve-3d; }
 .num-flip.flipped .num-flip-inner { transform: rotateY(180deg); }
-.num-face { position: absolute; inset: 0; -webkit-backface-visibility: hidden; backface-visibility: hidden;
+.num-face { grid-area: 1 / 1; -webkit-backface-visibility: hidden; backface-visibility: hidden;
   display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 6px;
   padding: 16px; border-radius: 16px; text-align: center;
   background: var(--glass-bg) !important; border: 1px solid var(--glass-border) !important;
@@ -823,9 +825,12 @@ table.tbl tr:hover td { background: var(--glass-bg-soft); }
 .num-front-num { font-size: clamp(17px, 3.4vw, 22px); font-weight: 800; letter-spacing: .01em; white-space: nowrap; }
 .num-tap { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); font-weight: 700; }
 .num-back { transform: rotateY(180deg); justify-content: center; align-items: stretch; gap: 4px; }
-.num-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; }
-.num-row span { color: var(--text-muted); }
-.num-row b { color: var(--text-primary); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.num-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; min-width: 0; }
+.num-row span { color: var(--text-muted); flex: 0 0 auto; }
+/* Let long values (status badge, date, number) shrink and ellipsize instead of
+   overflowing their cell and colliding with the next row. */
+.num-row b { color: var(--text-primary); font-weight: 700; min-width: 0; max-width: 68%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .num-actions { display: flex; gap: 8px; margin-top: 8px; }
 .num-actions .btn { flex: 1; font-size: 12px; padding: 7px 8px; }
 @media (prefers-reduced-motion: reduce) { .num-flip-inner { transition: none; } }
@@ -926,7 +931,8 @@ table.tbl tr:hover td { background: var(--glass-bg-soft); }
 }
 @media (max-width:420px){
   .dash-side a { padding:9px 10px; font-size:13px; }
-  .dash-shell { padding: 64px 12px 32px; }
+  /* Keep clear of the fixed bottom tab bar + floating Buy button. */
+  .dash-shell { padding: 64px 12px 112px; }
 }
 
 /* ---------- Country picker / selection sheets ---------- */

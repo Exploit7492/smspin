@@ -470,17 +470,35 @@ def _rent_price(usd):
 
 
 def rent_prices_real(country, service):
-    """Provider rental durations for one (country, service), priced for sale."""
+    """Provider rental durations for one (country, service), priced for sale.
+
+    With no country, returns the list of countries the provider actually rents
+    this service in (the UI uses it to keep the country picker honest instead of
+    offering every temp-SMS country).
+    """
     if not upstream_enabled():
         raise RuntimeError("upstream disabled")
     data = _SMS_CLIENT.rent_prices(service, (country or "").upper() or None) or {}
+    if not country:
+        rate = fx_rates().get("NGN") or 1600.0
+        countries = []
+        for c in (data.get("countries") or []):
+            usd = c.get("fromPrice")
+            if usd is None:
+                continue
+            countries.append({"country": (c.get("country") or "").upper(),
+                              "from_price_usd": max(1, round(float(usd))),
+                              "from_price_ngn": round(max(1, round(float(usd))) * rate)})
+        return {"service": service, "country": None, "countries": countries, "durations": []}
     durations = []
     for d in (data.get("durations") or []):
         hours = int(d.get("durationHours") or d.get("duration") or 0)
         if hours <= 0:
             continue
-        priced = _rent_price(d.get("price"))
-        durations.append({"hours": hours, "label": _rent_label(hours), **priced})
+        raw = d.get("price")
+        priced = _rent_price(raw)
+        durations.append({"hours": hours, "label": _rent_label(hours),
+                          "price_usd_raw": float(raw) if raw is not None else None, **priced})
     if not durations:
         # Provider exposes per-country "fromPrice" only; synthesise the standard
         # 24h/72h/168h ladder from the country minimum so the UI always offers
@@ -494,8 +512,10 @@ def rent_prices_real(country, service):
             base = min(c.get("fromPrice") or 0 for c in data["countries"])
         if base is not None:
             for hours, mult in ((24, 1.0), (72, 1.75), (168, 3.25)):
-                priced = _rent_price(float(base) * mult)
-                durations.append({"hours": hours, "label": _rent_label(hours), **priced})
+                raw = float(base) * mult
+                priced = _rent_price(raw)
+                durations.append({"hours": hours, "label": _rent_label(hours),
+                                  "price_usd_raw": raw, **priced})
     return {"service": service, "country": (country or "").upper(), "durations": durations}
 
 
@@ -507,6 +527,35 @@ def _rent_label(hours):
         n = hours // 24
         return f"{n} day" + ("s" if n > 1 else "")
     return f"{hours} hours"
+
+
+# Provider errors surface as terse codes (e.g. "SMSPin API 402: INSUFFICIENT_BALANCE").
+# Translate the ones a buyer can act on; pass anything else through unchanged.
+_UPSTREAM_MESSAGES = {
+    "INSUFFICIENT_BALANCE": "This service is temporarily unavailable. Please try again shortly.",
+    "NO_BALANCE": "This service is temporarily unavailable. Please try again shortly.",
+    "DURATION_NOT_AVAILABLE": "That rental length is not offered for this service and country. Pick another duration.",
+    "NO_STOCK": "No numbers available for this service and country right now.",
+    "OUT_OF_STOCK": "No numbers available for this service and country right now.",
+    "SERVICE_NOT_AVAILABLE": "This service is not available for the selected country. Try another pair.",
+    "COUNTRY_NOT_AVAILABLE": "This service is not available in the selected country. Try another country.",
+    "RENTAL_NOT_AVAILABLE": "Rentals are not available for this service and country. Try another pair.",
+}
+
+
+def _friendly_upstream_error(msg):
+    if not msg:
+        return "Rental could not be placed. Please try again."
+    up = msg.upper()
+    for code, friendly in _UPSTREAM_MESSAGES.items():
+        if code in up:
+            return friendly
+    low = msg.lower().replace("_", " ")
+    if "insufficient balance" in low:
+        return "Your wallet balance is too low for this rental."
+    if "not available for this pair" in low:
+        return "Rentals are not available for this service and country. Try another pair."
+    return msg
 
 
 def rent_real(country, service, duration, user_id=None, tenant_account=None):
@@ -527,8 +576,14 @@ def rent_real(country, service, duration, user_id=None, tenant_account=None):
         "p_duration": hours, "p_price_ngn": charge, "p_tenant_account": tenant_account,
     })
     order_id = res["order_id"]
+    # maxPrice caps what the provider may charge. Send the provider's real price
+    # (its raw figure), not our rounded-up display price, so the cap never sits
+    # below the actual cost and makes the rental unbookable.
+    cap = pick.get("price_usd_raw")
+    if cap is None:
+        cap = pick["price_usd"]
     try:
-        up = _SMS_CLIENT.create_rental(service, cc.upper(), hours, max_price=pick["price_usd"])
+        up = _SMS_CLIENT.create_rental(service, cc.upper(), hours, max_price=cap)
     except smspin_api.SmspinError as e:
         _refund(order_id, "provider_error")
         raise RuntimeError(str(e))
@@ -1704,7 +1759,11 @@ class Handler(SimpleHTTPRequestHandler):
             sv = q.get("service", [""])[0] or ""
             if not cc or not sv:
                 return self._send(400, {"error": "country and service required"})
-            live = sync_pair(cc, sv) or {}
+            # Price strictly from our stored model (number_catalog.price, the
+            # cheapest in-stock operator + platform markup, whole-dollar rounded
+            # by sell_price_ngn). Do NOT call the provider here: a live sync
+            # would both slow every render and drift the amount to whatever the
+            # provider's API returned this minute, which is not our price.
             user_id = self._auth_user()
             with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""select price, cost_usd, stock, updated_at from number_catalog
@@ -1728,9 +1787,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send(200, {"country": cc, "service": sv,
                                     "price_ngn": price_ngn,
                                     "price_usd": price_usd,
-                                    "cost_usd": float(row["cost_usd"]) if row.get("cost_usd") is not None else live.get("price_usd"),
-                                    "available": row.get("stock", live.get("available")),
-                                    "operators": live.get("operators", [])})
+                                    "cost_usd": float(row["cost_usd"]) if row.get("cost_usd") is not None else None,
+                                    "available": row.get("stock", 0),
+                                    "updated_at": row.get("updated_at").isoformat() if row.get("updated_at") else None})
         if path == "/api/rent/prices":
             q = parse_qs(urlparse(self.path).query)
             cc = (q.get("country", [""])[0] or "").lower()
@@ -2418,7 +2477,7 @@ class Handler(SimpleHTTPRequestHandler):
         except RuntimeError as e:
             _audit(actor, "order.buy_failed", None, {"country": country, "service": service,
                                                      "error": str(e)[:200]}, ip)
-            return self._send(402, {"error": str(e)})
+            return self._send(402, {"error": _friendly_upstream_error(str(e))})
         except Exception as e:
             msg = str(e).split("\n")[0]
             # Domain-level rejections (balance/stock) are 402, not 500.
@@ -2426,7 +2485,7 @@ class Handler(SimpleHTTPRequestHandler):
                               ("insufficient", "no stock", "out of stock", "unavailable")) else 500
             if code == 500:
                 LOG.error("order_buy_error", actor=actor, error=msg)
-            return self._send(code, {"error": msg})
+            return self._send(code, {"error": _friendly_upstream_error(msg)})
 
     def api_rent_order(self):
         """Rent a long-lived number (24h/72h/168h). Mirrors api_buy_order's
@@ -2469,14 +2528,14 @@ class Handler(SimpleHTTPRequestHandler):
                      country=country, service=service, duration=duration)
             return self._send(200, res)
         except RuntimeError as e:
-            return self._send(402, {"error": str(e)})
+            return self._send(402, {"error": _friendly_upstream_error(str(e))})
         except Exception as e:
             msg = str(e).split("\n")[0]
             code = 402 if any(k in msg.lower() for k in
                               ("insufficient", "no stock", "out of stock", "unavailable")) else 500
             if code == 500:
                 LOG.error("order_rent_error", actor=actor, error=msg)
-            return self._send(code, {"error": msg})
+            return self._send(code, {"error": _friendly_upstream_error(msg)})
 
     def api_upstream_webhook(self):
         """Provider -> us callback (OTP arrived / order cancelled). Optional shared secret."""

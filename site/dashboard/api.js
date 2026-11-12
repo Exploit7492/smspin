@@ -232,8 +232,17 @@
   async function rentPrices({ country, service }) {
     const res = await fetch("/api/rent/prices?country=" + encodeURIComponent(country || "") +
       "&service=" + encodeURIComponent(service || ""));
-    if (!res.ok) return { durations: [] };
-    return res.json().catch(() => ({ durations: [] }));
+    if (!res.ok) return { durations: [], countries: [] };
+    return res.json().catch(() => ({ durations: [], countries: [] }));
+  }
+
+  // Countries the provider actually rents this service in (no country arg),
+  // so the picker never offers a country where rentals do not exist.
+  async function rentCountries({ service }) {
+    const res = await fetch("/api/rent/prices?service=" + encodeURIComponent(service || ""));
+    if (!res.ok) return [];
+    const d = await res.json().catch(() => ({}));
+    return d.countries || [];
   }
 
   async function rentOrder({ country, service, duration, tenantToken }) {
@@ -270,7 +279,7 @@
     return res.json().catch(() => null);
   }
 
-  window.SMSPIN = { auth, tenant, rpc, functions, feeQuote, buyOrder, rentPrices, rentOrder, cancelOrder, orderStatus, getSession, setSession, config: cfg, store: () => {
+  window.SMSPIN = { auth, tenant, rpc, functions, feeQuote, buyOrder, rentPrices, rentCountries, rentOrder, cancelOrder, orderStatus, getSession, setSession, config: cfg, store: () => {
     try { return localStorage.getItem("smspin_store") || ""; } catch (e) { return ""; }
   } };
 })();

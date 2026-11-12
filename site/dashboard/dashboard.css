@@ -382,8 +382,12 @@ table.tbl td.strong { color:var(--text-primary); font-weight:600; }
 .buy-mode { border: 0; background: transparent; color: var(--text-secondary); font: inherit; font-weight: 700;
   font-size: 13.5px; padding: 8px 18px; border-radius: 999px; cursor: pointer; transition: background .16s ease, color .16s ease; }
 .buy-mode:hover { color: var(--text-primary); }
-.buy-mode.on { background: var(--card, #fff); color: var(--text-primary);
+/* Selected pill: use the theme surface, never a hard-coded white — in dark
+   mode a white pill with --text-primary (near-white) made the label vanish. */
+.buy-mode.on { background: var(--glass-bg-strong, var(--white, #fff)); color: var(--text-primary);
   box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+:root[data-theme="dark"] .buy-mode.on { background: color-mix(in srgb, var(--brand, #E11D2E) 22%, var(--glass-bg-strong));
+  border: 1px solid color-mix(in srgb, var(--brand, #E11D2E) 45%, transparent); color: #fff; }
 
 .buy-step { display: flex; align-items: center; gap: 10px; margin: 16px 0 8px; font-size: 14.5px; color: var(--text-primary); }
 .buy-step:first-child { margin-top: 0; }
@@ -416,6 +420,11 @@ table.tbl td.strong { color:var(--text-primary); font-weight:600; }
   border-radius: 12px; background: var(--glass-bg-soft); border: 1px dashed var(--glass-border); color: var(--text-secondary); }
 .buy-showmore:hover { border-color: var(--brand); color: var(--text-primary); }
 @media (max-width: 560px) { .buy-svc-list { grid-template-columns: 1fr; } }
+/* The CTA carries a long label (number · price · ≈ $). Let it wrap on narrow
+   screens instead of clipping mid-word. */
+@media (max-width: 560px) {
+  .buy-pick .btn-lg { white-space: normal; line-height: 1.25; font-size: 14px; padding: 12px 14px; }
+}
 
 /* Duration picker (rent mode) */
 .buy-rent { margin-top: 4px; }
@@ -454,6 +463,8 @@ table.tbl td.strong { color:var(--text-primary); font-weight:600; }
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 20%, transparent); }
 .buy-order-actions { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
 .buy-order-actions .btn { flex: 1 1 150px; }
+/* Keep the emoji + label inside the button on the narrowest phones. */
+@media (max-width: 430px) { .buy-order-actions .btn { padding-left: 10px; padding-right: 10px; font-size: 13px; } }
 .buy-rt { font-size: 12px; }
 .buy-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 34px 20px; }
 .buy-empty-ico { font-size: 34px; line-height: 1; }
@@ -601,11 +612,20 @@ table.tbl td.strong { color:var(--text-primary); font-weight:600; }
 .hist-reset-wrap{display:flex;justify-content:center;margin-top:12px}
 .my-order{align-items:center;gap:12px}
 .my-order .my-order-ico{flex:0 0 auto;display:inline-flex;width:34px;height:34px;align-items:center;justify-content:center}
-.my-order .meta{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.my-order .meta{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
 .my-order .meta b{font-size:14px}
-.my-order .meta .mono{font-size:12px;color:var(--muted,#8b93a7);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.my-order .my-order-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.my-order .meta .mono{font-size:12px;color:var(--muted,#8b93a7);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Without min-width:0 the meta column (name + number) could not shrink and
+   collapsed to 0 width, wrapping the number one character per line and
+   colliding with the status/price/date block. */
+.my-order .my-order-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:0 1 auto;min-width:0;justify-content:flex-end}
 .my-order .my-order-price{font-weight:700;font-size:13.5px}
+@media (max-width:560px){
+  .my-order{flex-wrap:wrap}
+  .my-order .meta{flex:1 1 auto}
+  .my-order .my-order-meta{flex:1 1 100%;margin-left:46px;justify-content:flex-start}
+}
 
 /* ===== Mobile app chrome: bottom tab bar, balance pill, floating chat ===== */
 .dash-balpill {
@@ -625,31 +645,35 @@ table.tbl td.strong { color:var(--text-primary); font-weight:600; }
 .dash-balpill .bp-minus:hover { background: rgba(0,0,0,.26); }
 .dash-bottomnav {
   display: none; position: fixed; left: 10px; right: 10px;
-  bottom: calc(10px + env(safe-area-inset-bottom));
-  z-index: 62; align-items: flex-end; justify-content: space-between; gap: 4px;
-  padding: 8px 10px; border-radius: 20px;
+  bottom: calc(8px + env(safe-area-inset-bottom));
+  z-index: 62; align-items: center; justify-content: space-between; gap: 2px;
+  padding: 6px 8px; border-radius: 16px;
   background: var(--glass-bg-strong, rgba(255,255,255,.72));
   -webkit-backdrop-filter: blur(22px) saturate(180%); backdrop-filter: blur(22px) saturate(180%);
   border: 1px solid var(--glass-border); box-shadow: 0 12px 34px rgba(0,0,0,.16);
 }
 .dash-bottomnav a.bn, .dash-bottomnav button.bn {
-  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
-  text-decoration: none; color: var(--text-muted); font-size: 11px; font-weight: 600; padding: 4px 0;
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  text-decoration: none; color: var(--text-muted); font-size: 10.5px; font-weight: 600; padding: 2px 0;
   background: none; border: 0; cursor: pointer; font-family: inherit; line-height: 1.1;
 }
-.dash-bottomnav .bn-ico { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; }
+.dash-bottomnav .bn-ico { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; }
 .dash-bottomnav a.bn.active { color: var(--brand, #E11D2E); }
 .dash-bottomnav a.bn.active .bn-ico { background: color-mix(in srgb, var(--brand, #E11D2E) 14%, transparent); }
-.dash-bottomnav .bn-lbl { font-size: 11px; font-weight: 600; }
+.dash-bottomnav .bn-lbl { font-size: 10.5px; font-weight: 600; }
 .dash-bottomnav button.bn:hover, .dash-bottomnav a.bn:hover { color: var(--brand, #E11D2E); }
 .dash-bottomnav .bn-chat { color: var(--brand, #E11D2E); }
-.dash-bottomnav a.bn-buy { position: relative; top: -14px; }
+/* The Buy FAB keeps its slot in the bar but the disc floats above it, so the
+   tab bar sits behind the button. */
+.dash-bottomnav a.bn-buy { position: relative; flex: 0 0 62px; }
 .dash-bottomnav a.bn-buy .bn-buy-ico {
+  position: absolute; left: 50%; bottom: 100%; transform: translate(-50%, 30%);
   width: 54px; height: 54px; border-radius: 50%; background: var(--brand, #E11D2E); color: #fff;
   display: inline-flex; align-items: center; justify-content: center;
+  border: 3px solid var(--page-bg, #fff);
   box-shadow: 0 8px 22px color-mix(in srgb, var(--brand, #E11D2E) 48%, transparent);
 }
-.dash-bottomnav a.bn-buy .bn-lbl { color: var(--brand, #E11D2E); font-size: 11px; font-weight: 700; }
+.dash-bottomnav a.bn-buy .bn-lbl { display: none; }
 @media (max-width:900px){
   .dash-bottomnav { display: flex; }
   .dash-balpill { display: inline-flex; }

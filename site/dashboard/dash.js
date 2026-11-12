@@ -1482,11 +1482,31 @@
     }));
 
     // ---- Duration picker (rent mode) ----
+    // Countries the provider rents this service in. Cached per service so
+    // flipping Temp/Rent or changing country does not refetch needlessly.
+    const rentCountryCache = {};
+    async function rentCountriesFor(code) {
+      if (rentCountryCache[code]) return rentCountryCache[code];
+      let list = [];
+      try { list = await SMSPIN.rentCountries({ service: code }) || []; } catch (e) { list = []; }
+      rentCountryCache[code] = list;
+      return list;
+    }
     async function loadDurations() {
       const host = document.getElementById("rentDurations");
       if (!host) return;
       host.innerHTML = '<p class="muted">Loading durations…</p>';
       const code = svcCode(state.service);
+      // Rentals exist only in a subset of countries; if the current pick is not
+      // rentable, snap to one that is so the buyer never lands on an empty list.
+      let rentable = await rentCountriesFor(code);
+      if (rentable.length) {
+        const codes = rentable.map(x => x.country);
+        if (!codes.includes(state.country.toUpperCase())) {
+          state.country = codes[0].toLowerCase();
+          remember(); paintCountry();
+        }
+      }
       let d = [];
       try { d = (await SMSPIN.rentPrices({ country: state.country, service: code })).durations || []; } catch (e) {}
       state.durations = d;
@@ -1560,7 +1580,17 @@
     const svcMore = document.getElementById("svcMore");
     if (svcMore) svcMore.addEventListener("click", () => { svcLimit += 48; paintService(); });
     if (ctryBtn) ctryBtn.addEventListener("click", async () => {
-      const v = await UI.select({ title: "Choose a country", items: countries, value: state.country,
+      let items = countries;
+      if (state.mode === "rent") {
+        // Offer only countries where this service is actually rentable.
+        const rentable = await rentCountriesFor(svcCode(state.service));
+        if (rentable.length) {
+          const codes = new Set(rentable.map(x => String(x.country).toLowerCase()));
+          const filtered = countries.filter(c => codes.has(String(c.value).toLowerCase()));
+          if (filtered.length) items = filtered;
+        }
+      }
+      const v = await UI.select({ title: "Choose a country", items, value: state.country,
         searchPlaceholder: "Search countries\u2026", tone: "info" });
       if (v) { state.country = v; remember(); paintCountry(); if (state.mode === "rent") loadDurations(); else updatePrice(); }
     });
