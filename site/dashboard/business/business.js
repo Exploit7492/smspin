@@ -417,6 +417,7 @@
     await loadExisting();
     loadPerf();
     setStep(1);
+    updateSlug();
     updateMarkupPreview();
   });
 })();

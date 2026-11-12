@@ -2372,7 +2372,7 @@
     pill.innerHTML =
       '<a class="bp-btn bp-minus" href="/dashboard/wallet/" aria-label="Wallet — withdraw or spend">' +
         '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12h14"/></svg></a>' +
-      '<a class="bp-val" id="balPillVal" href="/dashboard/wallet/">—</a>' +
+      '<a class="bp-val" id="balPillVal" href="/dashboard/topup/">—</a>' +
       '<a class="bp-btn bp-plus" href="/dashboard/topup/" aria-label="Add funds">' +
         '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></a>';
     document.body.appendChild(pill);
@@ -2393,17 +2393,10 @@
       '<a class="bn" href="/dashboard/topup/">' +
         '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/><path d="M12 13v4M10 15h4"/></svg></span>' +
         '<span class="bn-lbl">Top Up</span></a>' +
-      '<button class="bn bn-chat" type="button" id="bnChat" aria-label="Chat with support">' +
+      '<a class="bn" href="/dashboard/sms/">' +
         '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none"><path d="M4 5c0-1.1.9-2 2-2h12c1.1 0 2 .9 2 2v9c0 1.1-.9 2-2 2h-5l-3.5 3.5c-.5.5-1.5.1-1.5-.6V16H6c-1.1 0-2-.9-2-2V5z" fill="currentColor"/></svg></span>' +
-        '<span class="bn-lbl">Chat</span></button>';
+        '<span class="bn-lbl">Inbox</span></a>';
     document.body.appendChild(nav);
-
-    const chat = nav.querySelector("#bnChat");
-    chat.addEventListener("click", () => {
-      if (window.SMSPINHELP && window.SMSPINHELP.open) window.SMSPINHELP.open();
-      else location.href = "/dashboard/support/";
-    });
-    applyActiveNav();
   }
   async function fillBalancePill() {
     const el = $("#balPillVal"); if (!el) return;
@@ -2448,7 +2441,7 @@
     "/dashboard/": "overview", "/dashboard/buy/": "buy", "/dashboard/numbers/": "numbers",
     "/dashboard/orders/": "orders", "/dashboard/sms/": "sms", "/dashboard/wallet/": "wallet",
     "/dashboard/transactions/": "transactions", "/dashboard/api-keys/": "api-keys",
-    "/dashboard/business/": "business", "/dashboard/referrals/": "referrals",
+    "/dashboard/referrals/": "referrals",
     "/dashboard/profile/": "profile", "/dashboard/settings/": "settings",
     "/dashboard/support/": "support", "/dashboard/topup/": "topup",
     "/dashboard/history/": "history",
@@ -2488,7 +2481,7 @@
     const curMain = document.querySelector("main.dash-main");
     if (!nextMain || !curMain) { location.href = path; return; }
     const np = doc.body.dataset.page;
-    const newPage = RENDER[np] ? np : pageFor(path);
+    const newPage = RENDER[np] ? np : (RENDER[pageFor(path)] ? pageFor(path) : null);
     if (!newPage) { location.href = path; return; }
     if (push) history.pushState({ smspin: 1, page: newPage }, "", path);
     curMain.innerHTML = nextMain.innerHTML;

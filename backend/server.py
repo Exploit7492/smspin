@@ -1628,20 +1628,13 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     # ---------- API ----------
-    def do_GET(self):
-        self._tick()
+    def _resolve_virtual_path(self):
+        """Rewrite tenant storefront and custom-domain requests onto real files.
+
+        Shared by GET and HEAD so a link preview, uptime probe or crawler that
+        sends HEAD gets the same status as a browser GET.
+        """
         path = urlparse(self.path).path
-        # G1: dynamic SEO files generated from the mirrored tree.
-        if path == "/robots.txt":
-            return self._send(200, build_robots(), "text/plain; charset=utf-8")
-        if path == "/sitemap.xml":
-            return self._send(200, build_sitemap(), "application/xml; charset=utf-8")
-        # Alias legacy marketing links onto the real dashboard routes.
-        if path == "/dashboard/referral":
-            self.send_response(301)
-            self.send_header("Location", "/dashboard/referrals/")
-            self.end_headers()
-            return
         # C2: a request on a tenant's custom domain serves that store's pages.
         host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(":")[0].lower()
         if host and "all-hands.dev" not in host and host not in ("localhost", "127.0.0.1"):
@@ -1670,6 +1663,46 @@ class Handler(SimpleHTTPRequestHandler):
                 self.path = "/store/account.html"
             else:
                 self.path = "/store/index.html"
+        return urlparse(self.path).path
+
+    def do_HEAD(self):
+        self._tick()
+        path = urlparse(self.path).path
+        # G1: dynamic SEO files are generated, so answer HEAD without a body.
+        if path == "/robots.txt":
+            body = build_robots()
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return
+        if path == "/sitemap.xml":
+            body = build_sitemap()
+            self.send_response(200)
+            self.send_header("Content-type", "application/xml; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return
+        self._resolve_virtual_path()
+        f = self.send_head()
+        if f:
+            f.close()
+
+    def do_GET(self):
+        self._tick()
+        path = urlparse(self.path).path
+        # G1: dynamic SEO files generated from the mirrored tree.
+        if path == "/robots.txt":
+            return self._send(200, build_robots(), "text/plain; charset=utf-8")
+        if path == "/sitemap.xml":
+            return self._send(200, build_sitemap(), "application/xml; charset=utf-8")
+        # Alias legacy marketing links onto the real dashboard routes.
+        if path == "/dashboard/referral":
+            self.send_response(301)
+            self.send_header("Location", "/dashboard/referrals/")
+            self.end_headers()
+            return
+        path = self._resolve_virtual_path()
         if path == "/api/geo":
             ip = self.headers.get("X-Forwarded-For", "").split(",")[0].strip() or self.client_address[0]
             cc, cur, name = geo_from_ip(ip)
