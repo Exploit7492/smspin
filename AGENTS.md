@@ -536,6 +536,21 @@ nohup bash scripts/dev-server.sh > /tmp/smspin-dev.log 2>&1 &
 ```
 Backend deps: `pip install -r backend/requirements.txt` (psycopg2-binary, forex-python, wbdata).
 
+## Keep the dev server alive across tool sessions
+The container resets drop the running process *and* pip packages. Both hosts
+(`work-1` → port 12000, `work-2` → port 12001) show 502 whenever nothing is
+listening, so start one instance per port and detach it with `setsid` (a plain
+`nohup ... &` dies when the shell session ends):
+```
+pip install -r backend/requirements.txt bcrypt        # after a reset
+cd /workspace/project
+setsid bash scripts/dev-server.sh > /tmp/smspin-dev.log 2>&1 < /dev/null & disown   # :12000
+PORT=12001 setsid bash scripts/dev-server.sh > /tmp/smspin-dev-2.log 2>&1 < /dev/null & disown
+```
+`scripts/dev-server.sh` exports the secret names itself, so the runtime injects
+them; it reads `PORT` from the environment. Check with
+`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:12000/` (expect 200).
+
 ## Tenant storefront URLs must answer GET *and* HEAD
 `/store/<slug>` (+ `/login`, `/register`, `/account`) are virtual routes rewritten
 onto real files in `Handler._resolve_virtual_path()`. That rewrite is called from both
