@@ -75,6 +75,35 @@
   }
 
   const alert = opts => base(typeof opts === "string" ? { message: opts } : opts);
+
+  // Non-blocking toast for background events (e.g. an SMS code arriving while
+  // the user is elsewhere). Never covers the page — it auto-dismisses and can
+  // be swiped/clicked away. Use alert() only for things that need a decision.
+  function toast({ title, message, tone, icon, timeout }) {
+    let host = document.getElementById("uiToastHost");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "uiToastHost";
+      host.className = "ui-toast-host";
+      document.body.appendChild(host);
+    }
+    const el = document.createElement("div");
+    el.className = "ui-toast" + (tone ? " " + tone : "");
+    el.setAttribute("role", "status");
+    el.innerHTML =
+      '<span class="ui-toast-ico">' + (ICONS[tone] || ICONS.info) + "</span>" +
+      '<div class="ui-toast-tx">' +
+        (title ? "<b>" + esc(title) + "</b>" : "") +
+        (message ? '<span>' + esc(message) + "</span>" : "") +
+      "</div>" +
+      (icon ? '<span class="ui-toast-x" role="button" aria-label="Dismiss">\u00d7</span>' : "");
+    host.appendChild(el);
+    requestAnimationFrame(() => el.classList.add("in"));
+    const remove = () => { el.classList.remove("in"); setTimeout(() => el.remove(), 200); };
+    el.addEventListener("click", remove);
+    setTimeout(remove, timeout || 6000);
+    return el;
+  }
   const confirm = opts => base(Object.assign({ tone: "question",
     actions: [{ id: "cancel", label: "Cancel", variant: "ghost" }, { id: "ok", label: "Confirm", variant: "primary" }] },
     typeof opts === "string" ? { message: opts } : opts));
@@ -157,5 +186,5 @@
     });
   }
 
-  window.SMSPINUI = { modal: base, alert, confirm, reveal, select };
+  window.SMSPINUI = { modal: base, alert, confirm, reveal, select, toast };
 })();

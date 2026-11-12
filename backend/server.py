@@ -2710,7 +2710,18 @@ class Handler(SimpleHTTPRequestHandler):
         if not uid:
             return self._send(401, {"error": "missing or invalid session"})
         q = parse_qs(urlparse(self.path).query)
-        since = q.get("since", ["0"])[0]
+        try:
+            since = int(q.get("since", ["0"])[0] or 0)
+        except ValueError:
+            since = 0
+        if since <= 0:
+            # First connect: baseline to the newest message already on record so
+            # we stream only what arrives *after* now. Replaying the backlog made
+            # every reconnect re-announce old codes (and stacked alert modals).
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("""select coalesce(max(m.id), 0) from sms_messages m
+                                 join orders o on o.id = m.order_id where o.user_id = %s""", (uid,))
+                since = cur.fetchone()[0] or 0
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -2726,12 +2737,14 @@ class Handler(SimpleHTTPRequestHandler):
                     cur.execute("""select m.id, m.order_id, m.sender, m.body, m.code, m.received_at,
                                           o.status
                                      from sms_messages m join orders o on o.id=m.order_id
-                                    where o.user_id=%s order by m.id desc limit 25""", (uid,))
+                                    where o.user_id=%s and m.id > %s order by m.id asc limit 25""",
+                                (uid, since))
                     rows = cur.fetchall()
-                for r in reversed(rows):
+                for r in rows:
                     if r["id"] in seen:
                         continue
                     seen.add(r["id"])
+                    since = max(since, r["id"])
                     evt = {"type": "sms", "order_id": r["order_id"], "sender": r["sender"],
                            "body": r["body"], "code": r["code"],
                            "received_at": str(r["received_at"])}

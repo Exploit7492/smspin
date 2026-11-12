@@ -3,7 +3,7 @@
   let page = document.body.dataset.page;
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
-  const UI = window.SMSPINUI || { alert: async () => {}, confirm: async () => "ok", reveal: async () => {}, modal: async () => null, select: async () => null };
+  const UI = window.SMSPINUI || { alert: async () => {}, confirm: async () => "ok", reveal: async () => {}, modal: async () => null, select: async () => null, toast: () => {} };
 
   const CURRENCY_SYMBOL = { NGN: "\u20a6", USD: "$", GBP: "\u00a3", EUR: "\u20ac", INR: "\u20b9",
     JPY: "\u00a5", BRL: "R$", ZAR: "R", KES: "KSh", GHS: "GH\u20b5", CAD: "C$", AUD: "A$" };
@@ -1277,6 +1277,29 @@
     } catch (e) { /* quota — snapshot is best effort */ }
   }
 
+  // Warm the catalog snapshot as soon as the dashboard boots, so the buy page
+  // is fully populated the moment the user opens it — no per-visit network
+  // call, no empty shell. Runs in the background and never blocks the page.
+  async function preloadCatalog() {
+    const store = window.SMSPIN.store && SMSPIN.store();
+    if (readCatalogSnapshot(store)) return;
+    try {
+      let cat = [], taxonomy = null;
+      if (store) {
+        const b = await SMSPIN.rpc("business_public", { p_slug: store });
+        cat = (b && b.catalog || []).map(c => ({
+          country: c.country, country_name: c.country_name, flag: c.flag,
+          service: c.service, service_name: c.service_name, service_icon: c.service_icon || c.icon,
+          price: c.price_ngn, price_usd: c.price_usd, stock: c.stock,
+        }));
+      } else {
+        cat = await SMSPIN.rpc("browse_catalog", {});
+        try { taxonomy = await SMSPIN.rpc("catalog_taxonomy", {}); } catch (e) {}
+      }
+      if (cat && cat.length) writeCatalogSnapshot(store, cat, taxonomy);
+    } catch (e) { /* best effort — buy page retries on arrival */ }
+  }
+
   async function renderBuy() {
     const store = window.SMSPIN.store && SMSPIN.store();
     let cat = [];
@@ -2370,6 +2393,9 @@
     fillSideNumbers();
     fillSideOrders();
     await loadGeo();
+    // Kick off catalog warming in the background so the buy page is populated
+    // on arrival (prompt: "everything populated fully before the user arrival").
+    preloadCatalog();
     await renderPage();
     fitStatValues();
     let fitT;
@@ -2517,8 +2543,12 @@
     es.addEventListener("sms", (ev) => {
       let d = {}; try { d = JSON.parse(ev.data); } catch (e) { return; }
       document.dispatchEvent(new CustomEvent("smspin:sms", { detail: d }));
-      if (window.SMSPINUI && SMSPINUI.alert) {
-        SMSPINUI.alert("New SMS code", (d.sender || "A service") + " sent " + (d.code || "a message") + ".");
+      if (window.SMSPINUI && SMSPINUI.toast) {
+        SMSPINUI.toast({
+          title: "New SMS code",
+          message: (d.sender || "A service") + " sent " + (d.code || "a message") + ".",
+          tone: "success",
+        });
       }
     });
     es.onerror = () => { try { es.close(); } catch (e) {} };
