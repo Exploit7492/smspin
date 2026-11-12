@@ -1359,7 +1359,11 @@ class Handler(SimpleHTTPRequestHandler):
         ld = build_review_jsonld(path)
         _reviews_cache()
         stamp = getattr(_reviews_cache, "_c", (0, None))[0]
-        key = (candidate, stamp)
+        try:
+            mtime = os.path.getmtime(candidate)
+        except OSError:
+            mtime = 0
+        key = (candidate, stamp, mtime)
         cached = _LD_CACHE.get(key)
         if cached is not None:
             return cached
