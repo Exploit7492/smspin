@@ -1374,13 +1374,18 @@
       if (!btn) return;
       const code = svcCode(state.service);
       curCode = code;
-      let row = cat.find(c => c.country === state.country && (c.service === code || codeToService[c.service] === state.service))
-             || cat.find(c => c.country === state.country);
+      // Match the exact pair only. Falling back to "any service in this
+      // country" would show another service's price/stock for a pair we do not
+      // stock, hiding the real one — the live fetch below handles misses.
+      let row = cat.find(c => c.country === state.country &&
+                              (c.service === code || codeToService[c.service] === state.service));
       // If we don't stock this pair yet, ask the backend to fetch it live.
       if (!row || !Number(row.stock)) {
         try {
+          const hdrs = {};
+          try { const s = SMSPIN.getSession && SMSPIN.getSession(); if (s && s.access_token) hdrs.Authorization = "Bearer " + s.access_token; } catch (e) {}
           const rr = await fetch("/api/catalog/live?country=" + encodeURIComponent(state.country) +
-                                 "&service=" + encodeURIComponent(code));
+                                 "&service=" + encodeURIComponent(code), { headers: hdrs });
           if (rr.ok) {
             const d = await rr.json();
             if (d.price_ngn) row = { price: d.price_ngn, stock: d.available || 0 };

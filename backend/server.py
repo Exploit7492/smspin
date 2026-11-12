@@ -461,12 +461,57 @@ def sync_pair(country, service, force=False):
     return live
 
 
+def _local_charge(country, service, user_id=None, tenant_account=None):
+    """Local preview of what reserve_number will debit (base + business markup).
+
+    Mirrors reserve_number's pricing so buy_real can reject an underfunded
+    wallet without touching the provider. Returns None when the pair has no
+    local price to charge against.
+    """
+    with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""select price from number_catalog
+                        where country_code=%s and service_code=%s and active and stock > 0
+                        order by price asc limit 1""", (country, service))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cur.execute("""select coalesce(markup_percent, 0) as pct from businesses b
+                        where b.status='active' and (
+                          (%s::uuid is not null and b.id = (select business_id from tenant_accounts where id=%s::uuid))
+                          or (%s::uuid is not null and b.user_id = %s::uuid))
+                        limit 1""",
+                    (tenant_account, tenant_account, user_id, user_id))
+        m = cur.fetchone()
+    pct = float(m["pct"]) if m else 0.0
+    # Mirror reserve_number exactly: it rounds the markup to 2dp, then ceils.
+    return math.ceil(float(row["price"]) + round(float(row["price"]) * pct / 100.0, 2))
+
+
+def _wallet_balance(user_id, tenant_account):
+    with db() as conn, conn.cursor() as cur:
+        if tenant_account:
+            cur.execute("select balance from tenant_wallets where account_id=%s", (tenant_account,))
+        else:
+            cur.execute("select balance from wallets where user_id=%s", (user_id,))
+        row = cur.fetchone()
+    return float(row[0]) if row and row[0] is not None else 0.0
+
+
 def buy_real(country, service, user_id=None, tenant_account=None, operator=None):
     """Reserve funds locally, place the provider order, confirm or refund."""
     if not upstream_enabled():
         raise RuntimeError("upstream disabled")
     cc, sv = country.lower(), service
-    live = sync_pair(cc, sv, force=True) or {}
+    # Debit the wallet before any provider traffic: an underfunded wallet is
+    # rejected here, so we never make a network call we cannot pay for. A pair
+    # with no local price needs one sync first — there is otherwise nothing to
+    # charge against.
+    charge = _local_charge(cc, sv, user_id, tenant_account)
+    if charge is None:
+        sync_pair(cc, sv, force=True)
+        charge = _local_charge(cc, sv, user_id, tenant_account)
+    if charge is not None and _wallet_balance(user_id, tenant_account) < charge:
+        raise RuntimeError("insufficient balance")
     res = _svc("reserve_number", {
         "p_user": user_id, "p_country": cc, "p_service": sv,
         "p_tenant_account": tenant_account, "p_operator": operator,
@@ -1525,9 +1570,28 @@ class Handler(SimpleHTTPRequestHandler):
             # "1688" — on arrival instead of only the preloaded subset.
             cc = (parse_qs(urlparse(self.path).query).get("country", [""])[0] or "").lower()
             with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""select code, name, icon from services order by name""")
-                services = [{"code": r["code"], "name": r["name"], "icon": r["icon"]}
-                            for r in cur.fetchall()]
+                # Some display names have two rows (a real provider code and a
+                # spurious alias, e.g. "Facebook" fb/facebook). The alias has no
+                # stock and the provider rejects it, so keep the stocked code per
+                # name; the picker otherwise selects the dead alias and the pair
+                # shows nothing.
+                cur.execute("""
+                    select s.code, s.name, s.icon, coalesce(n.stocked, 0) as stocked
+                      from services s
+                      left join (
+                        select service_code, count(*) as stocked
+                          from number_catalog
+                         where active and stock > 0
+                         group by service_code
+                      ) n on n.service_code = s.code
+                     order by s.name, stocked desc, s.code""")
+                services, seen = [], set()
+                for r in cur.fetchall():
+                    key = (r["name"] or r["code"]).lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    services.append({"code": r["code"], "name": r["name"], "icon": r["icon"]})
                 cur.execute("""select code, name, flag from countries order by name""")
                 countries = [{"code": r["code"], "name": r["name"], "flag": r["flag"]}
                              for r in cur.fetchall()]
@@ -1540,12 +1604,26 @@ class Handler(SimpleHTTPRequestHandler):
             if not cc or not sv:
                 return self._send(400, {"error": "country and service required"})
             live = sync_pair(cc, sv) or {}
+            user_id = self._auth_user()
             with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""select price, cost_usd, stock, updated_at from number_catalog
                                 where country_code=%s and service_code=%s""", (cc, sv))
                 row = cur.fetchone() or {}
+                pct = 0.0
+                if user_id:
+                    cur.execute("""select coalesce(markup_percent, 0) as pct from businesses
+                                    where user_id=%s and status='active' limit 1""", (user_id,))
+                    m = cur.fetchone()
+                    if m:
+                        pct = float(m["pct"])
+            price_ngn = None
+            if row.get("price") is not None:
+                # Same figure reserve_number debits: it rounds the markup to 2dp,
+                # then ceils the sum.
+                base = float(row["price"])
+                price_ngn = math.ceil(base + round(base * pct / 100.0, 2))
             return self._send(200, {"country": cc, "service": sv,
-                                    "price_ngn": float(row["price"]) if row.get("price") is not None else None,
+                                    "price_ngn": price_ngn,
                                     "cost_usd": float(row["cost_usd"]) if row.get("cost_usd") is not None else live.get("price_usd"),
                                     "available": row.get("stock", live.get("available")),
                                     "operators": live.get("operators", [])})

@@ -473,6 +473,22 @@ redirects or aliases:
 - **Pricing**: `smspin_api.live_price` prices from the *cheapest in-stock operator*;
   the provider's headline `price` is the most expensive tier. Markup is 2x (100%)
   by default; funding fee is a flat 2.5%.
+- **Displayed price must equal the debit**. `reserve_number` computes
+  `ceil(base + round(base * pct/100, 2))` where `pct` is the buyer's
+  `businesses.markup_percent`. Anywhere a price is shown to a buyer — `browse_catalog`,
+  `business_public`, `/api/catalog/live` — must use that exact expression, including the
+  inner `round`, or the price can differ by ₦1 from the charge. `coalesce(pct, 0)` matters:
+  without it a buyer with no business row gets a NULL price.
+- **Wallet is debited before the provider call**. `buy_real` previews the charge with
+  `_local_charge` and rejects an underfunded wallet *before* any provider traffic; only a
+  pair with no local price triggers `sync_pair` first. Never move `create_order` ahead of
+  `reserve_number`.
+- **Service aliases shadow real codes**. `services` holds both a real provider code
+  (`fb`, `tg`, `ig`, `lf`, `wa`) and a spurious local alias (`facebook`, `telegram`, ...)
+  with identical `name` and no stock. The provider rejects the alias, so the picker must
+  resolve each display name to the stocked code — `/api/catalog/taxonomy` keeps the
+  stocked code per name. Don't "fall back to any service in this country" when a pair is
+  missing; that shows another service's price and hides the live fetch.
 
 ## Dev server: secrets must be named in the launching command
 Secret injection only fires when the secret name appears in the command text. Start the
