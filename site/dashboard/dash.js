@@ -1254,26 +1254,53 @@
     else el.textContent = icon;
   }
 
+  // Catalog snapshot: cache the stocked catalog + taxonomy in localStorage so
+  // the buy picker paints instantly instead of refetching the whole catalog on
+  // every visit. The stock counts are advisory; the server re-checks at buy.
+  const CAT_SNAP_TTL = 6 * 60 * 60 * 1000;
+  // Bump when the snapshot shape changes so old cached snapshots (e.g. ones
+  // saved before the full service taxonomy was cached) are discarded.
+  const CAT_SNAP_V = 2;
+  function catSnapKey(store) { return "smspin_cat_snap:" + CAT_SNAP_V + ":" + (store || "public"); }
+  function readCatalogSnapshot(store) {
+    try {
+      const raw = localStorage.getItem(catSnapKey(store));
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      if (!s || Date.now() - (s.t || 0) > CAT_SNAP_TTL) return null;
+      return s;
+    } catch (e) { return null; }
+  }
+  function writeCatalogSnapshot(store, cat, taxonomy) {
+    try {
+      localStorage.setItem(catSnapKey(store), JSON.stringify({ t: Date.now(), cat, taxonomy }));
+    } catch (e) { /* quota — snapshot is best effort */ }
+  }
+
   async function renderBuy() {
     const store = window.SMSPIN.store && SMSPIN.store();
     let cat = [];
     let taxonomy = null;
-    if (store) {
-      const b = await SMSPIN.rpc("business_public", { p_slug: store });
-      cat = (b && b.catalog || []).map(c => ({
-        country: c.country, country_name: c.country_name, flag: c.flag,
-        service: c.service, service_name: c.service_name, service_icon: c.service_icon || c.icon,
-        price: c.price_ngn, stock: c.stock,
-      }));
-    } else {
-      cat = await SMSPIN.rpc("browse_catalog", {});
-      // Full service + country taxonomy so every provider service (e.g. 1688)
-      // is searchable on arrival, not just the pairs already preloaded.
-      try {
-        const r = await fetch("/api/catalog/taxonomy");
-        if (r.ok) taxonomy = await r.json();
-      } catch (e) {}
-    }
+    // The picker renders from a cached snapshot so it never blocks on the
+    // network on every visit. The snapshot refreshes in the background.
+    const SNAP = readCatalogSnapshot(store);
+    if (SNAP) { cat = SNAP.cat || []; taxonomy = SNAP.taxonomy || null; }
+    const loadCatalog = async () => {
+      if (store) {
+        const b = await SMSPIN.rpc("business_public", { p_slug: store });
+        cat = (b && b.catalog || []).map(c => ({
+          country: c.country, country_name: c.country_name, flag: c.flag,
+          service: c.service, service_name: c.service_name, service_icon: c.service_icon || c.icon,
+          price: c.price_ngn, price_usd: c.price_usd, stock: c.stock,
+        }));
+      } else {
+        cat = await SMSPIN.rpc("browse_catalog", {});
+        try { taxonomy = await SMSPIN.rpc("catalog_taxonomy", {}); } catch (e) {}
+      }
+      if (cat && cat.length) writeCatalogSnapshot(store, cat, taxonomy);
+      return { cat, taxonomy };
+    };
+    if (!SNAP) { try { await loadCatalog(); } catch (e) {} }
     const btn = document.getElementById("buyBtn");
     const svcBtn = document.getElementById("svcPick"), ctryBtn = document.getElementById("ctryPick");
     if (!cat) cat = [];
@@ -1284,35 +1311,41 @@
       return;
     }
 
-    const countries = [], services = [];
+    // Rebuilt from the (possibly refreshed) catalog + taxonomy. Kept in a
+    // function because a stale snapshot paints a short list first; once the
+    // live taxonomy lands we rebuild so newly added services (e.g. GitHub)
+    // become selectable without a hard reload.
+    let countries = [], services = [];
     const seenC = {}, seenS = {}, codeToService = {};
-    // Seed from the full taxonomy first (every service/country), then overlay
-    // the stocked catalog so icons/names and canonical codes win.
-    if (taxonomy) {
-      (taxonomy.services || []).forEach(s => {
-        const key = (s.name || s.code).toLowerCase();
-        codeToService[s.code] = key;
-        if (!seenS[key]) seenS[key] = { value: key, label: s.name, icon: s.icon, code: s.code };
-        else if (!seenS[key].icon && s.icon) seenS[key].icon = s.icon;
+    function buildLists() {
+      countries = []; services = [];
+      for (const k in seenC) delete seenC[k];
+      for (const k in seenS) delete seenS[k];
+      for (const k in codeToService) delete codeToService[k];
+      if (taxonomy) {
+        (taxonomy.services || []).forEach(s => {
+          const key = (s.name || s.code).toLowerCase();
+          codeToService[s.code] = key;
+          if (!seenS[key]) seenS[key] = { value: key, label: s.name, icon: s.icon, code: s.code };
+          else if (!seenS[key].icon && s.icon) seenS[key].icon = s.icon;
+        });
+        (taxonomy.countries || []).forEach(c => {
+          if (!seenC[c.code]) { seenC[c.code] = 1; countries.push({ value: c.code, label: c.name, icon: c.flag }); }
+        });
+      }
+      cat.forEach(c => {
+        if (!seenC[c.country]) { seenC[c.country] = 1; countries.push({ value: c.country, label: c.country_name, icon: c.flag }); }
+        const key = (c.service_name || c.service).toLowerCase();
+        codeToService[c.service] = key;
+        if (!seenS[key]) { seenS[key] = { value: key, label: c.service_name, icon: c.service_icon, code: c.service }; }
+        else { if (!seenS[key].icon && c.service_icon) seenS[key].icon = c.service_icon;
+               if (!seenS[key].code) seenS[key].code = c.service; }
       });
-      (taxonomy.countries || []).forEach(c => {
-        if (!seenC[c.code]) { seenC[c.code] = 1; countries.push({ value: c.code, label: c.name, icon: c.flag }); }
-      });
+      services.push(...Object.values(seenS));
+      countries.sort((a, b) => a.label.localeCompare(b.label));
+      services.sort((a, b) => a.label.localeCompare(b.label));
     }
-    cat.forEach(c => {
-      if (!seenC[c.country]) { seenC[c.country] = 1; countries.push({ value: c.country, label: c.country_name, icon: c.flag }); }
-      // Map every raw service code onto its canonical (display) service so a
-      // deep link like ?service=wa still selects WhatsApp even when the picker
-      // de-duplicates aliases (wa/whatsapp, tg/telegram, ...).
-      const key = (c.service_name || c.service).toLowerCase();
-      codeToService[c.service] = key;
-      if (!seenS[key]) { seenS[key] = { value: key, label: c.service_name, icon: c.service_icon, code: c.service }; }
-      else { if (!seenS[key].icon && c.service_icon) seenS[key].icon = c.service_icon;
-             if (!seenS[key].code) seenS[key].code = c.service; }
-    });
-    services.push(...Object.values(seenS));
-    countries.sort((a, b) => a.label.localeCompare(b.label));
-    services.sort((a, b) => a.label.localeCompare(b.label));
+    buildLists();
 
     // Smart defaults: honour ?country/?service deep links (resolving service
     // aliases), else fall back to the last country this user bought in, else
@@ -1332,9 +1365,6 @@
     const geoC = (GEO.country || "").toLowerCase();
     if (!defCountry && geoC && countries.some(c => c.value === geoC)) defCountry = geoC;
     const country = defCountry || (countries[0] && countries[0].value);
-    // Default service: prefer a mainstream messenger/OTP service the country
-    // actually stocks (WhatsApp first), so the first thing a buyer sees is the
-    // obvious pick rather than an alphabetical accident.
     const MAINSTREAM = ["whatsapp", "telegram", "google", "facebook", "instagram", "tiktok", "twitter / x", "x", "discord", "uber"];
     const svcReach = {};
     cat.forEach(c => { const k = codeToService[c.service]; if (k) svcReach[k] = (svcReach[k] || 0) + 1; });
@@ -1342,10 +1372,12 @@
     const defSvc = MAINSTREAM.find(v => inCountry.has(v))
       || services.map(s => s.value).filter(v => inCountry.has(v)).sort((a, b) => (svcReach[b] || 0) - (svcReach[a] || 0))[0];
     const state = {
+      mode: "temp",
+      duration: 24,
+      durations: [],
       country,
       service: resolveSvc(wantSvc) || resolveSvc(last.service) || defSvc || (services[0] && services[0].value),
     };
-    // Resolve a display key back to the provider code the API expects.
     function svcCode(key) {
       const s = services.find(x => x.value === key);
       return (s && s.code) || key;
@@ -1367,6 +1399,44 @@
       try { localStorage.setItem("smspin_last:buy", JSON.stringify({ country: state.country, service: state.service })); } catch (e) {}
     }
 
+    // ---- Mode switch (Temp / Rent) ----
+    function paintMode() {
+      $$("#buyModes .buy-mode").forEach(b => {
+        const on = b.dataset.mode === state.mode;
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      const rent = document.getElementById("buyRent");
+      if (rent) rent.hidden = state.mode !== "rent";
+    }
+    $$("#buyModes .buy-mode").forEach(b => b.addEventListener("click", () => {
+      state.mode = b.dataset.mode;
+      paintMode();
+      if (state.mode === "rent") loadDurations(); else updatePrice();
+    }));
+
+    // ---- Duration picker (rent mode) ----
+    async function loadDurations() {
+      const host = document.getElementById("rentDurations");
+      if (!host) return;
+      host.innerHTML = '<p class="muted">Loading durations…</p>';
+      const code = svcCode(state.service);
+      let d = [];
+      try { d = (await SMSPIN.rentPrices({ country: state.country, service: code })).durations || []; } catch (e) {}
+      state.durations = d;
+      if (!d.length) { host.innerHTML = '<p class="muted">Rentals are not available for this pair. Try another service or country.</p>'; updatePrice(); return; }
+      if (!d.some(x => x.hours === state.duration)) state.duration = d[0].hours;
+      host.innerHTML = d.map(x =>
+        '<button type="button" class="rent-dur' + (x.hours === state.duration ? " on" : "") + '" data-h="' + x.hours + '">' +
+        '<b>' + esc(x.label) + '</b><span>' + money(price(x.price_ngn), "NGN") + '</span></button>').join("");
+      $$(".rent-dur", host).forEach(b => b.addEventListener("click", () => {
+        state.duration = Number(b.dataset.h);
+        $$(".rent-dur", host).forEach(x => x.classList.toggle("on", Number(x.dataset.h) === state.duration));
+        updatePrice();
+      }));
+      updatePrice();
+    }
+
     // Available stock for the currently selected pair, shown on the card.
     const stockEl = document.getElementById("buyStock");
     let curPrice = null, curStock = 0, curCode = null;
@@ -1374,12 +1444,23 @@
       if (!btn) return;
       const code = svcCode(state.service);
       curCode = code;
-      // Match the exact pair only. Falling back to "any service in this
-      // country" would show another service's price/stock for a pair we do not
-      // stock, hiding the real one — the live fetch below handles misses.
+
+      if (state.mode === "rent") {
+        if (!state.durations.length) {
+          if (stockEl) { stockEl.textContent = "Rental pricing unavailable"; stockEl.classList.add("is-out"); }
+          btn.disabled = true; btn.textContent = "Unavailable"; return;
+        }
+        const pick = state.durations.find(x => x.hours === state.duration) || state.durations[0];
+        curPrice = Number(pick.price_ngn);
+        if (stockEl) { stockEl.textContent = pick.label + " rental · whole-dollar price"; stockEl.classList.remove("is-out"); }
+        btn.disabled = false;
+        btn.textContent = "Rent " + pick.label + " · " + money(price(curPrice), "NGN");
+        return;
+      }
+
+      // Temp (one-shot OTP) mode.
       let row = cat.find(c => c.country === state.country &&
                               (c.service === code || codeToService[c.service] === state.service));
-      // If we don't stock this pair yet, ask the backend to fetch it live.
       if (!row || !Number(row.stock)) {
         try {
           const hdrs = {};
@@ -1402,15 +1483,8 @@
       if (!curStock) { btn.textContent = "Out of stock"; btn.disabled = true; return; }
       btn.disabled = false;
       let label = money(price(curPrice), "NGN");
-      if (GEO.currency && GEO.currency !== "NGN") {
-        try {
-          const r = await fetch("/api/fx?to=" + GEO.currency + "&amount=" + price(curPrice));
-          if (r.ok) {
-            const d = await r.json();
-            const approx = (d.symbol || "") + Math.ceil(Number(d.amount || 0)).toLocaleString();
-            label += " (\u2248 " + approx + ")";
-          }
-        } catch (e) {}
+      if (GEO.currency && GEO.currency !== "NGN" && row && row.price_usd) {
+        label += " (\u2248 " + (GEO.currency === "USD" ? "$" : "") + Number(row.price_usd).toLocaleString() + ")";
       }
       btn.textContent = "Buy number \u00b7 " + label;
     }
@@ -1418,16 +1492,26 @@
     if (svcBtn) svcBtn.addEventListener("click", async () => {
       const v = await UI.select({ title: "Choose a service", items: services, value: state.service,
         searchPlaceholder: "Search " + services.length + " services\u2026", tone: "info" });
-      if (v) { state.service = v; remember(); paintService(); updatePrice(); }
+      if (v) { state.service = v; remember(); paintService(); if (state.mode === "rent") loadDurations(); else updatePrice(); }
     });
     if (ctryBtn) ctryBtn.addEventListener("click", async () => {
       const v = await UI.select({ title: "Choose a country", items: countries, value: state.country,
         searchPlaceholder: "Search countries\u2026", tone: "info" });
-      if (v) { state.country = v; remember(); paintCountry(); updatePrice(); }
+      if (v) { state.country = v; remember(); paintCountry(); if (state.mode === "rent") loadDurations(); else updatePrice(); }
     });
 
-    paintService(); paintCountry();
+    paintService(); paintCountry(); paintMode();
     await updatePrice();
+    if (SNAP) {
+      loadCatalog().then(() => {
+        buildLists();
+        if (wantSvc) state.service = resolveSvc(wantSvc) || state.service;
+        if (!services.some(s => s.value === state.service) && services[0]) state.service = services[0].value;
+        if (wantCtry && countries.some(c => c.value === wantCtry)) state.country = wantCtry;
+        if (!countries.some(c => c.value === state.country) && countries[0]) state.country = countries[0].value;
+        paintService(); paintCountry(); updatePrice();
+      }).catch(() => {});
+    }
 
     // O4: first-purchase tutorial + sample OTP demo (hidden once the user has ordered).
     const tut = document.getElementById("buyTutorial");
@@ -1458,49 +1542,127 @@
       btn.disabled = true;
       btn.classList.add("is-busy");
       const prevLabel = btn.textContent;
-      btn.innerHTML = '<span class="btn-spin" aria-hidden="true"></span><span>Reserving number…</span>';
+      btn.innerHTML = '<span class="btn-spin" aria-hidden="true"></span><span>' +
+        (state.mode === "rent" ? "Reserving rental…" : "Reserving number…") + "</span>";
       remember();
       const restore = () => { btn.classList.remove("is-busy"); btn.textContent = prevLabel; };
       try {
-        const store = window.SMSPIN.store && SMSPIN.store();
-        // The wallet is debited before the provider is called; refuse locally
-        // when the balance is short so the buyer gets a clear message.
-        if (!store) {
-          try {
-            const w = await SMSPIN.rpc("wallet_summary");
-            if (w && curPrice != null && Number(w.balance) < curPrice) {
-              toast("Insufficient balance — top up your wallet to buy this number.", "err");
-              restore();
-              btn.disabled = false;
-              return;
-            }
-          } catch (e) {}
-        }
-        const res = await SMSPIN.buyOrder({ country: state.country, service: curCode || svcCode(state.service) });
+        const code = curCode || svcCode(state.service);
+        const res = state.mode === "rent"
+          ? await SMSPIN.rentOrder({ country: state.country, service: code, duration: state.duration })
+          : await SMSPIN.buyOrder({ country: state.country, service: code });
         const r = res || {};
         toast("Number " + (r.phone_number || "") + " reserved", "ok");
-        btn.innerHTML = '<span class="btn-spin" aria-hidden="true"></span><span>Reserved — opening inbox…</span>';
-        setTimeout(() => location.href = "/dashboard/sms/", 900);
+        location.href = "/dashboard/sms/?order=" + encodeURIComponent(r.order_id || "");
       } catch (e) { toast(e.message, "err"); restore(); updatePrice(); }
     });
 
-    const pop = document.getElementById("buyPopular");
-    if (pop) {
-      const top = cat.slice().sort((a, b) => b.stock - a.stock).slice(0, 6);
-      pop.innerHTML = top.map(c => '<div class="num-item">' +
-        '<span class="flag ico-flag">' + (c.service_icon && /^(https?:|data:|\/)/.test(c.service_icon)
-          ? '<img src="' + esc(c.service_icon) + '" alt="" onerror="this.remove()">' : esc(c.service_icon || c.flag || "")) + "</span>" +
-        '<div class="meta"><b>' + esc(c.service_name) + "</b><span>" + esc(c.flag || "") + " " + esc(c.country_name) +
-        " \u00b7 " + Number(c.stock).toLocaleString() + " in stock</span></div>" +
-        '<button class="btn btn-secondary" type="button" data-c="' + esc(c.country) + '" data-s="' + esc(c.service) + '">' +
-        money(price(c.price), "NGN") + "</button></div>").join("");
-      $$("[data-c]", pop).forEach(b => b.addEventListener("click", () => {
-        state.country = b.dataset.c;
-        state.service = resolveSvc(b.dataset.s) || state.service;
-        remember(); paintService(); paintCountry(); updatePrice();
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      }));
+    // ---- Success rates (collapsible) ----
+    const srToggle = document.getElementById("srToggle");
+    const srBody = document.getElementById("srBody");
+    if (srToggle && srBody) srToggle.onclick = async () => {
+      const open = srBody.hidden;
+      srBody.hidden = !open;
+      srToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) await renderSuccessRates();
+    };
+    async function renderSuccessRates() {
+      const host = document.getElementById("srList");
+      if (!host || host._done) return;
+      let orders = [];
+      try { orders = await SMSPIN.rpc("my_orders", { p_limit: 200 }); } catch (e) {}
+      host._done = true;
+      const done = orders.filter(o => o.status !== "waiting");
+      const ok = orders.filter(o => o.status === "received").length;
+      const rate = done.length ? Math.round(100 * ok / done.length) : null;
+      const bySvc = {};
+      orders.forEach(o => {
+        const k = o.service || o.service_code || "—";
+        bySvc[k] = bySvc[k] || { ok: 0, n: 0 };
+        if (o.status !== "waiting") { bySvc[k].n++; if (o.status === "received") bySvc[k].ok++; }
+      });
+      const top = Object.entries(bySvc).filter(([, v]) => v.n).sort((a, b) => b[1].n - a[1].n).slice(0, 6);
+      host.innerHTML =
+        '<div class="sr-total"><b>' + (rate == null ? "—" : rate + "%") + '</b><span>overall success rate · ' +
+          ok + " of " + done.length + " completed</span></div>" +
+        (top.length ? top.map(([name, v]) =>
+          '<div class="sr-row"><span>' + esc(name) + '</span><span class="sr-bar"><i style="width:' +
+          Math.round(100 * v.ok / v.n) + '%"></i></span><b>' + Math.round(100 * v.ok / v.n) + "%</b></div>").join("")
+          : '<p class="muted">Buy a few numbers and your per-service success rates appear here.</p>');
     }
+
+    // ---- My orders: tabs, search, status filters, CSV ----
+    let MYORDERS = [], oTab = "temp", oFilter = "all", oQuery = "";
+    const FILTERS = [
+      ["all", "All"], ["waiting", "Active"], ["received", "Completed"],
+      ["cancelled", "Cancelled"], ["refunded", "Expired"],
+    ];
+    function normStatus(s) { return s === "expired" ? "refunded" : s; }
+    function paintOrderTabs() {
+      $$("#orderTabs .buy-mode").forEach(b => b.classList.toggle("on", b.dataset.otab === oTab));
+    }
+    function paintFilters() {
+      const host = document.getElementById("orderFilters");
+      if (!host) return;
+      const base = MYORDERS.filter(o => (oTab === "rent" ? o.is_rental : !o.is_rental));
+      const counts = { all: base.length, waiting: 0, received: 0, cancelled: 0, refunded: 0 };
+      base.forEach(o => { const s = normStatus(o.status); if (counts[s] != null) counts[s]++; });
+      host.innerHTML = FILTERS.map(([k, lbl]) =>
+        '<button type="button" class="tx-tab' + (k === oFilter ? " on" : "") + '" data-f="' + k + '">' +
+        lbl + ' <span class="tx-count">' + (counts[k] || 0) + "</span></button>").join("");
+      $$("[data-f]", host).forEach(b => b.addEventListener("click", () => { oFilter = b.dataset.f; paintFilters(); paintMyOrders(); }));
+    }
+    function filteredOrders() {
+      return MYORDERS.filter(o => (oTab === "rent" ? o.is_rental : !o.is_rental))
+        .filter(o => oFilter === "all" || normStatus(o.status) === oFilter)
+        .filter(o => !oQuery || String(o.phone_number || "").toLowerCase().includes(oQuery));
+    }
+    function paintMyOrders() {
+      const host = document.getElementById("myOrders");
+      if (!host) return;
+      const rows = filteredOrders();
+      if (!rows.length) {
+        host.innerHTML = '<div class="buy-empty"><span class="buy-empty-ico" aria-hidden="true">📬</span>' +
+          '<b>' + (oTab === "rent" ? "No rent orders" : "No active orders") + '</b>' +
+          '<span>Pick a service and country to buy your first number.</span></div>';
+        return;
+      }
+      host.innerHTML = rows.map(o =>
+        '<div class="num-item my-order"><span class="my-order-ico">' + svcIcon(o) + "</span>" +
+        '<div class="meta"><b>' + esc(o.service || "—") + "</b>" +
+          '<span class="mono">' + esc(o.phone_number || "—") + "</span></div>" +
+        '<div class="my-order-meta">' + badge(o.status) +
+          '<span class="my-order-price">' + money(price(o.price)) + "</span>" +
+          '<span class="muted">' + esc(fmtDate(o.created_at)) + "</span></div></div>").join("");
+    }
+    function csv() {
+      const rows = filteredOrders();
+      const head = ["id", "service", "phone_number", "country", "status", "price_ngn", "created_at"];
+      const body = rows.map(o => [o.id, o.service, o.phone_number, o.country, o.status, o.price, o.created_at]
+        .map(v => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"').join(","));
+      const blob = new Blob([head.join(",") + "\n" + body.join("\n")], { type: "text/csv" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "smspin-orders-" + new Date().toISOString().slice(0, 10) + ".csv";
+      a.click(); URL.revokeObjectURL(a.href);
+    }
+    try { MYORDERS = (await SMSPIN.rpc("my_orders", { p_limit: 100 })) || []; } catch (e) { MYORDERS = []; }
+    paintOrderTabs(); paintFilters(); paintMyOrders();
+    $$("#orderTabs .buy-mode").forEach(b => b.addEventListener("click", () => {
+      oTab = b.dataset.otab; oFilter = "all"; paintOrderTabs(); paintFilters(); paintMyOrders();
+    }));
+    const searchEl = document.getElementById("myOrderSearch");
+    if (searchEl) searchEl.addEventListener("input", () => { oQuery = searchEl.value.trim().toLowerCase(); paintMyOrders(); });
+    const csvBtn = document.getElementById("exportCsv");
+    if (csvBtn) csvBtn.addEventListener("click", csv);
+    const alertsBtn = document.getElementById("enableAlerts");
+    if (alertsBtn) alertsBtn.addEventListener("click", async () => {
+      try {
+        if (!("Notification" in window)) { toast("Alerts are not supported here", "err"); return; }
+        const p = await Notification.requestPermission();
+        toast(p === "granted" ? "Alerts enabled" : "Alerts not enabled", p === "granted" ? "ok" : "err");
+      } catch (e) { toast("Could not enable alerts", "err"); }
+    });
   }
 
   async function renderSupport() {
@@ -1689,11 +1851,194 @@
     window.__smsTimer = setInterval(tick, 1000);
   }
 
+  async function renderTopUp() {
+    const cur = (WALLET && WALLET.currency) || "NGN";
+    try { WALLET = await SMSPIN.rpc("wallet_summary"); } catch (e) {}
+    const c = (WALLET && WALLET.currency) || cur;
+    const balBadge = document.getElementById("tuBalanceBadge");
+    if (balBadge) balBadge.textContent = "Balance " + money((WALLET && WALLET.balance) || 0, c);
+
+    const amtEl = document.getElementById("tuAmt");
+    const curEl = document.getElementById("tuCurrency");
+    if (curEl && !curEl.options.length) {
+      ["NGN", "USD", "GHS", "KES", "ZAR"].forEach(x => {
+        const o = document.createElement("option"); o.value = x; o.textContent = x; curEl.appendChild(o);
+      });
+      curEl.value = c;
+    }
+    let method = "card";
+    const quick = document.getElementById("tuQuick");
+    if (quick) {
+      const amounts = [1000, 2000, 5000, 10000, 20000, 50000];
+      quick.innerHTML = amounts.map(a =>
+        '<button type="button" class="fund-chip" data-amt="' + a + '">' + money(a, c) + "</button>").join("");
+      $$(".fund-chip", quick).forEach(b => b.addEventListener("click", () => {
+        if (amtEl) amtEl.value = b.dataset.amt;
+        $$(".fund-chip", quick).forEach(x => x.classList.remove("on")); b.classList.add("on");
+        summary();
+      }));
+    }
+    const methods = document.getElementById("tuMethods");
+    if (methods) {
+      methods.innerHTML = PAY_METHODS.map(m =>
+        '<button type="button" class="fund-m' + (m.id === method ? " on" : "") + '" data-m="' + m.id + '">' +
+        '<span class="fm-ico">' + m.icon + '</span><span class="fm-txt"><b>' + m.label + "</b><span>" + m.note + "</span></span></button>").join("");
+      $$(".fund-m", methods).forEach(b => b.addEventListener("click", () => {
+        method = b.dataset.m;
+        $$(".fund-m", methods).forEach(x => x.classList.remove("on")); b.classList.add("on");
+        summary();
+      }));
+    }
+    let quote = null, quoteAmt = 0;
+    function summary() {
+      const sum = document.getElementById("tuSummary");
+      const btn = document.getElementById("tuBtn");
+      if (!sum) return;
+      const amt = Number((amtEl || {}).value || 0);
+      const m = PAY_METHODS.find(x => x.id === method) || PAY_METHODS[0];
+      const fee = (quote && quoteAmt === amt) ? quote : null;
+      sum.innerHTML =
+        '<div class="fs-row"><span>Amount</span><b>' + money(amt, c) + "</b></div>" +
+        '<div class="fs-row"><span>Method</span><b>' + esc(m.label) + "</b></div>" +
+        (fee
+          ? '<div class="fs-row"><span>Fee <span class="fs-pct">' + (fee.fee_percent || 0) + '%</span></span><b>-' + money(fee.fee, c) + "</b></div>" +
+            '<div class="fs-row fs-total"><span>Wallet credit</span><b>' + money(fee.net, c) + "</b></div>"
+          : '<div class="fs-row fs-total"><span>You pay</span><b>' + money(amt, c) + "</b></div>");
+      if (btn) { btn.textContent = amt > 0 ? "Top up " + money(amt, c) : "Enter an amount"; btn.disabled = !(amt > 0); }
+      if (amt > 0 && SMSPIN.feeQuote && quoteAmt !== amt) {
+        quoteAmt = amt;
+        SMSPIN.feeQuote(amt, c).then(q => { if (q && Number((amtEl || {}).value || 0) === amt) { quote = q; summary(); } });
+      }
+    }
+    if (amtEl) amtEl.addEventListener("input", summary);
+    summary();
+
+    const btn = document.getElementById("tuBtn");
+    if (btn) btn.addEventListener("click", async () => {
+      const amt = Number((amtEl || {}).value || 0);
+      if (!(amt > 0)) { toast("Enter an amount", "err"); return; }
+      btn.disabled = true; btn.textContent = "Redirecting to checkout…";
+      try {
+        const sess = SMSPIN.getSession();
+        const res = await fetch("/api/payments/initialize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + (sess && sess.access_token || "") },
+          body: JSON.stringify({ amount: amt, currency: (curEl && curEl.value) || c,
+            country: (GEO && GEO.country) || undefined }),
+        });
+        const d = await res.json();
+        if (!res.ok || !d.checkout_url) throw new Error((d && d.error) || "Could not start payment");
+        location.href = d.checkout_url;
+      } catch (e) { toast(e.message, "err"); btn.disabled = false; summary(); }
+    });
+
+    async function paintPayments() {
+      const host = document.getElementById("tuPayList");
+      if (!host) return;
+      let rows = [];
+      try { rows = await SMSPIN.rpc("my_payments", { p_limit: 25 }); } catch (e) {}
+      if (!rows || !rows.length) {
+        host.innerHTML = '<p class="muted">No top-ups yet. Your payment history will appear here.</p>';
+        return;
+      }
+      host.innerHTML = rows.map(p =>
+        '<div class="num-item"><div class="meta"><b>' + esc((p.provider || "Payment")) +
+        " · " + esc(p.reference || "") + "</b><span>" + esc(fmtDate(p.created_at)) +
+        (p.fee_ngn ? " · fee " + money(p.fee_ngn, "NGN") : "") + "</span></div>" +
+        '<div class="my-order-meta">' + badge(p.status === "success" ? "received" : p.status === "pending" ? "waiting" : "cancelled") +
+        '<span class="my-order-price">' + money(p.amount, p.currency || c) + "</span></div></div>").join("");
+    }
+    const refresh = document.getElementById("tuRefresh");
+    if (refresh) refresh.addEventListener("click", paintPayments);
+    await paintPayments();
+  }
+
+  async function renderHistory() {
+    const cur = (WALLET && WALLET.currency) || "NGN";
+    let orders = [], pays = [];
+    try { orders = (await SMSPIN.rpc("my_orders", { p_limit: 200 })) || []; } catch (e) {}
+    try { pays = (await SMSPIN.rpc("my_payments", { p_limit: 200 })) || []; } catch (e) {}
+
+    const done = orders.filter(o => o.status !== "waiting");
+    const ok = orders.filter(o => o.status === "received").length;
+    const spent = orders.filter(o => o.status !== "refunded").reduce((s, o) => s + Number(o.price || 0), 0);
+    const refunded = orders.filter(o => o.status === "refunded").reduce((s, o) => s + Number(o.price || 0), 0);
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    set("hOrders", String(orders.length));
+    set("hSpent", money(spent, cur));
+    set("hRate", done.length ? Math.round(100 * ok / done.length) + "%" : "—");
+    set("hRateSub", ok + " of " + done.length + " completed");
+    set("hRefund", money(refunded, cur));
+
+    let tab = "all", filter = "all", query = "", range = "all";
+    const FILTERS = [
+      ["all", "All"], ["waiting", "Active"], ["received", "Completed"],
+      ["cancelled", "Cancelled"], ["refunded", "Expired"],
+    ];
+    const norm = s => s === "expired" ? "refunded" : s;
+    const tabs = document.getElementById("hTabs");
+    if (tabs) {
+      tabs.innerHTML = [["all", "Everything"], ["temp", "Temp orders"], ["rent", "Rent orders"]].map(([k, l]) =>
+        '<button type="button" class="tx-tab' + (k === tab ? " on" : "") + '" data-t="' + k + '">' + l + "</button>").join("");
+      $$("[data-t]", tabs).forEach(b => b.addEventListener("click", () => {
+        tab = b.dataset.t;
+        $$("[data-t]", tabs).forEach(x => x.classList.toggle("on", x === b));
+        paint();
+      }));
+    }
+    function rows() {
+      const cutoff = range === "all" ? 0 : Date.now() - Number(range) * 86400000;
+      return orders
+        .filter(o => tab === "all" || (tab === "rent" ? o.is_rental : !o.is_rental))
+        .filter(o => filter === "all" || norm(o.status) === filter)
+        .filter(o => !query || String(o.phone_number || "").toLowerCase().includes(query))
+        .filter(o => !cutoff || new Date(o.created_at).getTime() >= cutoff);
+    }
+    function paint() {
+      const host = document.getElementById("hList");
+      if (!host) return;
+      const list = rows();
+      if (!list.length) {
+        host.innerHTML = emptyState({ icon: "\u{1F4EC}", title: "Nothing here yet",
+          body: "Orders you place will show up here with their status and price.",
+          cta: "Buy a number", href: "/dashboard/buy/" });
+        return;
+      }
+      host.innerHTML = list.map(o =>
+        '<div class="num-item my-order"><span class="my-order-ico">' + svcIcon(o) + "</span>" +
+        '<div class="meta"><b>' + esc(o.service || "—") + (o.is_rental ? ' <span class="badge info">rent</span>' : "") + "</b>" +
+          '<span class="mono">' + esc(o.phone_number || "—") + " · " + esc(o.country || "") + "</span></div>" +
+        '<div class="my-order-meta">' + badge(o.status) +
+          '<span class="my-order-price">' + money(price(o.price)) + "</span>" +
+          '<span class="muted">' + esc(fmtDate(o.created_at)) + "</span></div></div>").join("");
+    }
+    const search = document.getElementById("hSearch");
+    if (search) search.addEventListener("input", () => { query = search.value.trim().toLowerCase(); paint(); });
+    const rangeEl = document.getElementById("hRange");
+    if (rangeEl) rangeEl.addEventListener("change", () => { range = rangeEl.value; paint(); });
+    const refresh = document.getElementById("hRefresh");
+    if (refresh) refresh.addEventListener("click", () => renderHistory());
+    const exp = document.getElementById("hExport");
+    if (exp) exp.addEventListener("click", () => {
+      const list = rows();
+      const head = ["id", "service", "phone_number", "country", "status", "is_rental", "price_ngn", "created_at"];
+      const body = list.map(o => [o.id, o.service, o.phone_number, o.country, o.status, o.is_rental, o.price, o.created_at]
+        .map(v => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"').join(","));
+      const blob = new Blob([head.join(",") + "\n" + body.join("\n")], { type: "text/csv" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "smspin-history-" + new Date().toISOString().slice(0, 10) + ".csv";
+      a.click(); URL.revokeObjectURL(a.href);
+    });
+    paint();
+  }
+
   const RENDER = {
     overview: renderOverview, numbers: renderNumbers, orders: renderOrders,
     wallet: renderWallet, transactions: renderTransactions, referrals: renderReferrals,
     profile: renderProfile, "api-keys": renderApiKeys, buy: renderBuy,
     support: renderSupport, sms: renderInbox, settings: renderSettings,
+    topup: renderTopUp, history: renderHistory,
   };
 
   // Wallet funding goes through the server-side `funding` edge function:
@@ -1877,7 +2222,8 @@
     "/dashboard/transactions/": "transactions", "/dashboard/api-keys/": "api-keys",
     "/dashboard/business/": "business", "/dashboard/referrals/": "referrals",
     "/dashboard/profile/": "profile", "/dashboard/settings/": "settings",
-    "/dashboard/support/": "support",
+    "/dashboard/support/": "support", "/dashboard/topup/": "topup",
+    "/dashboard/history/": "history",
   };
   const pageFor = path => ROUTES[path.replace(/\/index\.html$/, "/")] || null;
 

@@ -213,6 +213,28 @@
     return data;
   }
 
+  async function rentPrices({ country, service }) {
+    const res = await fetch("/api/rent/prices?country=" + encodeURIComponent(country || "") +
+      "&service=" + encodeURIComponent(service || ""));
+    if (!res.ok) return { durations: [] };
+    return res.json().catch(() => ({ durations: [] }));
+  }
+
+  async function rentOrder({ country, service, duration, tenantToken }) {
+    const headers = { "Content-Type": "application/json" };
+    if (tenantToken) headers["x-tenant-token"] = tenantToken;
+    else headers["Authorization"] = "Bearer " + accessToken();
+    const res = await fetch("/api/orders/rent", {
+      method: "POST", headers,
+      body: JSON.stringify({ country, service, duration, tenant_token: tenantToken }),
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+    if (!res.ok) throw new Error((data && data.error) || res.statusText);
+    return data;
+  }
+
   async function cancelOrder({ orderId, tenantToken }) {
     const headers = { "Content-Type": "application/json" };
     if (tenantToken) headers["x-tenant-token"] = tenantToken;
@@ -232,7 +254,7 @@
     return res.json().catch(() => null);
   }
 
-  window.SMSPIN = { auth, tenant, rpc, functions, feeQuote, buyOrder, cancelOrder, orderStatus, getSession, setSession, config: cfg, store: () => {
+  window.SMSPIN = { auth, tenant, rpc, functions, feeQuote, buyOrder, rentPrices, rentOrder, cancelOrder, orderStatus, getSession, setSession, config: cfg, store: () => {
     try { return localStorage.getItem("smspin_store") || ""; } catch (e) { return ""; }
   } };
 })();

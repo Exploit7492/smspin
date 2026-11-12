@@ -453,12 +453,95 @@ def sync_pair(country, service, force=False):
         row = cur.fetchone()
         if row:
             markup = float(row[0])
-    # Displayed prices are always whole numbers: round the marked-up cost up to
-    # the nearest unit (a provider price of 1.56 NGN-worth shows as 2).
-    price_ngn = math.ceil(cost * (1 + markup / 100.0) * rate)
+    # Store the raw platform price (provider cost + platform markup, in naira).
+    # The whole-dollar rounding happens on the final buyer price in
+    # sell_price_ngn, after the business markup.
+    price_ngn = round(cost * (1 + markup / 100.0) * rate)
     _upsert_catalog([{"country": cc, "service": sv, "cost_usd": cost,
                       "price_ngn": price_ngn, "stock": live.get("available", 0)}])
     return live
+
+
+def _rent_price(usd):
+    """Whole-dollar rental price (USD) and its NGN equivalent at the live rate."""
+    rate = fx_rates().get("NGN") or 1600.0
+    usd_rounded = max(1, round(float(usd or 0)))
+    return {"price_usd": usd_rounded, "price_ngn": round(usd_rounded * rate)}
+
+
+def rent_prices_real(country, service):
+    """Provider rental durations for one (country, service), priced for sale."""
+    if not upstream_enabled():
+        raise RuntimeError("upstream disabled")
+    data = _SMS_CLIENT.rent_prices(service, (country or "").upper() or None) or {}
+    durations = []
+    for d in (data.get("durations") or []):
+        hours = int(d.get("durationHours") or d.get("duration") or 0)
+        if hours <= 0:
+            continue
+        priced = _rent_price(d.get("price"))
+        durations.append({"hours": hours, "label": _rent_label(hours), **priced})
+    if not durations:
+        # Provider exposes per-country "fromPrice" only; synthesise the standard
+        # 24h/72h/168h ladder from the country minimum so the UI always offers
+        # a choice.
+        base = None
+        for c in (data.get("countries") or []):
+            if (c.get("country") or "").upper() == (country or "").upper():
+                base = c.get("fromPrice")
+                break
+        if base is None and (data.get("countries") or []):
+            base = min(c.get("fromPrice") or 0 for c in data["countries"])
+        if base is not None:
+            for hours, mult in ((24, 1.0), (72, 1.75), (168, 3.25)):
+                priced = _rent_price(float(base) * mult)
+                durations.append({"hours": hours, "label": _rent_label(hours), **priced})
+    return {"service": service, "country": (country or "").upper(), "durations": durations}
+
+
+def _rent_label(hours):
+    if hours % 168 == 0:
+        n = hours // 168
+        return f"{n} week" + ("s" if n > 1 else "")
+    if hours % 24 == 0:
+        n = hours // 24
+        return f"{n} day" + ("s" if n > 1 else "")
+    return f"{hours} hours"
+
+
+def rent_real(country, service, duration, user_id=None, tenant_account=None):
+    """Charge the wallet, then place the provider rental. Refund on failure."""
+    if not upstream_enabled():
+        raise RuntimeError("upstream disabled")
+    cc = (country or "").lower()
+    hours = int(duration or 24)
+    quotes = rent_prices_real(cc, service)["durations"]
+    pick = next((q for q in quotes if q["hours"] == hours), quotes[0] if quotes else None)
+    if not pick:
+        raise RuntimeError("rental not available for this pair")
+    charge = pick["price_ngn"]
+    if _wallet_balance(user_id, tenant_account) < charge:
+        raise RuntimeError("insufficient balance")
+    res = _svc("reserve_rental", {
+        "p_user": user_id, "p_country": cc, "p_service": service,
+        "p_duration": hours, "p_price_ngn": charge, "p_tenant_account": tenant_account,
+    })
+    order_id = res["order_id"]
+    try:
+        up = _SMS_CLIENT.create_rental(service, cc.upper(), hours, max_price=pick["price_usd"])
+    except smspin_api.SmspinError as e:
+        _refund(order_id, "provider_error")
+        raise RuntimeError(str(e))
+    phone = up.get("phoneNumber") or up.get("phone_number") or ""
+    up_id = str(up.get("id") or "")
+    if not phone or not up_id:
+        _refund(order_id, "no_number")
+        raise RuntimeError("provider did not return a number")
+    _svc("set_order_upstream", {"p_order_id": order_id, "p_phone": phone,
+                                "p_upstream_id": up_id, "p_cost_usd": pick["price_usd"]})
+    return {"order_id": order_id, "phone_number": phone, "price_ngn": charge,
+            "price_usd": pick["price_usd"], "duration": hours, "status": "waiting",
+            "upstream_order_id": up_id}
 
 
 def _local_charge(country, service, user_id=None, tenant_account=None):
@@ -483,8 +566,20 @@ def _local_charge(country, service, user_id=None, tenant_account=None):
                     (tenant_account, tenant_account, user_id, user_id))
         m = cur.fetchone()
     pct = float(m["pct"]) if m else 0.0
-    # Mirror reserve_number exactly: it rounds the markup to 2dp, then ceils.
-    return math.ceil(float(row["price"]) + round(float(row["price"]) * pct / 100.0, 2))
+    # Mirror reserve_number exactly: whole-dollar price (base + business markup)
+    # converted to NGN at the live rate.
+    return _sell_price_ngn(float(row["price"]), pct)
+
+
+def _sell_price_ngn(amount_ngn, markup_pct=0.0):
+    """Whole-dollar sell price, as an NGN amount at the live rate.
+
+    Matches the SQL sell_price_ngn: round the marked-up naira to the nearest
+    dollar, floor at $1, then convert that dollar figure back to naira.
+    """
+    rate = fx_rates().get("NGN") or 1600.0
+    usd = max(1, round(float(amount_ngn) * (1 + float(markup_pct or 0) / 100.0) / rate))
+    return round(usd * rate)
 
 
 def _wallet_balance(user_id, tenant_account):
@@ -1617,16 +1712,29 @@ class Handler(SimpleHTTPRequestHandler):
                     if m:
                         pct = float(m["pct"])
             price_ngn = None
+            price_usd = None
             if row.get("price") is not None:
-                # Same figure reserve_number debits: it rounds the markup to 2dp,
-                # then ceils the sum.
+                # Same figure reserve_number debits: whole-dollar price
+                # (base + business markup) at the live rate.
                 base = float(row["price"])
-                price_ngn = math.ceil(base + round(base * pct / 100.0, 2))
+                price_ngn = _sell_price_ngn(base, pct)
+                price_usd = max(1, round(base * (1 + pct / 100.0) / (fx_rates().get("NGN") or 1600.0)))
             return self._send(200, {"country": cc, "service": sv,
                                     "price_ngn": price_ngn,
+                                    "price_usd": price_usd,
                                     "cost_usd": float(row["cost_usd"]) if row.get("cost_usd") is not None else live.get("price_usd"),
                                     "available": row.get("stock", live.get("available")),
                                     "operators": live.get("operators", [])})
+        if path == "/api/rent/prices":
+            q = parse_qs(urlparse(self.path).query)
+            cc = (q.get("country", [""])[0] or "").lower()
+            sv = q.get("service", [""])[0] or ""
+            if not sv:
+                return self._send(400, {"error": "service required"})
+            try:
+                return self._send(200, rent_prices_real(cc, sv))
+            except Exception as e:
+                return self._send(502, {"error": str(e)})
         if path == "/api/order/status":
             q = parse_qs(urlparse(self.path).query)
             oid = q.get("id", [None])[0]
@@ -1758,6 +1866,10 @@ class Handler(SimpleHTTPRequestHandler):
                 if not check_rate(self, "buy"):
                     return
                 return self.api_buy_order()
+            if path == "/api/orders/rent":
+                if not check_rate(self, "buy"):
+                    return
+                return self.api_rent_order()
             if path == "/api/orders/cancel":
                 return self.api_cancel_order()
             if path == "/api/upstream/webhook":
@@ -2306,6 +2418,56 @@ class Handler(SimpleHTTPRequestHandler):
                               ("insufficient", "no stock", "out of stock", "unavailable")) else 500
             if code == 500:
                 LOG.error("order_buy_error", actor=actor, error=msg)
+            return self._send(code, {"error": msg})
+
+    def api_rent_order(self):
+        """Rent a long-lived number (24h/72h/168h). Mirrors api_buy_order's
+        auth + risk gates, then charges the wallet before the provider call."""
+        body = self._read_json()
+        country = (body.get("country") or "").lower()
+        service = body.get("service") or ""
+        duration = int(body.get("duration") or 24)
+        if not country or not service:
+            return self._send(400, {"error": "country and service required"})
+        if not upstream_enabled():
+            return self._send(503, {"error": "rentals temporarily unavailable"})
+
+        user_id = None
+        tenant_account = None
+        tenant_token = body.get("tenant_token") or self.headers.get("x-tenant-token")
+        if tenant_token:
+            tenant_account = self._auth_tenant(tenant_token)
+            if not tenant_account:
+                return self._send(401, {"error": "invalid tenant session"})
+        else:
+            user_id = self._auth_user()
+            if not user_id:
+                return self._send(401, {"error": "missing or invalid session"})
+
+        ip = client_ip(self)
+        actor = f"tenant:{tenant_account}" if tenant_account else f"user:{user_id}"
+        if user_id and _svc("is_suspended", {"p_user": user_id}):
+            return self._send(403, {"error": "account suspended", "code": "account_suspended"})
+        if aup_required(user_id, tenant_account, body):
+            return self._send(403, {"error": "acceptable-use policy acceptance required",
+                                    "code": "aup_required",
+                                    "aup_version": policy_status(user_id, tenant_account).get("aup_version")})
+        try:
+            res = rent_real(country, service, duration,
+                            user_id=user_id, tenant_account=tenant_account)
+            _audit(actor, "order.rent", str(res.get("order_id")),
+                   {"country": country, "service": service, "duration": duration}, ip)
+            LOG.info("order_rent", actor=actor, order=str(res.get("order_id")),
+                     country=country, service=service, duration=duration)
+            return self._send(200, res)
+        except RuntimeError as e:
+            return self._send(402, {"error": str(e)})
+        except Exception as e:
+            msg = str(e).split("\n")[0]
+            code = 402 if any(k in msg.lower() for k in
+                              ("insufficient", "no stock", "out of stock", "unavailable")) else 500
+            if code == 500:
+                LOG.error("order_rent_error", actor=actor, error=msg)
             return self._send(code, {"error": msg})
 
     def api_upstream_webhook(self):

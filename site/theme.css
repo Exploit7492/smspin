@@ -4,6 +4,9 @@
 
 /* ---------- Light (crystal glass) ---------- */
 :root {
+  /* Let the UA paint controls and canvas in the device's scheme, so any
+     surface shown before our tokens resolve still follows the device theme. */
+  color-scheme: light dark;
   --glass-blur: 18px;
   --glass-saturate: 160%;
   --glass-bg: rgba(255, 255, 255, .62);
@@ -282,6 +285,22 @@ body {
 .btn-ghost:hover, .btn-secondary:hover {
   background: var(--glass-bg-strong) !important;
   box-shadow: var(--glass-shadow-hover), inset 0 1px 0 rgba(255,255,255,.18) !important;
+}
+
+/* glass = frosted crystal CTA, keeps primary weight via a tinted edge + glow */
+.btn-glass {
+  background: var(--glass-bg) !important;
+  border: 1px solid var(--glass-border) !important;
+  color: var(--text-primary) !important;
+  box-shadow: var(--glass-shadow), inset 0 1px 0 rgba(255,255,255,.35) !important;
+}
+.btn-glass:hover {
+  transform: translateY(-1px);
+  background: var(--glass-bg-strong) !important;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-border)) !important;
+  box-shadow: var(--glass-shadow-hover),
+              0 10px 30px color-mix(in srgb, var(--accent) 24%, transparent),
+              inset 0 1px 0 rgba(255,255,255,.4) !important;
 }
 
 /* danger ghost stays readable on glass */
