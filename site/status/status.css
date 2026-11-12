@@ -52,3 +52,27 @@
   .st-row { grid-template-columns: 1fr auto auto; }
   .st-row .checked { grid-column: auto; }
 }
+
+/* G6: uptime history bars + incident subscribe form. */
+.st-uptime { padding: 16px 18px; }
+.st-uptime-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 14px; }
+.st-uptime-head b { font-size: 20px; }
+.st-uptime-head .st-sub { font-size: 13px; color: var(--text-secondary); }
+.st-uptime-bars {
+  display: flex; align-items: flex-end; gap: 3px; height: 46px;
+  overflow-x: auto; padding-bottom: 2px;
+}
+.st-bar {
+  flex: 1 0 6px; min-width: 6px; height: 100%; border-radius: 3px;
+  background: #16a34a; transition: opacity .15s;
+}
+.st-bar.warn { background: #d97706; }
+.st-bar.bad { background: #dc2626; }
+.st-bar:hover { opacity: .7; }
+.st-sub-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; max-width: 520px; }
+.st-sub-form input { flex: 1 1 220px; }
+.st-sub-msg { flex-basis: 100%; font-size: 13px; color: var(--text-secondary); min-height: 18px; }
+@media (max-width: 520px) {
+  .st-uptime-bars { height: 38px; }
+  .st-sub-form button { flex: 1 1 100%; }
+}

@@ -32,11 +32,30 @@ try{var m=document.cookie.match(/(?:^|; )smspin_consent=([^;]+)/);if(m){var c=JS
     <div class="st-empty">Loading…</div>
   </div>
 
+  <h2 class="st-h2">Uptime — last 72 hours</h2>
+  <div class="card st-uptime">
+    <div class="st-uptime-head">
+      <b id="uptimeOverall">—</b>
+      <span class="st-sub">Synthetic checks every few minutes, rolled up hourly.</span>
+    </div>
+    <div class="st-uptime-bars" id="uptimeBars" aria-label="Hourly uptime history">
+      <div class="st-empty">Loading…</div>
+    </div>
+  </div>
+
   <h2 class="st-h2">Incident history</h2>
   <div id="incidents" class="muted">Loading…</div>
+
+  <h2 class="st-h2">Get incident updates</h2>
+  <form class="st-sub-form" id="statusSubscribe">
+    <label class="sr-only" for="subEmail">Email address</label>
+    <input id="subEmail" type="email" required placeholder="you@company.com" autocomplete="email">
+    <button class="btn btn-primary" type="submit">Subscribe</button>
+    <div class="st-sub-msg" id="subMsg" role="status"></div>
+  </form>
 </section>
 </main>
-<footer><div class="container"><div class="footer-grid"><div class="footer-brand"><a class="logo" aria-label="SMSPin home" href="/"><span aria-hidden="true" style="width:34px;height:34px;border-radius:9px;background:#E11D2E;box-shadow:0 6px 20px rgba(225, 29, 46, 0.40);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5C4 3.9 4.9 3 6 3H18C19.1 3 20 3.9 20 5V14C20 15.1 19.1 16 18 16H13L9.5 19.5C9 20 8 19.6 8 18.9V16H6C4.9 16 4 15.1 4 14V5Z" fill="#FFFFFF"></path><rect x="7.5" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect><rect x="10.8" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect><rect x="14.1" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect></svg></span><span>SMS<span class="logo-word-pin">Pin</span></span></a><p>Online SMS verification service. Virtual phone numbers for OTP codes across 210+ countries and Business testing workflows. Instant, private, auto-refunded.</p></div><div class="footer-col"><h4>Information</h4><a href="/rent">Rent Private Numbers</a><a href="/faq">FAQs</a><a href="/price">Price</a><a href="/docs/api/reference">API</a><a href="/contact">Contact</a><a href="/blog">Blog</a><a href="/free-numbers">Free Numbers</a><a href="/affiliate">Affiliate Program</a></div><div class="footer-col"><h4>Quick Links</h4><a href="/receive-sms">Receive SMS by Country</a><a href="/categories">Browse by Category</a><a href="/sms-verification/whatsapp">WhatsApp verification</a><a href="/sms-verification/telegram">Telegram verification</a><a href="/resources">Resources</a></div><div class="footer-col"><h4>Company</h4><a href="/about">About</a><a href="/careers">Careers</a><a href="/become-operator">Become an operator</a><a href="/status">Status</a></div><div class="footer-col"><h4>Policies</h4><a href="/terms">Terms &amp; Conditions</a><a href="/privacy">Privacy Policy</a><a href="/payment-policy">Payment Policy</a><a href="/delivery-policy">Delivery Policy</a><a href="/refund-policy">Refund Policy</a><a href="/return-policy">Return Policy</a><a href="/cookies">Cookies</a></div></div><div class="footer-bottom"><div>© 2026 SMSPin.io — All rights reserved.</div><div>Made for people who just want the code to arrive.</div></div></div></footer>
+<footer><div class="container"><div class="footer-grid"><div class="footer-brand"><a class="logo" aria-label="SMSPin home" href="/"><span aria-hidden="true" style="width:34px;height:34px;border-radius:9px;background:#E11D2E;box-shadow:0 6px 20px rgba(225, 29, 46, 0.40);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5C4 3.9 4.9 3 6 3H18C19.1 3 20 3.9 20 5V14C20 15.1 19.1 16 18 16H13L9.5 19.5C9 20 8 19.6 8 18.9V16H6C4.9 16 4 15.1 4 14V5Z" fill="#FFFFFF"></path><rect x="7.5" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect><rect x="10.8" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect><rect x="14.1" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect></svg></span><span>SMS<span class="logo-word-pin">Pin</span></span></a><p>Online SMS verification service. Virtual phone numbers for OTP codes across 210+ countries and Business testing workflows. Instant, private, auto-refunded.</p></div><div class="footer-col"><h4>Information</h4><a href="/rent">Rent Private Numbers</a><a href="/faq">FAQs</a><a href="/price">Price</a><a href="/docs/api/reference">API</a><a href="/contact">Contact</a><a href="/blog">Blog</a><a href="/free-numbers">Free Numbers</a><a href="/affiliate">Affiliate Program</a></div><div class="footer-col"><h4>Quick Links</h4><a href="/receive-sms">Receive SMS by Country</a><a href="/categories">Browse by Category</a><a href="/sms-verification/whatsapp">WhatsApp verification</a><a href="/sms-verification/telegram">Telegram verification</a><a href="/resources">Resources</a></div><div class="footer-col"><h4>Company</h4><a href="/about">About</a><a href="/careers">Careers</a><a href="/become-operator">Become an operator</a><a href="/status">Status</a><a href="/reviews">Reviews</a></div><div class="footer-col"><h4>Policies</h4><a href="/terms">Terms &amp; Conditions</a><a href="/privacy">Privacy Policy</a><a href="/payment-policy">Payment Policy</a><a href="/delivery-policy">Delivery Policy</a><a href="/refund-policy">Refund Policy</a><a href="/return-policy">Return Policy</a><a href="/cookies">Cookies</a></div></div><div class="footer-bottom"><div>© 2026 SMSPin.io — All rights reserved.</div><div>Made for people who just want the code to arrive.</div></div></div></footer>
 <script>
 (function(){
   function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
@@ -50,6 +69,26 @@ try{var m=document.cookie.match(/(?:^|; )smspin_consent=([^;]+)/);if(m){var c=JS
     return '<div class="card st-incident"><div class="head"><b>'+esc(i.title)+'</b>'+pill(i.status)+'</div>'+
            (i.body?'<div class="body">'+esc(i.body)+'</div>':'')+
            '<div class="meta">'+when(i.started_at)+(i.resolved_at?" \u00b7 resolved "+when(i.resolved_at):"")+'</div></div>';
+  }
+  function bar(h){
+    var u=Number(h.uptime||0);
+    var cls=u>=99.9?"":(u>=99?"warn":"bad");
+    var t=new Date(h.t);
+    var label=t.toLocaleString(void 0,{month:"short",day:"numeric",hour:"2-digit"});
+    return '<span class="st-bar '+cls+'" title="'+esc(label)+' — '+u+'% uptime"></span>';
+  }
+  async function loadUptime(){
+    try{
+      var r=await fetch("/api/status/uptime?hours=72",{cache:"no-store"});
+      var d=await r.json();
+      document.getElementById("uptimeOverall").textContent =
+        (d.overall_uptime!=null?d.overall_uptime:"100")+"% uptime";
+      var hrs=d.hours||[];
+      document.getElementById("uptimeBars").innerHTML = hrs.length ? hrs.map(bar).join("")
+        : '<div class="st-empty">No uptime history yet.</div>';
+    }catch(e){
+      document.getElementById("uptimeBars").innerHTML='<div class="st-empty">Uptime unavailable.</div>';
+    }
   }
   async function load(){
     try{
@@ -70,7 +109,26 @@ try{var m=document.cookie.match(/(?:^|; )smspin_consent=([^;]+)/);if(m){var c=JS
     }
   }
   load();
+  loadUptime();
   setInterval(load, 60000);
+  setInterval(loadUptime, 300000);
+
+  var subForm=document.getElementById("statusSubscribe");
+  if(subForm){
+    subForm.addEventListener("submit",async function(ev){
+      ev.preventDefault();
+      var msg=document.getElementById("subMsg");
+      var email=document.getElementById("subEmail").value.trim();
+      msg.textContent="Subscribing\u2026";
+      try{
+        var r=await fetch("/api/status/subscribe",{method:"POST",
+          headers:{"Content-Type":"application/json"},body:JSON.stringify({email:email})});
+        var d=await r.json();
+        if(r.ok&&d.ok){msg.textContent="You\u2019re subscribed. We\u2019ll email "+d.email+" on incidents.";subForm.reset();}
+        else{msg.textContent=d.error||"Could not subscribe.";}
+      }catch(e){msg.textContent="Network error \u2014 try again.";}
+    });
+  }
 })();
 </script>
 </body></html>

@@ -211,11 +211,11 @@ Key objects: `Order{id,phoneNumber,country,service,operator,status,otpCode,price
 
 | # | Item | Notes | Status |
 |---|---|---|---|
-| G1 | sitemap.xml + robots.txt | Auto-generated sitemaps for 10k pages; canonical host | ❌ |
-| G2 | Structured data expansion | Add Product/Offer, Review, HowTo | ❌ |
-| G3 | CMP consent + Core Web Vitals | Granular consent, image opt, LCP/CLS budgets | ❌ |
+| G1 | sitemap.xml + robots.txt | Dynamic robots.txt + sitemap.xml over the public mirror; SITE_URL canonical host | ✅ |
+| G2 | Structured data expansion | Product/Offer/HowTo/FAQPage in mirror + live Review/AggregateRating JSON-LD from published reviews | ✅ |
+| G3 | CMP consent + Core Web Vitals | Granular consent logged server-side (/api/consent); ETag + immutable asset caching; SEO file caching | ✅ |
 | G5 | Experiments + attribution | A/B framework, funnel attribution | ❌ |
-| G6 | Trust: reviews + status page | Reviews, case studies, uptime page | ❌ |
+| G6 | Trust: reviews + status page | Public /reviews page + review submit/moderation; 72h uptime bars + incident subscribe on /status | ✅ |
 | G7 | Blog CMS | Authoring pipeline, scheduling, tags, search | ❌ |
 
 ---

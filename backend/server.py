@@ -93,6 +93,68 @@ def build_robots():
     return ("\n".join(lines) + "\n").encode()
 
 
+# G2: pages that carry review-rich structured data (Product/AggregateRating).
+_REVIEW_PAGES = ("/", "/price", "/buy", "/reviews", "/sms-verification")
+
+
+def _reviews_cache():
+    """Cache public_reviews() for 10 minutes — it is read on every HTML hit."""
+    now = time.time()
+    cache = getattr(_reviews_cache, "_c", None)
+    if cache and now - cache[0] < 600:
+        return cache[1]
+    try:
+        data = _svc("public_reviews", {"p_limit": 20}) or {}
+    except Exception:
+        data = {"items": [], "rating": None}
+    _reviews_cache._c = (now, data)
+    return data
+
+
+# Injected-HTML cache keyed by (file, reviews stamp); avoids re-reading and
+# re-injecting the same page on every request.
+_LD_CACHE = {}
+
+
+def build_review_jsonld(path):
+    """G2: Review + AggregateRating JSON-LD built from published reviews.
+
+    Returns None when the path is not review-eligible or there is nothing to say.
+    """
+    if path not in _REVIEW_PAGES:
+        return None
+    data = _reviews_cache()
+    rating = data.get("rating")
+    items = data.get("items") or []
+    if not rating and not items:
+        return None
+    node = {"@context": "https://schema.org", "@type": "Product",
+            "name": "SMSPin — Online SMS Verification",
+            "url": f"{SITE_URL}{path if path != '/' else '/'}"}
+    if rating:
+        node["aggregateRating"] = {
+            "@type": "AggregateRating",
+            "ratingValue": rating["ratingValue"],
+            "reviewCount": rating["reviewCount"],
+            "bestRating": rating.get("bestRating", 5),
+            "worstRating": rating.get("worstRating", 1),
+        }
+    reviews = []
+    for r in items[:10]:
+        rev = {"@type": "Review",
+               "author": {"@type": "Person", "name": r.get("author") or "Customer"},
+               "reviewRating": {"@type": "Rating", "ratingValue": r.get("rating"),
+                                "bestRating": 5, "worstRating": 1},
+               "reviewBody": r.get("body") or "",
+               "datePublished": (r.get("created_at") or "")[:10]}
+        if r.get("title"):
+            rev["name"] = r["title"]
+        reviews.append(rev)
+    if reviews:
+        node["review"] = reviews
+    return json.dumps(node, separators=(",", ":")).encode()
+
+
 # ---------------------------------------------------------------- J4 structured logs
 class JsonLogger:
     """Minimal structured logger: one JSON object per line, thread-safe."""
@@ -659,6 +721,9 @@ RL_RULES = {
     "buy": (30, 60),
     "auth": (60, 60),
     "webhook": (600, 60),
+    "subscribe": (10, 60),
+    "consent": (30, 60),
+    "review": (10, 60),
     "default": (240, 60),
 }
 
@@ -1186,7 +1251,16 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        for k, v in (extra or {}).items():
+        # G3: API responses are always revalidated; SEO files are cached briefly.
+        # An explicit extra Cache-Control (e.g. injected HTML) wins over the default.
+        extra = extra or {}
+        if "Cache-Control" not in extra:
+            p = urlparse(self.path).path
+            if p in ("/robots.txt", "/sitemap.xml"):
+                self.send_header("Cache-Control", "public, max-age=3600")
+            else:
+                self.send_header("Cache-Control", "no-store")
+        for k, v in extra.items():
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
@@ -1217,23 +1291,86 @@ class Handler(SimpleHTTPRequestHandler):
             for index in ("index.html", "index.htm"):
                 candidate = os.path.join(path, index)
                 if os.path.isfile(candidate):
-                    try:
-                        f = open(candidate, "rb")
-                    except OSError:
-                        return None
-                    try:
-                        st = os.fstat(f.fileno())
-                        ctype = self.guess_type(candidate)
-                        self.send_response(200)
-                        self.send_header("Content-type", ctype)
-                        self.send_header("Content-Length", str(st.st_size))
-                        self.send_header("Last-Modified", self.date_time_string(st.st_mtime))
-                        self.end_headers()
-                        return f
-                    except Exception:
-                        f.close()
-                        raise
+                    return self._serve_static_file(candidate)
+        elif os.path.isfile(path):
+            # G3: route every static file through one path so it gets an ETag
+            # and a sane Cache-Control (immutable for content-hashed assets).
+            return self._serve_static_file(path)
         return super().send_head()
+
+    def _inject_review_jsonld(self, path):
+        """G3/G2: return page HTML with the consent-log script (every public page)
+        and Review/AggregateRating JSON-LD (review-eligible pages) injected, or
+        None when the path is not a servable public HTML page."""
+        if path.startswith(_PRIVATE_PREFIXES) or path.startswith("/_next/"):
+            return None
+        if "." in path.rsplit("/", 1)[-1]:
+            return None  # has a file extension -> an asset, not a page
+        rel = path.strip("/")
+        candidate = (os.path.join(SITE_DIR, rel, "index.html") if rel
+                     else os.path.join(SITE_DIR, "index.html"))
+        if not os.path.isfile(candidate):
+            return None
+        ld = build_review_jsonld(path)
+        _reviews_cache()
+        stamp = getattr(_reviews_cache, "_c", (0, None))[0]
+        key = (candidate, stamp)
+        cached = _LD_CACHE.get(key)
+        if cached is not None:
+            return cached
+        try:
+            with open(candidate, "rb") as fh:
+                html = fh.read()
+        except OSError:
+            return None
+        idx = html.find(b"</head>")
+        if idx == -1:
+            return None
+        inject = b'<script src="/consent-log.js" defer></script>'
+        if ld is not None:
+            inject += b'<script type="application/ld+json">' + ld + b"</script>"
+        out = html[:idx] + inject + html[idx:]
+        if len(_LD_CACHE) > 2000:
+            _LD_CACHE.clear()
+        _LD_CACHE[key] = out
+        return out
+
+    def _serve_static_file(self, candidate):
+        try:
+            f = open(candidate, "rb")
+        except OSError:
+            return None
+        try:
+            st = os.fstat(f.fileno())
+            ctype = self.guess_type(candidate)
+            etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+            # G3: content-hashed build assets are immutable; HTML revalidates.
+            rel = urlparse(self.path).path
+            if rel.startswith("/_next/static/"):
+                cache = "public, max-age=31536000, immutable"
+            elif ctype == "text/html":
+                cache = "public, max-age=300, must-revalidate"
+            else:
+                cache = "public, max-age=86400"
+            # Conditional GET: answer 304 when the client already has this body.
+            if self.headers.get("If-None-Match") == etag:
+                f.close()
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", cache)
+                self.end_headers()
+                return None
+            self.send_response(200)
+            self.send_header("Content-type", ctype)
+            self.send_header("Content-Length", str(st.st_size))
+            self.send_header("Last-Modified", self.date_time_string(st.st_mtime))
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", cache)
+            self.end_headers()
+            return f
+        except Exception:
+            f.close()
+            raise
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -1444,6 +1581,14 @@ class Handler(SimpleHTTPRequestHandler):
                 cur.execute("select * from settings")
                 s = {r["key"]: r["value"] for r in cur.fetchall()}
             return self._send(200, {"settings": s, "korapay_mode": KORA_MODE, "korapay_public_key": KORA_PUBLIC})
+        if path == "/api/reviews":
+            q = parse_qs(urlparse(self.path).query)
+            limit = int((q.get("limit", ["20"])[0]) or 20)
+            return self._send(200, _svc("public_reviews", {"p_limit": limit}))
+        if path == "/api/status/uptime":
+            q = parse_qs(urlparse(self.path).query)
+            hours = int((q.get("hours", ["72"])[0]) or 72)
+            return self._send(200, _svc("status_uptime", {"p_hours": hours}))
         if path.startswith("/api/payments/verify/"):
             ref = path.rsplit("/", 1)[-1]
             st, d = korapay_verify(ref)
@@ -1453,6 +1598,11 @@ class Handler(SimpleHTTPRequestHandler):
                                            data.get("transaction_reference"))
                 return self._send(200, {"verified": True, "status": "success", "credit": res})
             return self._send(200, {"verified": False, "status": data.get("status", "unknown")})
+        # G2: inject Review/AggregateRating JSON-LD into eligible marketing pages.
+        injected = self._inject_review_jsonld(path)
+        if injected is not None:
+            return self._send(200, injected, "text/html; charset=utf-8",
+                              extra={"Cache-Control": "public, max-age=300, must-revalidate"})
         return super().do_GET()
 
     def do_POST(self):
@@ -1483,6 +1633,18 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.api_admin_alert_run()
             if path == "/api/app/builds/request":
                 return self.api_app_build_request()
+            if path == "/api/status/subscribe":
+                if not check_rate(self, "subscribe"):
+                    return
+                return self.api_status_subscribe()
+            if path == "/api/consent":
+                if not check_rate(self, "consent"):
+                    return
+                return self.api_consent()
+            if path == "/api/reviews":
+                if not check_rate(self, "review"):
+                    return
+                return self.api_submit_review()
             if path.startswith("/api/admin/"):
                 return self.api_admin_post(path)
             if path.startswith("/api/v1/"):
@@ -1557,6 +1719,63 @@ class Handler(SimpleHTTPRequestHandler):
         actor = f"tenant:{tenant}" if tenant else f"user:{user_id}"
         _audit(actor, "policy.accept", policy, {"version": (res or {}).get("version")}, client_ip(self))
         return self._send(200, res or {})
+
+    def api_status_subscribe(self):
+        """G6: subscribe an email to status/incident notifications."""
+        body = self._read_json()
+        email = (body.get("email") or "").strip()
+        if not email:
+            return self._send(400, {"error": "email required"})
+        try:
+            res = _svc("status_subscribe", {"p_email": email})
+        except Exception:
+            return self._send(400, {"error": "invalid email"})
+        _audit("public", "status.subscribe", email, None, client_ip(self))
+        return self._send(200, res or {"ok": True})
+
+    def api_consent(self):
+        """G3: record a granular consent choice (analytics/ads/functional).
+
+        Stored server-side as proof of consent; the browser keeps its own copy in
+        the smspin_consent cookie for Google Consent Mode.
+        """
+        body = self._read_json()
+        user_id = self._auth_user()
+        c = body.get("consent") or body
+        with db() as conn, conn.cursor() as cur:
+            cur.execute(
+                """insert into consent_log(user_id, anon_id, analytics, ads, functional,
+                                           policy_ver, user_agent, ip)
+                   values (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (user_id, (body.get("anon_id") or "")[:64],
+                 bool(c.get("analytics")), bool(c.get("ads")),
+                 bool(c.get("functional", True)), (body.get("policy") or "v1")[:32],
+                 (self.headers.get("User-Agent") or "")[:400], client_ip(self)))
+        return self._send(200, {"ok": True})
+
+    def api_submit_review(self):
+        """G6: submit a customer review (lands pending moderation)."""
+        user_id = self._auth_user()
+        if not user_id:
+            return self._send(401, {"error": "sign in to leave a review"})
+        body = self._read_json()
+        try:
+            rating = int(body.get("rating") or 0)
+        except (TypeError, ValueError):
+            return self._send(400, {"error": "rating must be 1..5"})
+        try:
+            res = _svc("submit_review", {
+                "p_user": user_id,
+                "p_rating": rating,
+                "p_title": (body.get("title") or "")[:120],
+                "p_body": (body.get("body") or "")[:4000],
+                "p_service": (body.get("service") or "")[:80] or None,
+                "p_country": (body.get("country") or "")[:8] or None,
+            })
+        except Exception as e:
+            return self._send(400, {"error": str(e)})
+        _audit(f"user:{user_id}", "review.submit", str((res or {}).get("id")), None, client_ip(self))
+        return self._send(200, res or {"ok": True})
 
     def api_admin_blocklist(self):
         """D8 admin: add/remove/list blocklist entries."""

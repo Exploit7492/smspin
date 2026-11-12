@@ -1,0 +1,126 @@
+<!DOCTYPE html><html lang="en" dir="ltr"><head>
+<meta charSet="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Customer reviews — SMSPin</title>
+<meta name="description" content="Read verified customer reviews of SMSPin. Real feedback on OTP delivery speed, global coverage, auto-refunds and the developer API."/>
+<link rel="canonical" href="https://smspin.io/reviews"/>
+<meta name="robots" content="index, follow"/>
+<meta property="og:title" content="Customer reviews — SMSPin"/>
+<meta property="og:description" content="Verified reviews of SMSPin from customers verifying accounts every day."/>
+<meta property="og:type" content="website"/>
+<meta property="og:url" content="https://smspin.io/reviews"/>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml"/>
+<link rel="stylesheet" href="/_next/static/css/da1ef2f87b5d85aa.css"/>
+<link rel="stylesheet" href="/_next/static/css/799dbddceaca5ff3.css"/>
+<link rel="stylesheet" href="/theme.css"/>
+<link rel="stylesheet" href="/reviews/reviews.css"/>
+</head><body>
+<a class="skip-link" href="#main">Skip to content</a>
+<nav class="nav" aria-label="Primary"><div class="container nav-inner"><a class="logo" aria-label="SMSPin home" href="/"><span aria-hidden="true" style="width:34px;height:34px;border-radius:9px;background:#E11D2E;box-shadow:0 6px 20px rgba(225, 29, 46, 0.40);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5C4 3.9 4.9 3 6 3H18C19.1 3 20 3.9 20 5V14C20 15.1 19.1 16 18 16H13L9.5 19.5C9 20 8 19.6 8 18.9V16H6C4.9 16 4 15.1 4 14V5Z" fill="#FFFFFF"></path><rect x="7.5" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect><rect x="10.8" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect><rect x="14.1" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect></svg></span><span>SMS<span class="logo-word-pin">Pin</span></span></a><div class="nav-links"><a href="/#features">Features</a><a href="/#pricing">Pricing</a><a href="/docs/api/reference">API</a><a href="/blog">Blog</a><a href="/contact">Contact</a></div><div class="nav-cta"><a class="btn btn-ghost" href="/login">Sign in</a><a class="btn btn-primary" href="/register">Get started<svg class="arrow" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M1 7h12M8 2l5 5-5 5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"></path></svg></a></div></div></nav>
+<main id="main">
+<section class="hero rv-hero">
+  <div class="container rv-wrap">
+    <span class="eyebrow">Customer reviews</span>
+    <h1 class="rv-h1">Trusted for instant SMS verification</h1>
+    <p class="lead rv-lead">Real feedback from people who verify accounts every day. We publish reviews as they are written — the good and the honest.</p>
+    <div class="rv-summary" id="rvSummary">
+      <div class="rv-score"><b id="rvScore">—</b><span id="rvStars" class="rv-stars" aria-hidden="true"></span><span class="rv-count" id="rvCount">Loading…</span></div>
+      <a class="btn btn-primary" href="/register">Get started</a>
+    </div>
+  </div>
+</section>
+
+<section class="container rv-wrap rv-body">
+  <div class="rv-grid" id="rvGrid">
+    <div class="st-empty">Loading reviews…</div>
+  </div>
+
+  <div class="card rv-write" id="rvWrite">
+    <h2 class="rv-h2">Leave a review</h2>
+    <p class="rv-write-sub">Signed in? Share your experience — reviews are published after a quick moderation check.</p>
+    <form id="rvForm" hidden>
+      <div class="rv-field">
+        <label for="rvRating">Rating</label>
+        <select id="rvRating" required>
+          <option value="5">★★★★★ — Excellent</option>
+          <option value="4">★★★★☆ — Good</option>
+          <option value="3">★★★☆☆ — Okay</option>
+          <option value="2">★★☆☆☆ — Poor</option>
+          <option value="1">★☆☆☆☆ — Bad</option>
+        </select>
+      </div>
+      <div class="rv-field"><label for="rvTitle">Title</label><input id="rvTitle" maxlength="120" placeholder="Sum it up in a few words"></div>
+      <div class="rv-field"><label for="rvBody">Your review</label><textarea id="rvBody" rows="4" maxlength="4000" required placeholder="What worked well? What could be better?"></textarea></div>
+      <div class="rv-field"><label for="rvService">Service (optional)</label><input id="rvService" maxlength="80" placeholder="e.g. WhatsApp"></div>
+      <button class="btn btn-primary" type="submit">Submit review</button>
+      <div class="rv-msg" id="rvMsg" role="status"></div>
+    </form>
+    <div class="rv-signin" id="rvSignin">
+      <a class="btn btn-secondary" href="/login">Sign in to write a review</a>
+    </div>
+  </div>
+</section>
+</main>
+<footer><div class="container"><div class="footer-grid"><div class="footer-brand"><a class="logo" aria-label="SMSPin home" href="/"><span aria-hidden="true" style="width:34px;height:34px;border-radius:9px;background:#E11D2E;box-shadow:0 6px 20px rgba(225, 29, 46, 0.40);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5C4 3.9 4.9 3 6 3H18C19.1 3 20 3.9 20 5V14C20 15.1 19.1 16 18 16H13L9.5 19.5C9 20 8 19.6 8 18.9V16H6C4.9 16 4 15.1 4 14V5Z" fill="#FFFFFF"></path><rect x="7.5" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect><rect x="10.8" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect><rect x="14.1" y="8.5" width="2.5" height="3.5" rx="0.8" fill="#E11D2E"></rect></svg></span><span>SMS<span class="logo-word-pin">Pin</span></span></a><p>Online SMS verification service. Virtual phone numbers for OTP codes across 210+ countries and Business testing workflows. Instant, private, auto-refunded.</p></div><div class="footer-col"><h4>Information</h4><a href="/rent">Rent Private Numbers</a><a href="/faq">FAQs</a><a href="/price">Price</a><a href="/docs/api/reference">API</a><a href="/contact">Contact</a><a href="/blog">Blog</a><a href="/free-numbers">Free Numbers</a><a href="/affiliate">Affiliate Program</a></div><div class="footer-col"><h4>Quick Links</h4><a href="/receive-sms">Receive SMS by Country</a><a href="/categories">Browse by Category</a><a href="/sms-verification/whatsapp">WhatsApp verification</a><a href="/sms-verification/telegram">Telegram verification</a><a href="/resources">Resources</a></div><div class="footer-col"><h4>Company</h4><a href="/about">About</a><a href="/careers">Careers</a><a href="/become-operator">Become an operator</a><a href="/status">Status</a><a href="/reviews">Reviews</a></div><div class="footer-col"><h4>Policies</h4><a href="/terms">Terms &amp; Conditions</a><a href="/privacy">Privacy Policy</a><a href="/payment-policy">Payment Policy</a><a href="/delivery-policy">Delivery Policy</a><a href="/refund-policy">Refund Policy</a><a href="/return-policy">Return Policy</a><a href="/cookies">Cookies</a></div></div><div class="footer-bottom"><div>© 2026 SMSPin.io — All rights reserved.</div><div>Made for people who just want the code to arrive.</div></div></div></footer><script>
+(function(){
+  function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
+  function stars(n){n=Math.round(Number(n)||0);return "★★★★★".slice(0,n)+"☆☆☆☆☆".slice(0,5-n);}
+  function when(t){try{return new Date(t).toLocaleDateString(void 0,{year:"numeric",month:"short"});}catch(e){return "";}}
+  function card(r){
+    return '<article class="card rv-card"><div class="rv-card-head"><span class="rv-stars" aria-label="'+r.rating+' out of 5">'+stars(r.rating)+'</span>'+
+      '<time>'+esc(when(r.created_at))+'</time></div>'+
+      (r.title?'<h3 class="rv-card-title">'+esc(r.title)+'</h3>':'')+
+      '<p class="rv-card-body">'+esc(r.body)+'</p>'+
+      '<div class="rv-card-meta"><b>'+esc(r.author)+'</b>'+
+      (r.service?'<span class="rv-chip">'+esc(r.service)+'</span>':'')+
+      (r.country?'<span class="rv-chip">'+esc(r.country)+'</span>':'')+'</div></article>';
+  }
+  async function load(){
+    try{
+      var r=await fetch("/api/reviews?limit=30",{cache:"no-store"});
+      var d=await r.json();
+      var agg=d.rating||{};
+      document.getElementById("rvScore").textContent = agg.ratingValue!=null?agg.ratingValue.toFixed?agg.ratingValue.toFixed(1):agg.ratingValue:"—";
+      document.getElementById("rvStars").textContent = stars(agg.ratingValue);
+      document.getElementById("rvCount").textContent = agg.reviewCount?("Based on "+agg.reviewCount+" review"+(agg.reviewCount===1?"":"s")):"No reviews yet";
+      var items=d.items||[];
+      document.getElementById("rvGrid").innerHTML = items.length?items.map(card).join("")
+        : '<div class="st-empty">No reviews published yet — be the first.</div>';
+    }catch(e){
+      document.getElementById("rvGrid").innerHTML='<div class="st-empty">Reviews unavailable right now.</div>';
+    }
+  }
+  load();
+
+  // Show the write form only when a dashboard session exists.
+  var form=document.getElementById("rvForm");
+  var signin=document.getElementById("rvSignin");
+  try{
+    if(localStorage.getItem("smspin_session")){
+      form.hidden=false; if(signin) signin.hidden=true;
+    }
+  }catch(e){}
+  if(form){
+    form.addEventListener("submit",async function(ev){
+      ev.preventDefault();
+      var msg=document.getElementById("rvMsg");
+      msg.textContent="Submitting…";
+      var token="";
+      try{ token=JSON.parse(localStorage.getItem("smspin_session")||"{}").access_token||""; }catch(e){}
+      try{
+        var r=await fetch("/api/reviews",{method:"POST",
+          headers:{"Content-Type":"application/json","Authorization":"Bearer "+token},
+          body:JSON.stringify({rating:Number(document.getElementById("rvRating").value),
+            title:document.getElementById("rvTitle").value,
+            body:document.getElementById("rvBody").value,
+            service:document.getElementById("rvService").value})});
+        var d=await r.json();
+        if(r.ok){msg.textContent="Thanks! Your review is pending moderation.";form.reset();}
+        else{msg.textContent=d.error||"Could not submit.";}
+      }catch(e){msg.textContent="Network error — try again.";}
+    });
+  }
+})();
+</script>
+
+</body></html>

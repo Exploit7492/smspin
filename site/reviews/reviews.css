@@ -1,0 +1,46 @@
+/* Public reviews page — responsive card grid, no wide tables. */
+.rv-wrap { max-width: 980px; }
+.rv-hero { padding: 56px 0 20px; }
+.rv-h1 { font-size: clamp(32px, 5vw, 48px); letter-spacing: -0.02em; margin-top: 12px; }
+.rv-lead { margin-top: 12px; max-width: 640px; }
+.rv-summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px;
+  margin-top: 26px;
+}
+.rv-score { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.rv-score b { font-size: 34px; line-height: 1; }
+.rv-stars { color: #f59e0b; font-size: 18px; letter-spacing: 2px; }
+.rv-count { color: var(--text-secondary); font-size: 14px; }
+
+.rv-body { padding-bottom: 56px; }
+.rv-grid {
+  display: grid; grid-template-columns: 1fr; gap: 14px;
+}
+@media (min-width: 720px) { .rv-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1040px) { .rv-grid { grid-template-columns: repeat(3, 1fr); } }
+
+.rv-card { padding: 18px; display: flex; flex-direction: column; }
+.rv-card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.rv-card-head time { font-size: 12px; color: var(--text-muted); }
+.rv-card-title { font-size: 16px; font-weight: 600; margin-top: 10px; }
+.rv-card-body { font-size: 14px; color: var(--text-secondary); margin-top: 8px; flex: 1; }
+.rv-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; font-size: 13px; }
+.rv-card-meta b { font-weight: 600; }
+.rv-chip {
+  font-size: 12px; padding: 2px 9px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-secondary);
+}
+
+.rv-write { margin-top: 32px; padding: 22px; }
+.rv-h2 { font-size: 20px; }
+.rv-write-sub { font-size: 14px; color: var(--text-secondary); margin-top: 6px; }
+.rv-write form { margin-top: 18px; display: grid; gap: 14px; max-width: 560px; }
+.rv-field label { margin-bottom: 6px; }
+.rv-msg { font-size: 13px; color: var(--text-secondary); min-height: 18px; }
+.rv-signin { margin-top: 16px; }
+
+.st-empty { padding: 22px; text-align: center; color: var(--text-secondary); }
+@media (max-width: 520px) {
+  .rv-score b { font-size: 28px; }
+  .rv-write { padding: 18px; }
+}
