@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import json
+import gzip
 import hmac
 import time
 import hashlib
@@ -19,6 +20,7 @@ import urllib.request
 import urllib.error
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from contextlib import contextmanager
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -256,8 +258,24 @@ CTX.verify_mode = ssl.CERT_NONE
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 
 
+@contextmanager
 def db():
-    return psycopg2.connect(PG_DSN)
+    """Yield a connection and always close it.
+
+    `with psycopg2.connect(...) as conn` only commits/rolls back — it never
+    closes, so a long-lived process leaks one backend per call until the
+    pooler refuses new clients. This wraps it so every `with db() as conn`
+    releases the socket.
+    """
+    conn = psycopg2.connect(PG_DSN)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def http_json(url, method="GET", headers=None, body=None, timeout=30):
@@ -410,7 +428,7 @@ def sync_pair(country, service, force=False):
         _upsert_catalog([{"country": cc, "service": sv, "cost_usd": 0, "stock": 0}])
         return live
     rate = fx_rates().get("NGN", 1.0)
-    markup = 200.0
+    markup = 100.0
     with db() as conn, conn.cursor() as cur:
         cur.execute("select value::text::numeric from settings where key='markup_percent'")
         row = cur.fetchone()
@@ -1247,13 +1265,19 @@ class Handler(SimpleHTTPRequestHandler):
             self._access_log()
         except Exception:
             pass
+        extra = extra or {}
+        # Compress large JSON bodies when the client advertises gzip.
+        if (len(body) > 1024 and ctype.startswith("application/json")
+                and "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+                and "Content-Encoding" not in extra):
+            body = gzip.compress(body, 6)
+            extra["Content-Encoding"] = "gzip"
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         # G3: API responses are always revalidated; SEO files are cached briefly.
         # An explicit extra Cache-Control (e.g. injected HTML) wins over the default.
-        extra = extra or {}
         if "Cache-Control" not in extra:
             p = urlparse(self.path).path
             if p in ("/robots.txt", "/sitemap.xml"):
@@ -1470,6 +1494,20 @@ class Handler(SimpleHTTPRequestHandler):
             return self.api_tenant_get(path)
         if path.startswith("/api/v1/"):
             return self.api_v1(path)
+        if path == "/api/catalog/taxonomy":
+            # The complete service + country lists (not just the pairs already
+            # stocked), so the picker can search every provider service — e.g.
+            # "1688" — on arrival instead of only the preloaded subset.
+            cc = (parse_qs(urlparse(self.path).query).get("country", [""])[0] or "").lower()
+            with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""select code, name, icon from services order by name""")
+                services = [{"code": r["code"], "name": r["name"], "icon": r["icon"]}
+                            for r in cur.fetchall()]
+                cur.execute("""select code, name, flag from countries order by name""")
+                countries = [{"code": r["code"], "name": r["name"], "flag": r["flag"]}
+                             for r in cur.fetchall()]
+            return self._send(200, {"services": services, "countries": countries,
+                                    "country": cc or None})
         if path == "/api/catalog/live":
             q = parse_qs(urlparse(self.path).query)
             cc = (q.get("country", [""])[0] or "").lower()

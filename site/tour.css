@@ -4,6 +4,12 @@
 .tour-hole { position: fixed; border-radius: 12px; box-shadow: 0 0 0 9999px rgba(10, 12, 20, .62);
   transition: all .2s ease, opacity .15s; opacity: 0; }
 .tour-target { position: relative; z-index: 91; }
+/* Animated pointer that draws the eye to the highlighted control. */
+.tour-pointer { position: fixed; z-index: 93; color: var(--brand, #E11D2E); opacity: 0;
+  transition: left .25s ease, top .25s ease, opacity .2s ease; pointer-events: none;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,.35)); animation: tourPointerBounce 1s ease-in-out infinite; }
+@keyframes tourPointerBounce { 0%,100% { transform: translate(0,0); } 50% { transform: translate(4px,4px); } }
+@media (prefers-reduced-motion: reduce) { .tour-pointer { animation: none; } }
 .tour-card { position: fixed; z-index: 92; width: min(340px, 92vw); background: var(--surface, #fff);
   color: var(--text-primary, #111827); border: 1px solid var(--glass-border, rgba(0,0,0,.08));
   border-radius: 14px; padding: 16px 18px; box-shadow: 0 24px 60px rgba(0,0,0,.28); outline: none; }

@@ -309,8 +309,6 @@
             cta: "Buy a number", href: "/dashboard/buy/" });
     }
 
-    // O2: activation checklist — nudges the user through the first-run steps.
-    await renderOnboarding();
     // E6: notification centre.
     await renderNotifications();
     // O16: what's-new announcement banner + feature tour.
@@ -342,28 +340,6 @@
       try { localStorage.setItem(WN_LS, latest.version); } catch (e) {}
       panel.hidden = true;
       if (window.TOUR) TOUR.dashboard(true);
-    };
-  }
-
-  // ---------------------------------------------------------------- O2 onboarding
-  async function renderOnboarding() {
-    const panel = $("#ovOnboarding"), list = $("#ovOnbList");
-    if (!panel || !list) return;
-    let d;
-    try { d = await SMSPIN.rpc("my_onboarding"); } catch (e) { return; }
-    if (!d || !d.items) return;
-    if (d.dismissed || (d.done >= d.total)) { panel.hidden = true; return; }
-    panel.hidden = false;
-    $("#ovOnbProgress").textContent = d.done + " / " + d.total;
-    list.innerHTML = d.items.map(it =>
-      '<a class="onb-item' + (it.done ? " done" : "") + '" href="' + esc(it.href) + '">' +
-        '<span class="onb-check" aria-hidden="true">' + (it.done ? "✓" : "") + "</span>" +
-        '<span class="onb-label">' + esc(it.label) + "</span>" +
-        '<span class="onb-go" aria-hidden="true">' + (it.done ? "" : "→") + "</span></a>").join("");
-    $("#ovOnbDismiss").onclick = async (e) => {
-      e.preventDefault();
-      try { await SMSPIN.rpc("onboarding_mark", { p_key: "__dismissed", p_done: true }); } catch (err) {}
-      panel.hidden = true;
     };
   }
 
@@ -1278,7 +1254,8 @@
 
   async function renderBuy() {
     const store = window.SMSPIN.store && SMSPIN.store();
-    let cat;
+    let cat = [];
+    let taxonomy = null;
     if (store) {
       const b = await SMSPIN.rpc("business_public", { p_slug: store });
       cat = (b && b.catalog || []).map(c => ({
@@ -1288,10 +1265,17 @@
       }));
     } else {
       cat = await SMSPIN.rpc("browse_catalog", {});
+      // Full service + country taxonomy so every provider service (e.g. 1688)
+      // is searchable on arrival, not just the pairs already preloaded.
+      try {
+        const r = await fetch("/api/catalog/taxonomy");
+        if (r.ok) taxonomy = await r.json();
+      } catch (e) {}
     }
     const btn = document.getElementById("buyBtn");
     const svcBtn = document.getElementById("svcPick"), ctryBtn = document.getElementById("ctryPick");
-    if (!cat || !cat.length) {
+    if (!cat) cat = [];
+    if ((!cat || !cat.length) && !(taxonomy && taxonomy.services && taxonomy.services.length)) {
       if (btn) { btn.disabled = true; btn.textContent = "Catalog unavailable"; }
       const t = document.getElementById("svcPickTxt"); if (t) t.textContent = "Unavailable";
       const t2 = document.getElementById("ctryPickTxt"); if (t2) t2.textContent = "Unavailable";
@@ -1300,6 +1284,19 @@
 
     const countries = [], services = [];
     const seenC = {}, seenS = {}, codeToService = {};
+    // Seed from the full taxonomy first (every service/country), then overlay
+    // the stocked catalog so icons/names and canonical codes win.
+    if (taxonomy) {
+      (taxonomy.services || []).forEach(s => {
+        const key = (s.name || s.code).toLowerCase();
+        codeToService[s.code] = key;
+        if (!seenS[key]) seenS[key] = { value: key, label: s.name, icon: s.icon, code: s.code };
+        else if (!seenS[key].icon && s.icon) seenS[key].icon = s.icon;
+      });
+      (taxonomy.countries || []).forEach(c => {
+        if (!seenC[c.code]) { seenC[c.code] = 1; countries.push({ value: c.code, label: c.name, icon: c.flag }); }
+      });
+    }
     cat.forEach(c => {
       if (!seenC[c.country]) { seenC[c.country] = 1; countries.push({ value: c.country, label: c.country_name, icon: c.flag }); }
       // Map every raw service code onto its canonical (display) service so a
@@ -1307,8 +1304,9 @@
       // de-duplicates aliases (wa/whatsapp, tg/telegram, ...).
       const key = (c.service_name || c.service).toLowerCase();
       codeToService[c.service] = key;
-      if (!seenS[key]) { seenS[key] = { value: key, label: c.service_name, icon: c.service_icon }; }
-      else if (!seenS[key].icon && c.service_icon) seenS[key].icon = c.service_icon;
+      if (!seenS[key]) { seenS[key] = { value: key, label: c.service_name, icon: c.service_icon, code: c.service }; }
+      else { if (!seenS[key].icon && c.service_icon) seenS[key].icon = c.service_icon;
+             if (!seenS[key].code) seenS[key].code = c.service; }
     });
     services.push(...Object.values(seenS));
     countries.sort((a, b) => a.label.localeCompare(b.label));
@@ -1345,6 +1343,11 @@
       country,
       service: resolveSvc(wantSvc) || resolveSvc(last.service) || defSvc || (services[0] && services[0].value),
     };
+    // Resolve a display key back to the provider code the API expects.
+    function svcCode(key) {
+      const s = services.find(x => x.value === key);
+      return (s && s.code) || key;
+    }
 
     function paintService() {
       const s = services.find(x => x.value === state.service);
@@ -1362,28 +1365,39 @@
       try { localStorage.setItem("smspin_last:buy", JSON.stringify({ country: state.country, service: state.service })); } catch (e) {}
     }
 
+    // Available stock for the currently selected pair, shown on the card.
+    const stockEl = document.getElementById("buyStock");
+    let curPrice = null, curStock = 0, curCode = null;
     async function updatePrice() {
       if (!btn) return;
-      let row = cat.find(c => c.country === state.country && (c.service === state.service || codeToService[c.service] === state.service))
+      const code = svcCode(state.service);
+      curCode = code;
+      let row = cat.find(c => c.country === state.country && (c.service === code || codeToService[c.service] === state.service))
              || cat.find(c => c.country === state.country);
       // If we don't stock this pair yet, ask the backend to fetch it live.
       if (!row || !Number(row.stock)) {
         try {
           const rr = await fetch("/api/catalog/live?country=" + encodeURIComponent(state.country) +
-                                 "&service=" + encodeURIComponent(state.service));
+                                 "&service=" + encodeURIComponent(code));
           if (rr.ok) {
             const d = await rr.json();
             if (d.price_ngn) row = { price: d.price_ngn, stock: d.available || 0 };
           }
         } catch (e) { /* fall back to what we have */ }
       }
-      if (!row) { btn.textContent = "Unavailable"; btn.disabled = true; return; }
+      curPrice = row ? Number(row.price) : null;
+      curStock = row ? Number(row.stock || 0) : 0;
+      if (stockEl) {
+        stockEl.textContent = curStock ? curStock.toLocaleString() + " in stock" : "Out of stock";
+        stockEl.classList.toggle("is-out", !curStock);
+      }
+      if (!row || !curPrice) { btn.textContent = "Unavailable"; btn.disabled = true; return; }
+      if (!curStock) { btn.textContent = "Out of stock"; btn.disabled = true; return; }
       btn.disabled = false;
-      const ngn = Number(row.price);
-      let label = money(ngn, "NGN");
+      let label = money(curPrice, "NGN");
       if (GEO.currency && GEO.currency !== "NGN") {
         try {
-          const r = await fetch("/api/fx?to=" + GEO.currency + "&amount=" + ngn);
+          const r = await fetch("/api/fx?to=" + GEO.currency + "&amount=" + curPrice);
           if (r.ok) { const d = await r.json(); label += " (\u2248 " + d.formatted + ")"; }
         } catch (e) {}
       }
@@ -1392,7 +1406,7 @@
 
     if (svcBtn) svcBtn.addEventListener("click", async () => {
       const v = await UI.select({ title: "Choose a service", items: services, value: state.service,
-        searchPlaceholder: "Search services\u2026", tone: "info" });
+        searchPlaceholder: "Search " + services.length + " services\u2026", tone: "info" });
       if (v) { state.service = v; remember(); paintService(); updatePrice(); }
     });
     if (ctryBtn) ctryBtn.addEventListener("click", async () => {
@@ -1434,7 +1448,19 @@
       remember();
       try {
         const store = window.SMSPIN.store && SMSPIN.store();
-        const res = await SMSPIN.buyOrder({ country: state.country, service: state.service });
+        // The wallet is debited before the provider is called; refuse locally
+        // when the balance is short so the buyer gets a clear message.
+        if (!store) {
+          try {
+            const w = await SMSPIN.rpc("wallet_summary");
+            if (w && curPrice != null && Number(w.balance) < curPrice) {
+              toast("Insufficient balance — top up your wallet to buy this number.", "err");
+              btn.disabled = false;
+              return;
+            }
+          } catch (e) {}
+        }
+        const res = await SMSPIN.buyOrder({ country: state.country, service: curCode || svcCode(state.service) });
         const r = res || {};
         toast("Number " + (r.phone_number || "") + " reserved", "ok");
         setTimeout(() => location.href = "/dashboard/sms/", 900);

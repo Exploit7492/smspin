@@ -14,7 +14,7 @@
 <body>
 <header class="ta-top">
   <a class="ta-brand" href="#" id="taHome">
-    <span class="ta-logo" data-tenant-name aria-hidden="true">S</span>
+    <span class="ta-logo" data-tenant-initials aria-hidden="true">S</span>
     <span data-tenant-name>SMSPin</span>
   </a>
   <span class="ta-spacer"></span>
@@ -42,19 +42,11 @@
       <div>
         <div class="ta-sec" style="margin-top:0">
           <h2>Buy a number</h2>
-          <div class="ta-field">
-            <label for="svc">Service</label>
-            <select id="svc"></select>
+          <div class="ta-buybar">
+            <input type="search" id="buySearch" class="ta-search" placeholder="Search service or country…" autocomplete="off" aria-label="Search services and countries">
           </div>
-          <div class="ta-field">
-            <label for="ctry">Country</label>
-            <select id="ctry"></select>
-          </div>
-          <div class="ta-item" id="pick" style="margin-bottom:12px">
-            <b id="pickName">Pick a service & country</b>
-            <span id="pickPrice">—</span>
-          </div>
-          <button class="ta-btn" id="buyBtn">Buy number</button>
+          <div class="ta-cat" id="catGrid"></div>
+          <div class="ta-empty" id="catEmpty" hidden>No numbers match your search.</div>
         </div>
         <div class="ta-sec">
           <h2>Recent orders</h2>
@@ -138,31 +130,43 @@
     } catch (e) { TENANT_AUTH.show(msg, e.message, 'err'); btn.disabled = false; }
   });
 
-  function fill() {
-    var svcSel = document.getElementById('svc'), ctrySel = document.getElementById('ctry');
-    var svcs = {}, ctries = {};
-    CAT.forEach(function (c) { svcs[c.service] = c.service_name || c.service; ctries[c.country] = (c.flag ? c.flag + " " : "") + (c.country_name || c.country); });
-    svcSel.innerHTML = Object.keys(svcs).map(function (k) { return '<option value="' + k + '">' + svcs[k] + '</option>'; }).join("");
-    ctrySel.innerHTML = Object.keys(ctries).map(function (k) { return '<option value="' + k + '">' + ctries[k] + '</option>'; }).join("");
-    updatePick();
-  }
-  function updatePick() {
-    var svc = document.getElementById('svc').value, ctry = document.getElementById('ctry').value;
-    var row = CAT.filter(function (c) { return c.service === svc && c.country === ctry; })[0];
-    document.getElementById('pickName').textContent = row ? (row.service_name || svc) + " · " + (row.country_name || ctry) : 'Not available';
-    document.getElementById('pickPrice').textContent = row ? money(row.price_ngn) + " · " + (row.stock || 0) + " in stock" : "—";
+  var MAXC = 60;
+  function renderCat() {
+    var grid = document.getElementById('catGrid'), empty = document.getElementById('catEmpty');
+    if (!grid) return;
+    var q = (document.getElementById('buySearch').value || '').trim().toLowerCase();
+    var rows = CAT.filter(function (c) {
+      if (!q) return true;
+      return ((c.service_name || '') + ' ' + (c.service || '') + ' ' +
+              (c.country_name || '') + ' ' + (c.country || '')).toLowerCase().indexOf(q) !== -1;
+    });
+    var shown = rows.slice(0, MAXC);
+    if (empty) empty.hidden = !!shown.length;
+    grid.innerHTML = shown.map(function (c) {
+      var stock = Number(c.stock || 0);
+      return '<div class="ta-item">' +
+        '<div class="ta-item-top">' + svcIcon(c) +
+          '<div class="ta-item-tt"><b>' + esc(c.service_name || c.service) + '</b>' +
+          '<span>' + esc((c.flag ? c.flag + ' ' : '') + (c.country_name || c.country)) + '</span></div></div>' +
+        '<div class="ta-item-bot"><b class="ta-price">' + money(c.price_ngn) + '</b>' +
+          '<span class="ta-stock">' + stock.toLocaleString() + ' in stock</span></div>' +
+        '<button type="button" data-svc="' + esc(c.service) + '" data-ctry="' + esc(c.country) + '">Buy</button></div>';
+    }).join('');
+    Array.prototype.forEach.call(grid.querySelectorAll('button[data-svc]'), function (b) {
+      b.addEventListener('click', function () { buy(b.getAttribute('data-svc'), b.getAttribute('data-ctry'), b); });
+    });
   }
 
-  document.getElementById('buyBtn').addEventListener('click', async function () {
-    var svc = document.getElementById('svc').value, ctry = document.getElementById('ctry').value;
-    var btn = this; btn.disabled = true;
-    try {
-      var r = await SMSPIN.buyOrder({ country: ctry, service: svc, tenantToken: SMSPIN.tenant.token(S) });
-      TENANT_AUTH.show(msg, 'Number reserved: ' + r.phone_number + ' — waiting for SMS.', 'ok');
-      refresh(); loadOrders();
-    } catch (e) { TENANT_AUTH.show(msg, e.message, 'err'); }
-    finally { btn.disabled = false; }
-  });
+  function buy(svc, ctry, btn) {
+    if (btn) btn.disabled = true;
+    SMSPIN.buyOrder({ country: ctry, service: svc, tenantToken: SMSPIN.tenant.token(S) })
+      .then(function (r) {
+        TENANT_AUTH.show(msg, 'Number reserved: ' + r.phone_number + ' — waiting for SMS.', 'ok');
+        refresh(); loadOrders();
+      })
+      .catch(function (e) { TENANT_AUTH.show(msg, e.message, 'err'); })
+      .then(function () { if (btn) btn.disabled = false; });
+  }
 
   document.getElementById('taLogout').addEventListener('click', async function () {
     await SMSPIN.tenant.logout(S); location.href = base + "/";
@@ -170,15 +174,16 @@
 
   TENANT_AUTH.boot(function () {
     SMSPIN.rpc("business_public", { p_slug: S }).then(function (d) {
-      if (d && d.catalog) { CAT = d.catalog; fill(); }
+      if (d && d.catalog) { CAT = d.catalog; renderCat(); }
       // honour a preselected service/country from the storefront
       var q = new URLSearchParams(location.search);
-      if (q.get("service")) { var sv = document.getElementById('svc'); if (sv) sv.value = q.get("service"); }
-      if (q.get("country")) { var cv = document.getElementById('ctry'); if (cv) cv.value = q.get("country"); }
-      updatePick();
+      if (q.get("service")) {
+        document.getElementById('buySearch').value = q.get("service");
+        renderCat();
+      }
     }).catch(function () {});
-    document.getElementById('svc').addEventListener('change', updatePick);
-    document.getElementById('ctry').addEventListener('change', updatePick);
+    var bs = document.getElementById('buySearch');
+    if (bs) bs.addEventListener('input', renderCat);
     refresh();
     loadOrders();
   });

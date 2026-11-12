@@ -770,7 +770,7 @@ table.tbl tr:hover td { background: var(--glass-bg-soft); }
 
 /* Page preloader */
 .dash-loader { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; gap: 14px;
-  align-items: center; justify-content: center; background: var(--bg, #fff); opacity: 1; transition: opacity .2s ease; }
+  align-items: center; justify-content: center; background: var(--page-bg, #fff); opacity: 1; transition: opacity .2s ease; }
 .dash-loader.out { opacity: 0; pointer-events: none; }
 .dl-spin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--accent-light, #e5e7eb);
   border-top-color: var(--accent, #0ea5e9); animation: dl-spin .7s linear infinite; }

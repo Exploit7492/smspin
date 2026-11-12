@@ -57,13 +57,50 @@
     const card = document.createElement("div");
     card.className = "tour-card";
     card.tabIndex = -1;
+    const pointer = document.createElement("div");
+    pointer.id = "tourPointer";
+    pointer.className = "tour-pointer";
+    pointer.setAttribute("aria-hidden", "true");
+    pointer.innerHTML = '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" aria-hidden="true">' +
+      '<path d="M5 3.5 19 11l-5.6 1.4L10.6 18 5 3.5Z" fill="#fff" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
     overlay.appendChild(card);
+    overlay.appendChild(pointer);
     document.body.appendChild(overlay);
-    return { overlay, card };
+    return { overlay, card, pointer };
+  }
+
+  // A target may match several elements (sidebar link, quick action, card). Pick
+  // the first one that is actually on screen so the spotlight never lands on an
+  // off-screen duplicate — e.g. the sidebar link on mobile, which is translated
+  // out of view while the drawer is closed.
+  function visibleMatch(sel) {
+    let els;
+    try { els = document.querySelectorAll(sel); } catch (e) { return null; }
+    if (!els || !els.length) return null;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let fallback = null;
+    for (const el of els) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      const onScreen = r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
+      if (onScreen) return el;
+      if (!fallback) fallback = el;
+    }
+    return fallback || els[0];
   }
 
   function clearTarget() {
     if (state && state.target) { state.target.classList.remove("tour-target"); state.target = null; }
+  }
+
+  function movePointer(r) {
+    const p = $("#tourPointer");
+    if (!p) return;
+    // Park the pointer just outside the target's top-left corner, pointing in.
+    const x = Math.max(6, r.left - 26), y = Math.max(6, r.top - 26);
+    p.style.left = x + "px";
+    p.style.top = y + "px";
+    p.style.opacity = "1";
   }
 
   function place(card, el) {
@@ -71,13 +108,28 @@
     const r = el.getBoundingClientRect();
     const vw = window.innerWidth, vh = window.innerHeight;
     const cw = card.offsetWidth, ch = card.offsetHeight;
-    let top = r.bottom + pad, left = r.left;
-    if (top + ch > vh - 8) top = Math.max(8, r.top - ch - pad);      // flip above
-    if (left + cw > vw - 8) left = vw - cw - 8;
-    if (left < 8) left = 8;
-    card.style.top = top + "px";
-    card.style.left = left + "px";
-    card.style.position = "fixed";
+    // On narrow screens dock the card to the bottom instead of trying to point
+    // at the element; the spotlight + pointer still show where to look.
+    if (vw <= 560) {
+      card.style.top = "auto";
+      card.style.left = "8px";
+      card.style.right = "8px";
+      card.style.bottom = "calc(8px + env(safe-area-inset-bottom, 0px))";
+      card.style.width = "auto";
+      card.style.maxWidth = "none";
+      card.style.transform = "";
+    } else {
+      card.style.bottom = "auto";
+      card.style.right = "auto";
+      card.style.width = "min(340px, 92vw)";
+      let top = r.bottom + pad, left = r.left;
+      if (top + ch > vh - 8) top = Math.max(8, r.top - ch - pad);      // flip above
+      if (left + cw > vw - 8) left = vw - cw - 8;
+      if (left < 8) left = 8;
+      card.style.top = top + "px";
+      card.style.left = left + "px";
+      card.style.position = "fixed";
+    }
     // Spotlight hole around the target.
     const hole = $("#tourHole");
     if (hole) {
@@ -87,6 +139,7 @@
       hole.style.height = (r.height + 12) + "px";
       hole.style.opacity = "1";
     }
+    movePointer(r);
   }
 
   function center(card) {
@@ -95,18 +148,20 @@
     card.style.transform = "translate(-50%,-50%)";
     const hole = $("#tourHole");
     if (hole) hole.style.opacity = "0";
+    const p = $("#tourPointer");
+    if (p) p.style.opacity = "0";
   }
 
   function render() {
     const s = state.steps[state.i];
     const card = state.card;
     card.style.transform = "";
-    const el = s.target ? $(s.target) : null;
+    const el = s.target ? visibleMatch(s.target) : null;
     clearTarget();
     if (el) {
       el.classList.add("tour-target");
       state.target = el;
-      if (el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "smooth" });
+      if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
     }
     const last = state.i === state.steps.length - 1;
     card.innerHTML =
@@ -149,6 +204,17 @@
     record(key, last, event, event === "complete" || (event === "skip" && last >= total - 1));
     state = null;
     window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("scroll", onReposition, true);
+    window.removeEventListener("resize", onReposition, true);
+  }
+
+  // Keep the spotlight and pointer glued to the target while the user scrolls
+  // or rotates the device.
+  function onReposition() {
+    if (!state) return;
+    const s = state.steps[state.i];
+    const el = state.target || (s.target ? visibleMatch(s.target) : null);
+    if (el) place(state.card, el); else center(state.card);
   }
 
   function onKey(e) {
@@ -178,16 +244,20 @@
     variantFor(key).then(v => { if (state && state.key === key) state.variant = v; });
     record(key, 0, "start");
     window.addEventListener("keydown", onKey, true);
+    window.addEventListener("scroll", onReposition, true);
+    window.addEventListener("resize", onReposition, true);
     render();
   }
 
   // ---------------------------------------------------------- tour definitions
-  // O3 end-user dashboard tour.
+  // O3 end-user dashboard tour. Each step lists the sidebar link first and an
+  // on-page fallback second, so the spotlight lands on something visible on
+  // mobile (where the sidebar is a closed drawer).
   const DASHBOARD_TOUR = [
-    { target: ".dash-wallet", title: { en: "Your wallet", es: "Tu cartera" }, body: { en: "Your balance lives here. Top up once and it works across every service.", es: "Tu saldo vive aquí. Recarga una vez y sirve para todos los servicios." } },
-    { target: 'a[href="/dashboard/buy/"]', title: { en: "Buy a number" }, body: { en: "Pick a country and service, and we reserve a number instantly." } },
+    { target: ".dash-wallet, .cards .card", title: { en: "Your wallet", es: "Tu cartera" }, body: { en: "Your balance lives here. Top up once and it works across every service.", es: "Tu saldo vive aquí. Recarga una vez y sirve para todos los servicios." } },
+    { target: '#ovQuickPanel, a[href="/dashboard/buy/"]', title: { en: "Buy a number" }, body: { en: "Pick a country and service, and we reserve a number instantly." } },
     { target: 'a[href="/dashboard/numbers/"]', title: { en: "Manage your numbers" }, body: { en: "Every number you hold — active, expired or released — is listed here." } },
-    { target: 'a[href="/dashboard/sms/"]', title: { en: "Receive codes" }, body: { en: "SMS codes land in your inbox within seconds of arriving." } },
+    { target: 'a[href="/dashboard/sms/"], #ovMsgPanel', title: { en: "Receive codes" }, body: { en: "SMS codes land in your inbox within seconds of arriving." } },
     { target: 'a[href="/dashboard/api-keys/"]', title: { en: "Automate it" }, body: { en: "Create an API key to buy numbers and read codes programmatically." } },
     { target: 'a[href="/dashboard/business/"]', title: { en: "Launch your own store" }, body: { en: "White-label SMSPin under your own brand and domain." } },
   ];

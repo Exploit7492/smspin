@@ -147,11 +147,16 @@
     .st-btn{padding:9px 13px;font-size:13px}
     .st-hero{padding:40px 0 28px}
     .st-sec{padding:44px 0}
-    .st-grid{grid-template-columns:1fr;gap:12px}
+    .st-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+    .st-card{padding:12px}
+    .st-card .price b{font-size:17px}
     .st-cards,.st-steps,.st-price-wrap{gap:14px}
     .st-stats{gap:18px}
     .st-foot-grid{grid-template-columns:1fr;gap:20px}
     .st-foot .base{justify-content:flex-start}
+  }
+  @media (max-width:380px){
+    .st-grid{grid-template-columns:1fr}
   }
   @media (max-width:400px){
     .st-btn.ghost{display:none}

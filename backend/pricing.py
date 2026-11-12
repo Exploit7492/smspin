@@ -1,21 +1,12 @@
-"""Real-time funding-fee engine (no static FX / PPP tables).
+"""Real-time funding-fee engine.
 
-Fee bench (NGN, from the product spec):
-    500  -> 10
-    700  -> 20
-    1000 -> 50
+The platform charges a flat 2.5% funding fee on every top-up, in every
+currency and every country — there is no PPP or geo tiering.
 
-The bench is the Nigerian schedule. It is lifted into *international dollars*
-at Nigeria's current purchasing-power parity (World Bank PA.NUS.PPP), which
-makes the schedule a pure "real effort" curve. A caller's top-up is then priced
-the same way, in their own currency, at their own country's PPP factor, so the
-same real top-up costs the same real fee everywhere while poorer countries pay
-less in hard currency and richer countries pay more.
-
-Both inputs are fetched live via packages - never static tables:
+The only live input is FX: a caller's top-up is converted to the NGN figure
+KoraPay settles in using live rates.
 
     * forex_python.converter.CurrencyRates  -> live exchange rates
-    * wbdata                                -> World Bank PA.NUS.PPP (LCU/int$)
 
 Results are memoised in-process with a TTL so the hot path never refetches.
 """
@@ -24,10 +15,6 @@ from __future__ import annotations
 import json
 import time
 import threading
-
-# Bench: (amount in NGN, fee in NGN) at Nigerian scale.
-_BENCH = [(500.0, 10.0), (700.0, 20.0), (1000.0, 50.0)]
-_MAX_MAGNITUDE = 6  # schedule extends across 10**0 .. 10**6 multiples
 
 _TTL = 6 * 60 * 60  # 6 hours
 _lock = threading.Lock()
@@ -150,62 +137,27 @@ def _load_ppp() -> dict:
     return {k: v[1] for k, v in out.items()}
 
 
-# ---------- fee schedule (international dollars) ----------
-def _bench_int() -> list:
-    """The NGN bench re-expressed in international dollars (via NG's PPP)."""
-    f = ppp_factor("NG") or 1.0
-    return [(a / f, fee / f) for a, fee in _BENCH]
-
-
-def _tiered(amount_int: float) -> float:
-    """Fee in international dollars for a real top-up of `amount_int` int$."""
-    bench = _bench_int()
-    anchors = [a for a, _ in bench]
-    fees = [x for _, x in bench]
-    lo, hi = anchors[0], anchors[-1]
-    a = max(amount_int, 0.0)
-    band = 0
-    while band < _MAX_MAGNITUDE and a >= hi * (10 ** (band + 1)):
-        band += 1
-    scale = 10.0 ** band
-    x = a / scale
-    if x <= lo:
-        fee = fees[0]
-    elif x <= hi:
-        fee = fees[-1]
-        for i in range(len(anchors) - 1):
-            if anchors[i] <= x <= anchors[i + 1]:
-                f0, f1 = fees[i], fees[i + 1]
-                fee = f0 + (f1 - f0) * (x - anchors[i]) / (anchors[i + 1] - anchors[i])
-                break
-    else:
-        # linear extension beyond the top anchor at the 1k-anchor slope
-        slope = (fees[-1] - fees[-2]) / (anchors[-1] - anchors[-2])
-        fee = fees[-1] + slope * (x - hi)
-    return fee * scale
+# ---------- fee schedule (flat) ----------
+FEE_PERCENT = 2.5  # flat platform funding fee, every currency, every country
 
 
 def fee_ngn(amount_ngn: float, country: str = "NG") -> float:
-    """Fee in NGN for a Nigerian-denominated top-up, PPP-priced for `country`."""
-    f = ppp_factor(country)
-    amount_int = float(amount_ngn or 0) / (ppp_factor("NG") or 1.0)
-    return round(_tiered(amount_int) * f, 4)
+    """Flat 2.5% funding fee, regardless of country or currency."""
+    return round(float(amount_ngn or 0) * FEE_PERCENT / 100.0, 4)
 
 
 # ---------- public quote ----------
 def quote(amount: float, country: str = "", currency: str = "") -> dict:
     """Funding quote for `amount` expressed in `currency` (the caller's money).
 
-    Returns the fee and net credit in the caller's currency AND the NGN figures
-    KoraPay settles in, plus the live FX / PPP context used.
+    The fee is a flat 2.5% everywhere. Returns the fee and net credit in the
+    caller's currency AND the NGN figures KoraPay settles in, plus the live FX
+    context used.
     """
     amount = float(amount or 0)
     cur = (currency or "NGN").upper()
     cc = (country or "NG").upper()
-    f = ppp_factor(cc)
-    amount_int = amount / (f or 1.0)
-    fee_local = round(_tiered(amount_int) * f, 4)
-    fee_local = min(fee_local, amount * 0.5)  # never fee away more than half
+    fee_local = round(amount * FEE_PERCENT / 100.0, 4)
     net_local = round(amount - fee_local, 4)
     amount_ngn = to_ngn(amount, cur)
     fee_ngn_v = to_ngn(fee_local, cur)
@@ -216,17 +168,15 @@ def quote(amount: float, country: str = "", currency: str = "") -> dict:
         "amount": round(amount, 2),
         "fee": fee_local,
         "net": net_local,
-        "fee_percent": round((fee_local / amount * 100) if amount else 0, 2),
+        "fee_percent": FEE_PERCENT,
         "amount_ngn": amount_ngn,
         "fee_ngn": fee_ngn_v,
         "net_ngn": net_ngn,
         "usd_ngn": round(usd_ngn(), 4),
-        "ppp_factor": round(f, 6),
     }
 
 
 if __name__ == "__main__":
-    print("NGN bench:", [(a, fee_ngn(a, "NG")) for a, _ in _BENCH])
     for c, cur, amt in (("NG", "NGN", 1000), ("US", "USD", 1), ("GB", "GBP", 1),
                         ("IN", "INR", 100), ("KE", "KES", 200), ("NG", "NGN", 5000)):
         print(c, cur, amt, quote(amt, c, cur))

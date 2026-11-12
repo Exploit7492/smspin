@@ -103,21 +103,34 @@ class SmspinClient:
         return self._get("/numbers", {"country": country, "service": service})
 
     def live_price(self, country, service):
-        """Live USD price + stock + operator breakdown for one (country, service)."""
+        """Live USD price + stock + operator breakdown for one (country, service).
+
+        The provider's headline `price` is the *most expensive* operator tier,
+        so pricing off it overcharges badly. Price from the cheapest operator
+        that actually has stock, falling back to the headline only when there
+        is no operator breakdown.
+        """
         data = self.numbers(country, service)
         ops = self.operators(country, service)
         cc = (data.get("countries") or [{}])[0]
         available = cc.get("available") or 0
-        price = data.get("price")
-        if price is None and ops:
-            price = min((o.get("price") for o in ops if o.get("price")), default=None)
+        priced = [(o.get("price"), o.get("count") or 0) for o in ops
+                  if isinstance(o, dict) and o.get("price") is not None]
+        price = None
+        best_op = None
+        if priced:
+            in_stock = [o for o in ops if (o.get("count") or 0) > 0 and o.get("price") is not None]
+            best_op = min(in_stock or ops, key=lambda o: o.get("price") or 1e9)
+            price = best_op.get("price")
+        if price is None:
+            price = data.get("price")
         return {
             "country": country.upper(),
             "service": service,
             "price_usd": price,
             "available": available,
             "operators": ops,
-            "best_operator": (min(ops, key=lambda o: o.get("price") or 1e9) if ops else None),
+            "best_operator": best_op,
         }
 
     # ---- orders ----

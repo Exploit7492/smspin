@@ -22,11 +22,19 @@
     var r = document.documentElement.style;
     r.setProperty("--brand", t[0]); r.setProperty("--brand-2", t[1]);
   }
+  function initials(name) {
+    var parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return "S";
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
   function applyName(name) {
     if (!name) return;
     document.title = document.title.replace(/SMSPin/g, name);
     var b = document.querySelectorAll("[data-tenant-name]");
     for (var i = 0; i < b.length; i++) b[i].textContent = name;
+    var g = document.querySelectorAll("[data-tenant-initials]");
+    for (var j = 0; j < g.length; j++) g[j].textContent = initials(name);
   }
   function show(el, text, cls) { if (!el) return; el.textContent = text; el.className = "ta-msg show " + cls; }
 
