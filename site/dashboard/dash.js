@@ -1302,7 +1302,7 @@
     };
     if (!SNAP) { try { await loadCatalog(); } catch (e) {} }
     const btn = document.getElementById("buyBtn");
-    const svcBtn = document.getElementById("svcPick"), ctryBtn = document.getElementById("ctryPick");
+    const ctryBtn = document.getElementById("ctryPick");
     if (!cat) cat = [];
     if ((!cat || !cat.length) && !(taxonomy && taxonomy.services && taxonomy.services.length)) {
       if (btn) { btn.disabled = true; btn.textContent = "Catalog unavailable"; }
@@ -1378,16 +1378,59 @@
       country,
       service: resolveSvc(wantSvc) || resolveSvc(last.service) || defSvc || (services[0] && services[0].value),
     };
+    let svcQuery = "", svcLimit = 24;
     function svcCode(key) {
       const s = services.find(x => x.value === key);
       return (s && s.code) || key;
     }
+    // Cheapest available price for a service in the current country (falls back
+    // to the cheapest anywhere) so the list can show a "from" figure.
+    function minPriceFor(key) {
+      const code = svcCode(key);
+      let best = null;
+      for (const c of cat) {
+        if (!(c.service === code || codeToService[c.service] === key)) continue;
+        if (!Number(c.stock)) continue;
+        if (c.country === state.country) { const p = Number(c.price); if (p && (best == null || p < best)) best = p; }
+      }
+      if (best != null) return best;
+      for (const c of cat) {
+        if (!(c.service === code || codeToService[c.service] === key)) continue;
+        if (!Number(c.stock)) continue;
+        const p = Number(c.price); if (p && (best == null || p < best)) best = p;
+      }
+      return best;
+    }
 
     function paintService() {
-      const s = services.find(x => x.value === state.service);
-      const t = document.getElementById("svcPickTxt");
-      if (t) t.textContent = s ? s.label : "Choose a service";
-      pickerIco(document.getElementById("svcPickIco"), s && s.icon);
+      const host = document.getElementById("svcList");
+      if (!host) return;
+      const q = svcQuery.trim().toLowerCase();
+      const shown = q ? services.filter(s => s.label.toLowerCase().includes(q)) : services;
+      // Pin the current choice first so it is always visible without scrolling.
+      const ordered = shown.slice().sort((a, b) =>
+        (b.value === state.service ? 1 : 0) - (a.value === state.service ? 1 : 0));
+      const slice = ordered.slice(0, svcLimit);
+      if (!slice.length) {
+        host.innerHTML = '<p class="muted" style="padding:10px 2px">No services match \u201c' + esc(svcQuery) + '\u201d.</p>';
+      } else {
+        host.innerHTML = slice.map(s => {
+          const p = minPriceFor(s.value);
+          return '<button class="buy-svc' + (s.value === state.service ? " on" : "") + '" type="button" role="option" data-val="' + esc(s.value) + '">' +
+            svcIcon({ service_icon: s.icon, service: s.label }) +
+            '<span class="buy-svc-name">' + esc(s.label) + "</span>" +
+            '<span class="buy-svc-from">from <b>' + (p ? money(price(p), "NGN") : "\u2014") + "</b></span></button>";
+        }).join("");
+      }
+      host.querySelectorAll("[data-val]").forEach(b => b.addEventListener("click", () => {
+        state.service = b.dataset.val; remember(); paintService();
+        if (state.mode === "rent") loadDurations(); else updatePrice();
+      }));
+      const more = document.getElementById("svcMore");
+      if (more) {
+        more.hidden = shown.length <= svcLimit;
+        more.textContent = "Show more (" + shown.length + ")";
+      }
     }
     function paintCountry() {
       const c = countries.find(x => x.value === state.country);
@@ -1489,11 +1532,10 @@
       btn.textContent = "Buy number \u00b7 " + label;
     }
 
-    if (svcBtn) svcBtn.addEventListener("click", async () => {
-      const v = await UI.select({ title: "Choose a service", items: services, value: state.service,
-        searchPlaceholder: "Search " + services.length + " services\u2026", tone: "info" });
-      if (v) { state.service = v; remember(); paintService(); if (state.mode === "rent") loadDurations(); else updatePrice(); }
-    });
+    const svcSearch = document.getElementById("svcSearch");
+    if (svcSearch) svcSearch.addEventListener("input", () => { svcQuery = svcSearch.value; svcLimit = 24; paintService(); });
+    const svcMore = document.getElementById("svcMore");
+    if (svcMore) svcMore.addEventListener("click", () => { svcLimit += 48; paintService(); });
     if (ctryBtn) ctryBtn.addEventListener("click", async () => {
       const v = await UI.select({ title: "Choose a country", items: countries, value: state.country,
         searchPlaceholder: "Search countries\u2026", tone: "info" });
@@ -2270,10 +2312,16 @@
   // tab bar (Home / History / raised Buy / Top Up) and a floating support chat.
   function buildMobileChrome() {
     if ($("#dashBottomNav")) return;
-    const pill = document.createElement("a");
-    pill.className = "dash-balpill"; pill.href = "/dashboard/topup/";
-    pill.setAttribute("aria-label", "Wallet balance — add funds");
-    pill.innerHTML = '<span id="balPillVal">—</span><span class="bp-plus">+</span>';
+    const pill = document.createElement("div");
+    pill.className = "dash-balpill";
+    pill.setAttribute("role", "group");
+    pill.setAttribute("aria-label", "Wallet balance");
+    pill.innerHTML =
+      '<a class="bp-btn bp-minus" href="/dashboard/wallet/" aria-label="Wallet — withdraw or spend">' +
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12h14"/></svg></a>' +
+      '<a class="bp-val" id="balPillVal" href="/dashboard/wallet/">—</a>' +
+      '<a class="bp-btn bp-plus" href="/dashboard/topup/" aria-label="Add funds">' +
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></a>';
     document.body.appendChild(pill);
 
     const nav = document.createElement("nav");
@@ -2281,28 +2329,29 @@
     nav.setAttribute("aria-label", "Primary");
     nav.innerHTML =
       '<a class="bn" href="/dashboard/">' +
-        '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg></span>Home</a>' +
+        '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg></span>' +
+        '<span class="bn-lbl">Home</span></a>' +
       '<a class="bn" href="/dashboard/history/">' +
-        '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4v4h4"/><path d="M12 8v4.5l3 1.8"/></svg></span>History</a>' +
+        '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4v4h4"/><path d="M12 8v4.5l3 1.8"/></svg></span>' +
+        '<span class="bn-lbl">History</span></a>' +
       '<a class="bn bn-buy" href="/dashboard/buy/">' +
         '<span class="bn-buy-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5h3l1.5 4-2 1.4a12 12 0 0 0 5.6 5.6l1.4-2 4 1.5v3a2 2 0 0 1-2.2 2A16 16 0 0 1 4.5 5.7 2 2 0 0 1 6.5 3.5Z"/></svg></span>' +
         '<span class="bn-lbl">Buy</span></a>' +
       '<a class="bn" href="/dashboard/topup/">' +
-        '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/><path d="M12 13v4M10 15h4"/></svg></span>Top Up</a>';
+        '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/><path d="M12 13v4M10 15h4"/></svg></span>' +
+        '<span class="bn-lbl">Top Up</span></a>' +
+      '<button class="bn bn-chat" type="button" id="bnChat" aria-label="Chat with support">' +
+        '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none"><path d="M4 5c0-1.1.9-2 2-2h12c1.1 0 2 .9 2 2v9c0 1.1-.9 2-2 2h-5l-3.5 3.5c-.5.5-1.5.1-1.5-.6V16H6c-1.1 0-2-.9-2-2V5z" fill="currentColor"/></svg></span>' +
+        '<span class="bn-lbl">Chat</span></button>';
     document.body.appendChild(nav);
 
-    const chat = document.createElement("button");
-    chat.className = "dash-chat"; chat.type = "button";
-    chat.setAttribute("aria-label", "Chat with support");
-    chat.innerHTML = '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" aria-hidden="true"><path d="M4 5c0-1.1.9-2 2-2h12c1.1 0 2 .9 2 2v9c0 1.1-.9 2-2 2h-5l-3.5 3.5c-.5.5-1.5.1-1.5-.6V16H6c-1.1 0-2-.9-2-2V5z" fill="#fff"/></svg>';
+    const chat = nav.querySelector("#bnChat");
     chat.addEventListener("click", () => {
-      const help = document.querySelector(".help-fab, #helpFab, [data-help-open]");
-      if (help) help.click(); else location.href = "/dashboard/support/";
+      if (window.SMSPINHELP && window.SMSPINHELP.open) window.SMSPINHELP.open();
+      else location.href = "/dashboard/support/";
     });
-    document.body.appendChild(chat);
     applyActiveNav();
   }
-
   async function fillBalancePill() {
     const el = $("#balPillVal"); if (!el) return;
     try { const w = await SMSPIN.rpc("wallet_summary"); el.textContent = money(w.balance, w.currency); }
@@ -2463,7 +2512,8 @@
   function wireLiveEvents() {
     if (!window.EventSource || !SMSPIN.getSession || !SMSPIN.getSession()) return;
     let es;
-    try { es = new EventSource("/api/events"); } catch (e) { return; }
+    const tok = (SMSPIN.getSession() || {}).access_token || "";
+    try { es = new EventSource("/api/events?token=" + encodeURIComponent(tok)); } catch (e) { return; }
     es.addEventListener("sms", (ev) => {
       let d = {}; try { d = JSON.parse(ev.data); } catch (e) { return; }
       document.dispatchEvent(new CustomEvent("smspin:sms", { detail: d }));

@@ -903,6 +903,7 @@ RL_RULES = {
     "subscribe": (10, 60),
     "consent": (30, 60),
     "review": (10, 60),
+    "rpc": (600, 60),
     "default": (240, 60),
 }
 
@@ -1538,7 +1539,7 @@ class Handler(SimpleHTTPRequestHandler):
             if rel.startswith("/_next/static/"):
                 cache = "public, max-age=31536000, immutable"
             elif ctype == "text/html":
-                cache = "public, max-age=300, must-revalidate"
+                cache = "no-cache, must-revalidate"
             else:
                 cache = "public, max-age=86400"
             # Conditional GET: answer 304 when the client already has this body.
@@ -1659,6 +1660,11 @@ class Handler(SimpleHTTPRequestHandler):
             return self.api_tenant_get(path)
         if path.startswith("/api/v1/"):
             return self.api_v1(path)
+        if path == "/api/rpc":
+            # Same-origin bridge to Supabase RPC. The dashboard calls this
+            # instead of talking to Supabase directly, so the browser only
+            # ever hits our backend (one origin, no CORS, one cache policy).
+            return self.api_rpc_bridge()
         if path == "/api/catalog/taxonomy":
             # The complete service + country lists (not just the pairs already
             # stocked), so the picker can search every provider service — e.g.
@@ -1858,6 +1864,8 @@ class Handler(SimpleHTTPRequestHandler):
         self._tick()
         path = urlparse(self.path).path
         try:
+            if path == "/api/rpc":
+                return self.api_rpc_bridge()
             if path == "/api/payments/initialize":
                 return self.api_payments_initialize()
             if path == "/api/korapay/webhook":
@@ -2693,6 +2701,13 @@ class Handler(SimpleHTTPRequestHandler):
         push codes the instant they arrive (no manual refresh)."""
         uid = self._auth_user()
         if not uid:
+            # EventSource cannot send an Authorization header, so the token may
+            # arrive as a query param instead.
+            qtok = (parse_qs(urlparse(self.path).query).get("token", [""])[0] or "").strip()
+            if qtok:
+                st, prof = supabase_rpc("my_profile", {}, token=qtok)
+                uid = (prof or {}).get("id") if st == 200 else None
+        if not uid:
             return self._send(401, {"error": "missing or invalid session"})
         q = parse_qs(urlparse(self.path).query)
         since = q.get("since", ["0"])[0]
@@ -2794,6 +2809,26 @@ class Handler(SimpleHTTPRequestHandler):
                                           "p_path": path, "p_method": self.command, "p_status": status})
             except Exception:
                 pass
+
+    def api_rpc_bridge(self):
+        """Same-origin proxy for Supabase RPC.
+
+        The dashboard posts ``{"fn": "<rpc_name>", "args": {...}}`` here. We
+        forward the caller's bearer token (their Supabase JWT) so RLS and
+        ``auth.uid()`` still apply, and hand the raw result back unchanged.
+        Public RPCs (no token) fall back to the anon key.
+        """
+        body = self._read_json()
+        fn = (body.get("fn") or "").strip()
+        args = body.get("args") or {}
+        if not fn or not re.fullmatch(r"[a-z0-9_]+", fn):
+            return self._send(400, {"error": "invalid rpc name"})
+        if not isinstance(args, dict):
+            return self._send(400, {"error": "args must be an object"})
+        if not check_rate(self, "rpc"):
+            return
+        st, data = supabase_rpc(fn, args, token=self._bearer())
+        return self._send(st, data if data is not None else {})
 
     def _sandbox_order(self, uid, country, service):
         """H4: a fake order that never touches the provider or the wallet."""

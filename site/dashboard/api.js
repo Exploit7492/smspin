@@ -81,8 +81,24 @@
     },
   };
 
-  const rpc = (fn, args = {}) =>
-    raw("/rest/v1/rpc/" + fn, { method: "POST", body: JSON.stringify(args) });
+  // All RPC goes through our own backend (/api/rpc), which forwards the
+  // caller's JWT to Supabase. Same origin → no CORS, one cache policy, and
+  // RLS/`auth.uid()` still apply because we pass the token through.
+  async function rpc(fn, args = {}) {
+    const res = await fetch("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken() },
+      body: JSON.stringify({ fn, args }),
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+    if (!res.ok) {
+      const msg = (data && (data.msg || data.message || data.error)) || res.statusText;
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    return data;
+  }
 
   // Server-side edge functions. Business logic (funding, purchases) runs
   // server-side so the browser only sees a friendly action name.

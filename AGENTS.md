@@ -490,6 +490,19 @@ redirects or aliases:
   stocked code per name. Don't "fall back to any service in this country" when a pair is
   missing; that shows another service's price and hides the live fetch.
 
+## Dashboard talks to the backend, not Supabase directly
+`site/dashboard/api.js` posts every RPC to the same-origin `/api/rpc`
+(`{fn, args}`), which forwards the caller's JWT to Supabase so RLS/`auth.uid()`
+still apply. Don't call `URL + "/rest/v1/rpc/..."` from the browser again — one
+origin means no CORS and one cache policy. The SSE stream (`/api/events`) takes
+its token as a `?token=` query param because `EventSource` cannot set headers.
+
+## Mobile chrome z-index ladder
+Fixed layers must stack above the slide-in side panel's *scrim* only when closed:
+`.dash-side` = 80, `.dash-scrim` = 75, `.dash-toggle` = 70, `.dash-balpill` = 66,
+`.dash-topbrand` = 65, `.dash-bottomnav` = 62. If the panel opens *behind* the
+bottom nav / pill, one of these was raised above 80.
+
 ## Dev server: secrets must be named in the launching command
 Secret injection only fires when the secret name appears in the command text. Start the
 server (or pytest) with the names referenced, else `Smspin_apikey` etc. are empty and
