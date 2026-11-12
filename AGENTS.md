@@ -535,3 +535,19 @@ Smspin_apikey="$Smspin_apikey" Kora_test_secrete_key="$Kora_test_secrete_key" Ko
 nohup bash scripts/dev-server.sh > /tmp/smspin-dev.log 2>&1 &
 ```
 Backend deps: `pip install -r backend/requirements.txt` (psycopg2-binary, forex-python, wbdata).
+
+## Tenant storefront URLs must answer GET *and* HEAD
+`/store/<slug>` (+ `/login`, `/register`, `/account`) are virtual routes rewritten
+onto real files in `Handler._resolve_virtual_path()`. That rewrite is called from both
+`do_GET` and `do_HEAD`; adding a new virtual route there keeps HEAD in sync. A GET-only
+rewrite makes HEAD return 404 (broken link previews, uptime probes, some crawlers).
+Custom-domain routing (`resolve_domain`) lives in the same helper.
+
+## Dashboard SPA route table vs. page-local scripts
+`ROUTES`/`RENDER` in `site/dashboard/dash.js` drive the in-place SPA router. A route
+belongs there only if dash.js has a matching `render*()` function. Pages with their own
+boot script (e.g. `business/business.js`, which binds the wizard on `DOMContentLoaded`)
+must be **absent** from `ROUTES` so a click triggers a full load and the script runs.
+Navigation to such a page is still intercepted by `wireRouter()`, so `swapRoute()` also
+falls back to a full load when `RENDER[page]` is missing.
+
