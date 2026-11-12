@@ -226,7 +226,11 @@
   function registerSW() {
     if (!("serviceWorker" in navigator)) return;
     if (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") return;
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    // updateViaCache:"none" so a changed sw.js is picked up immediately instead
+    // of being served from the HTTP cache (which pinned stale asset handlers).
+    navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" })
+      .then(reg => { reg.update().catch(() => {}); })
+      .catch(() => {});
   }
 
   function boot() {

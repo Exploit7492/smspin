@@ -1,8 +1,8 @@
 // SMSPin service worker — installable PWA with an offline app shell.
-// Strategy: network-first for navigations (always fresh content when online,
-// cached shell when offline); stale-while-revalidate for static assets.
-// API and auth traffic is never cached so balances/codes are always live.
-const VERSION = "smspin-v1";
+// Strategy: network-first for navigations AND static assets (so a code change
+// is always picked up when online; cached copy only when offline). API and auth
+// traffic is never cached so balances/codes are always live.
+const VERSION = "smspin-v2";
 const SHELL = ["/", "/offline/", "/manifest.json", "/favicon.svg", "/ui.js", "/help.js", "/help.css"];
 
 self.addEventListener("install", e => {
@@ -48,14 +48,15 @@ self.addEventListener("fetch", e => {
 
   if (isStatic(url)) {
     e.respondWith(
-      caches.match(req).then(cached => {
-        const network = fetch(req).then(res => {
+      // Network-first: always try the network so an edited file is picked up
+      // immediately; fall back to the cached copy only when offline.
+      fetch(req)
+        .then(res => {
           const copy = res.clone();
           caches.open(VERSION).then(c => c.put(req, copy)).catch(() => {});
           return res;
-        }).catch(() => cached);
-        return cached || network;
-      })
+        })
+        .catch(() => caches.match(req))
     );
   }
 });

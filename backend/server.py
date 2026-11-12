@@ -1596,7 +1596,11 @@ class Handler(SimpleHTTPRequestHandler):
             elif ctype == "text/html":
                 cache = "no-cache, must-revalidate"
             else:
-                cache = "public, max-age=86400"
+                # Our own CSS/JS are hand-edited and referenced with a ?v= that
+                # is not always bumped, so a long max-age pins a stale copy in
+                # the browser (and the service worker). Always revalidate: the
+                # ETag makes a hit a cheap 304.
+                cache = "no-cache, must-revalidate"
             # Conditional GET: answer 304 when the client already has this body.
             if self.headers.get("If-None-Match") == etag:
                 f.close()
