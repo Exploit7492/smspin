@@ -1,6 +1,6 @@
 // Dashboard hydration — pulls live data from Supabase RPC and renders it.
 (function () {
-  const page = document.body.dataset.page;
+  let page = document.body.dataset.page;
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const UI = window.SMSPINUI || { alert: async () => {}, confirm: async () => "ok", reveal: async () => {}, modal: async () => null, select: async () => null };
@@ -13,6 +13,8 @@
     const sym = CURRENCY_SYMBOL[c] || (c + " ");
     return sym + " " + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
+  // Service prices are shown as whole numbers: a 1.56 price displays as 2.
+  const price = n => Math.ceil(Number(n || 0));
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
@@ -1394,11 +1396,15 @@
       if (!row || !curPrice) { btn.textContent = "Unavailable"; btn.disabled = true; return; }
       if (!curStock) { btn.textContent = "Out of stock"; btn.disabled = true; return; }
       btn.disabled = false;
-      let label = money(curPrice, "NGN");
+      let label = money(price(curPrice), "NGN");
       if (GEO.currency && GEO.currency !== "NGN") {
         try {
-          const r = await fetch("/api/fx?to=" + GEO.currency + "&amount=" + curPrice);
-          if (r.ok) { const d = await r.json(); label += " (\u2248 " + d.formatted + ")"; }
+          const r = await fetch("/api/fx?to=" + GEO.currency + "&amount=" + price(curPrice));
+          if (r.ok) {
+            const d = await r.json();
+            const approx = (d.symbol || "") + Math.ceil(Number(d.amount || 0)).toLocaleString();
+            label += " (\u2248 " + approx + ")";
+          }
         } catch (e) {}
       }
       btn.textContent = "Buy number \u00b7 " + label;
@@ -1445,7 +1451,11 @@
 
     if (btn) btn.addEventListener("click", async () => {
       btn.disabled = true;
+      btn.classList.add("is-busy");
+      const prevLabel = btn.textContent;
+      btn.innerHTML = '<span class="btn-spin" aria-hidden="true"></span><span>Reserving number…</span>';
       remember();
+      const restore = () => { btn.classList.remove("is-busy"); btn.textContent = prevLabel; };
       try {
         const store = window.SMSPIN.store && SMSPIN.store();
         // The wallet is debited before the provider is called; refuse locally
@@ -1455,6 +1465,7 @@
             const w = await SMSPIN.rpc("wallet_summary");
             if (w && curPrice != null && Number(w.balance) < curPrice) {
               toast("Insufficient balance — top up your wallet to buy this number.", "err");
+              restore();
               btn.disabled = false;
               return;
             }
@@ -1463,8 +1474,9 @@
         const res = await SMSPIN.buyOrder({ country: state.country, service: curCode || svcCode(state.service) });
         const r = res || {};
         toast("Number " + (r.phone_number || "") + " reserved", "ok");
+        btn.innerHTML = '<span class="btn-spin" aria-hidden="true"></span><span>Reserved — opening inbox…</span>';
         setTimeout(() => location.href = "/dashboard/sms/", 900);
-      } catch (e) { toast(e.message, "err"); updatePrice(); }
+      } catch (e) { toast(e.message, "err"); restore(); updatePrice(); }
     });
 
     const pop = document.getElementById("buyPopular");
@@ -1476,7 +1488,7 @@
         '<div class="meta"><b>' + esc(c.service_name) + "</b><span>" + esc(c.flag || "") + " " + esc(c.country_name) +
         " \u00b7 " + Number(c.stock).toLocaleString() + " in stock</span></div>" +
         '<button class="btn btn-secondary" type="button" data-c="' + esc(c.country) + '" data-s="' + esc(c.service) + '">' +
-        money(c.price, "NGN") + "</button></div>").join("");
+        money(price(c.price), "NGN") + "</button></div>").join("");
       $$("[data-c]", pop).forEach(b => b.addEventListener("click", () => {
         state.country = b.dataset.c;
         state.service = resolveSvc(b.dataset.s) || state.service;
@@ -1829,31 +1841,112 @@
   document.addEventListener("DOMContentLoaded", async () => {
     if (!(await guard())) return;
     await loadSite();
+    // One-time startup: panel, links and sidebar data are wired once; every
+    // subsequent navigation only re-renders <main> from the client-side router.
     wireSidePanel();
-    wireCardLinks();
     fillSideBalance();
     fillSideNumbers();
     fillSideOrders();
     await loadGeo();
-    const fn = RENDER[page];
-    if (fn) {
-      showLoader(page === "buy" ? "Loading catalog\u2026" : "Loading\u2026");
-      try { await fn(); } catch (e) { console.warn("render " + page + ":", e.message); }
-      finally { hideLoader(); }
-    }
+    await renderPage();
     fitStatValues();
     let fitT;
     window.addEventListener("resize", () => { clearTimeout(fitT); fitT = setTimeout(fitStatValues, 150); });
+    wireLiveEvents();
+    const out = document.querySelector('a[href="/login"]');
+    if (out) out.addEventListener("click", async (e) => { e.preventDefault(); await SMSPIN.auth.signOut(); location.href = "/login/"; });
+    await settlePayment();
+    await maybeWelcome();
+    maybeStartTour();
+    wireRouter();
+  });
+
+  // ---------------------------------------------------------------------
+  // SPA router. Internal dashboard links swap <main> in place instead of
+  // triggering a full page reload, so the app loads and populates once at
+  // startup and every route change is just a re-render.
+  // ---------------------------------------------------------------------
+  const ROUTES = {
+    "/dashboard/": "overview", "/dashboard/buy/": "buy", "/dashboard/numbers/": "numbers",
+    "/dashboard/orders/": "orders", "/dashboard/sms/": "sms", "/dashboard/wallet/": "wallet",
+    "/dashboard/transactions/": "transactions", "/dashboard/api-keys/": "api-keys",
+    "/dashboard/business/": "business", "/dashboard/referrals/": "referrals",
+    "/dashboard/profile/": "profile", "/dashboard/settings/": "settings",
+    "/dashboard/support/": "support",
+  };
+  const pageFor = path => ROUTES[path.replace(/\/index\.html$/, "/")] || null;
+
+  function applyActiveNav() {
+    const cur = location.pathname.replace(/\/index\.html$/, "/");
+    $$(".dash-side a[href^='/dashboard/']").forEach(a => {
+      const href = a.getAttribute("href");
+      a.classList.toggle("active", href === cur || (cur === "/dashboard/" && href === "/dashboard/"));
+    });
+  }
+
+  async function renderPage() {
+    const fn = RENDER[page];
+    applyActiveNav();
+    if (!fn) return;
+    showLoader(page === "buy" ? "Loading catalog\u2026" : "Loading\u2026");
+    try { await fn(); } catch (e) { console.warn("render " + page + ":", e.message); }
+    finally { hideLoader(); }
+    wireCardLinks();
     wireTopup();
     wireSettings();
     wireProfileSave();
-    await settlePayment();
-    wireLiveEvents();
-    await maybeWelcome();
-    maybeStartTour();
-    const out = document.querySelector('a[href="/login"]');
-    if (out) out.addEventListener("click", async (e) => { e.preventDefault(); await SMSPIN.auth.signOut(); location.href = "/login/"; });
-  });
+  }
+
+  async function swapRoute(path, push) {
+    let html;
+    try {
+      const res = await fetch(path, { headers: { "X-Requested-With": "fetch" } });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      html = await res.text();
+    } catch (e) { location.href = path; return; }
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const nextMain = doc.querySelector("main.dash-main");
+    const curMain = document.querySelector("main.dash-main");
+    if (!nextMain || !curMain) { location.href = path; return; }
+    const np = doc.body.dataset.page;
+    const newPage = RENDER[np] ? np : pageFor(path);
+    if (!newPage) { location.href = path; return; }
+    if (push) history.pushState({ smspin: 1, page: newPage }, "", path);
+    curMain.innerHTML = nextMain.innerHTML;
+    page = newPage;
+    document.body.dataset.page = np || page;
+    document.title = doc.title || document.title;
+    if (page === "overview") { try { localStorage.setItem("smspin_welcomed", "1"); } catch (e) {} }
+    window.scrollTo(0, 0);
+    await renderPage();
+    fitStatValues();
+  }
+
+  function wireRouter() {
+    document.addEventListener("click", e => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = e.target.closest && e.target.closest("a[href]");
+      if (!a) return;
+      if (a.target && a.target !== "_self") return;
+      if (a.hasAttribute("download")) return;
+      const href = a.getAttribute("href");
+      if (!href || href.charAt(0) !== "/" || href.charAt(1) === "/") return;
+      if (a.dataset.noSpa != null) return;
+      let u;
+      try { u = new URL(a.href, location.origin); } catch (err) { return; }
+      if (u.origin !== location.origin) return;
+      const path = u.pathname.replace(/\/index\.html$/, "/");
+      if (!pageFor(path)) return;               // only in-app dashboard routes
+      e.preventDefault();
+      const qs = u.search || "";
+      swapRoute(path + qs, path + qs !== location.pathname + location.search);
+    });
+    window.addEventListener("popstate", () => {
+      const path = location.pathname.replace(/\/index\.html$/, "/");
+      if (pageFor(path)) swapRoute(location.pathname + location.search, false);
+    });
+  }
+
 
   // O2: one-time welcome modal for first-login users, offering the tour.
   async function maybeWelcome() {

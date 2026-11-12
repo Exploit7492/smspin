@@ -70,6 +70,8 @@
 
   var CAT = [];
   function money(n){ return "₦" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  // Prices are whole numbers: a 1.56 price displays as 2.
+  function whole(n){ return Math.ceil(Number(n || 0)); }
   function esc(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
   function svcIcon(o){
     var icon = (o && (o.service_icon || o.icon)) || "";
@@ -148,7 +150,7 @@
         '<div class="ta-item-top">' + svcIcon(c) +
           '<div class="ta-item-tt"><b>' + esc(c.service_name || c.service) + '</b>' +
           '<span>' + esc((c.flag ? c.flag + ' ' : '') + (c.country_name || c.country)) + '</span></div></div>' +
-        '<div class="ta-item-bot"><b class="ta-price">' + money(c.price_ngn) + '</b>' +
+        '<div class="ta-item-bot"><b class="ta-price">' + money(whole(c.price_ngn)) + '</b>' +
           '<span class="ta-stock">' + stock.toLocaleString() + ' in stock</span></div>' +
         '<button type="button" data-svc="' + esc(c.service) + '" data-ctry="' + esc(c.country) + '">Buy</button></div>';
     }).join('');

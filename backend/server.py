@@ -9,6 +9,7 @@ Stdlib only. Secrets come from the environment (never hardcoded):
 import os
 import re
 import sys
+import math
 import json
 import gzip
 import hmac
@@ -405,12 +406,30 @@ def _stock_for(country, service):
         return cur.fetchone()
 
 
+def _known_pair(country, service):
+    """True when (country, service) exists in our reference tables.
+
+    number_catalog references countries(code) and services(code), so writing a
+    pair with an unknown code raises number_catalog_service_code_fkey. Guarding
+    here keeps a bad code from ever reaching the catalog write.
+    """
+    if not country or not service:
+        return False
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("""select 1 where exists (select 1 from countries where code = %s)
+                                     and exists (select 1 from services where code = %s)""",
+                    (country, service))
+        return cur.fetchone() is not None
+
+
 def sync_pair(country, service, force=False):
     """Refresh price + stock for one (country, service) from the provider."""
     if not upstream_enabled():
         return None
     cc, sv = (country or "").lower(), service
     if not cc or not sv:
+        return None
+    if not _known_pair(cc, sv):
         return None
     if not force:
         with db() as conn, conn.cursor() as cur:
@@ -434,7 +453,9 @@ def sync_pair(country, service, force=False):
         row = cur.fetchone()
         if row:
             markup = float(row[0])
-    price_ngn = round(cost * (1 + markup / 100.0) * rate, 2)
+    # Displayed prices are always whole numbers: round the marked-up cost up to
+    # the nearest unit (a provider price of 1.56 NGN-worth shows as 2).
+    price_ngn = math.ceil(cost * (1 + markup / 100.0) * rate)
     _upsert_catalog([{"country": cc, "service": sv, "cost_usd": cost,
                       "price_ngn": price_ngn, "stock": live.get("available", 0)}])
     return live

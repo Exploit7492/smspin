@@ -352,6 +352,8 @@
     violet:["#7C3AED","#A78BFA"],amber:["#F59E0B","#FCD34D"],rose:["#E11D48","#FB7185"],
     slate:["#475569","#94A3B8"],midnight:["#1E293B","#334155"]};
   const money = n => "\u20a6 " + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  // Prices are whole numbers: a 1.56 price displays as 2.
+  const whole = n => Math.ceil(Number(n||0));
   const PAGE = 24;
 
   let CAT = [], shown = PAGE, filter = "all", query = "", THEME = "crimson";
@@ -393,7 +395,7 @@
       '<div class="st-card">'+
         '<div class="r">'+(c.icon?'<img src="'+esc(c.icon)+'" alt="" loading="lazy">':'<span class="flag">'+esc(c.flag||"")+'</span>')+
           '<div><b>'+esc(c.country_name)+'</b><div class="svc">'+esc(c.service_name)+'</div></div></div>'+
-        '<div class="price"><b>'+money(c.price_ngn)+'</b></div>'+
+        '<div class="price"><b>'+money(whole(c.price_ngn))+'</b></div>'+
         '<div class="stock">'+Number(c.stock).toLocaleString()+' in stock</div>'+
         '<a class="st-btn primary buy" href="/store/'+s+'/register/?service='+encodeURIComponent(c.service)+'&country='+encodeURIComponent(c.country)+'">Buy number</a>'+
       '</div>').join("");
@@ -436,7 +438,7 @@
     $("#stStatOrders").textContent = (stats.orders||0).toLocaleString();
     if (CAT.length){
       const min = Math.min.apply(null, CAT.map(c=>Number(c.price_ngn)||0));
-      if (isFinite(min)) $("#stPriceFrom").innerHTML = money(min) + '<small> / number</small>';
+      if (isFinite(min)) $("#stPriceFrom").innerHTML = money(whole(min)) + '<small> / number</small>';
     }
 
     const s = encodeURIComponent(slug());

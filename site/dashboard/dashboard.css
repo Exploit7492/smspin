@@ -358,3 +358,10 @@ table.tbl td.strong { color:var(--text-primary); font-weight:600; }
 .empty-state .empty-title { font-size: 15px; color: var(--text-primary); }
 .empty-state .empty-body { font-size: 13px; color: var(--text-muted); max-width: 380px; }
 .empty-state .empty-cta { margin-top: 10px; }
+
+/* Buy button busy state: inline spinner while the number is reserved. */
+.btn.is-busy { display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: progress; }
+.btn-spin { width: 15px; height: 15px; flex: 0 0 auto; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent; animation: btn-spin .6s linear infinite; }
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn-spin { animation-duration: 1.4s; } }
