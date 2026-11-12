@@ -462,6 +462,18 @@ redirects or aliases:
 - To re-mirror: fetch `https://smspin.io<path>` → `site/<path>/index.html` (files with a dot
   in the last segment → `site/<path>`), then rename any `%5B`/`%5D` dirs to decoded form.
 
+## Gotchas
+- **DB connections**: always use `with db() as conn:` (the `@contextmanager` in
+  `server.py`). `with psycopg2.connect(...) as conn:` only commits/rolls back and
+  never closes, so a long-lived server leaks one Postgres backend per call until
+  the pooler answers `max clients reached`.
+- **Upstream country codes are not ISO**: the provider returns e.g. `X145` for
+  Bahrain and mislabels `BH` as "Zambia". `countries.flag` follows the provider, so
+  a few flag/label pairs are wrong upstream — map them if exact flags matter.
+- **Pricing**: `smspin_api.live_price` prices from the *cheapest in-stock operator*;
+  the provider's headline `price` is the most expensive tier. Markup is 2x (100%)
+  by default; funding fee is a flat 2.5%.
+
 ## Dev server: secrets must be named in the launching command
 Secret injection only fires when the secret name appears in the command text. Start the
 server (or pytest) with the names referenced, else `Smspin_apikey` etc. are empty and
