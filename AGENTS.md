@@ -123,6 +123,26 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
   `scripts/seed-demo-tenant.py`.
 - Both scripts are idempotent and connect with `Smspin_supabase_Postgresql`.
 
+## Phase 6 — findable & fast (G1, G2, G3, G6)
+- **G1 SEO**: `build_robots()` / `build_sitemap()` in `backend/server.py` generate
+  `/robots.txt` and `/sitemap.xml` from the mirrored tree over `SITE_URL`
+  (`SMSPIN_SITE_URL`, default `https://smspin.io`). Private prefixes are disallowed.
+- **G2 structured data**: `build_review_jsonld(path)` builds a `Product` +
+  `AggregateRating` + `Review` JSON-LD node from the live `public_reviews()` RPC and
+  injects it into review-eligible pages (`_REVIEW_PAGES`). Cached 10 min via
+  `_reviews_cache()`; injected HTML cached in `_LD_CACHE`.
+- **G3 caching + consent**: `_serve_static_file()` sets `ETag`/`Last-Modified` and
+  `Cache-Control` (immutable for `/_next/static/`, `must-revalidate` for HTML) and
+  answers `304` on `If-None-Match`. Every public page gets
+  `<script src="/consent-log.js" defer>`, which mirrors the `smspin_consent` cookie to
+  `POST /api/consent` (stored in `consent_log`).
+- **G6 trust**: `/reviews` (static page + live `/api/reviews` feed, `POST` to submit
+  pending reviews) and `/status` uptime bars (`/api/status/uptime`) + incident
+  subscribe (`POST /api/status/subscribe`). Migration:
+  `supabase/migrations/20261111180000_phase6_findable.sql` (`reviews`, `consent_log`,
+  `status_subscribers`, `status_uptime`, `public_reviews`, `review_aggregate`,
+  `submit_review(uuid,...)`). Tests: `tests/test_phase6_findable.py`.
+
 ## Edge Functions (server-side funding + purchases)
 - `supabase/functions/funding/index.ts` — wallet funding. Actions: `initialize`
   (creates a payment via `create_payment`, starts KoraPay checkout, stores the checkout
