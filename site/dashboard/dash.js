@@ -1851,157 +1851,213 @@
     window.__smsTimer = setInterval(tick, 1000);
   }
 
-  async function renderTopUp() {
-    const cur = (WALLET && WALLET.currency) || "NGN";
-    try { WALLET = await SMSPIN.rpc("wallet_summary"); } catch (e) {}
-    const c = (WALLET && WALLET.currency) || cur;
-    const balBadge = document.getElementById("tuBalanceBadge");
-    if (balBadge) balBadge.textContent = "Balance " + money((WALLET && WALLET.balance) || 0, c);
+  // ===== Top Up (Billing · Top up) =====
+  const TU_METHODS = [
+    { id: "crypto", label: "Crypto", note: "USDT · BTC · ETH", note2: "Crypto payments are credited after 1 confirmation. Fast top-ups with no lengthy signup." },
+    { id: "crypto2", label: "Crypto 2", note: "USDT · USDC · 60+ coins", note2: "60+ coins via our second crypto gateway, credited after 1 confirmation." },
+    { id: "binance", label: "Binance Pay", note: "BNB · USDT · BUSD", note2: "Pay from Binance Pay; credited instantly after the transfer confirms." },
+    { id: "local", label: "Cards & Local", note: "Visa · Alipay · WeChat", note2: "Card and local wallet payments. Your balance updates the moment it clears." },
+  ];
+  const TU_AMOUNTS = [
+    { usd: 5, bonus: 0, pct: 0 },
+    { usd: 10, bonus: 0.5, pct: 5 },
+    { usd: 25, bonus: 2, pct: 8, tag: "Popular" },
+    { usd: 50, bonus: 5, pct: 10 },
+    { usd: 100, bonus: 11, pct: 11 },
+    { usd: 250, bonus: 30, pct: 12 },
+    { usd: 500, bonus: 65, pct: 13, tag: "Best value" },
+    { usd: 1000, bonus: 140, pct: 14 },
+    { usd: 5000, bonus: 750, pct: 15 },
+  ];
 
-    const amtEl = document.getElementById("tuAmt");
-    const curEl = document.getElementById("tuCurrency");
-    if (curEl && !curEl.options.length) {
-      ["NGN", "USD", "GHS", "KES", "ZAR"].forEach(x => {
-        const o = document.createElement("option"); o.value = x; o.textContent = x; curEl.appendChild(o);
-      });
-      curEl.value = c;
-    }
-    let method = "card";
-    const quick = document.getElementById("tuQuick");
-    if (quick) {
-      const amounts = [1000, 2000, 5000, 10000, 20000, 50000];
-      quick.innerHTML = amounts.map(a =>
-        '<button type="button" class="fund-chip" data-amt="' + a + '">' + money(a, c) + "</button>").join("");
-      $$(".fund-chip", quick).forEach(b => b.addEventListener("click", () => {
-        if (amtEl) amtEl.value = b.dataset.amt;
-        $$(".fund-chip", quick).forEach(x => x.classList.remove("on")); b.classList.add("on");
-        summary();
-      }));
-    }
+  async function renderTopUp() {
+    try { WALLET = await SMSPIN.rpc("wallet_summary"); } catch (e) {}
+    const cur = (WALLET && WALLET.currency) || "NGN";
+    const bal = (WALLET && WALLET.balance) || 0;
+    const usd = GEO && GEO.currency === "USD" ? 1 : await usdRate();
+    const balEl = document.getElementById("tuBalance");
+    if (balEl) balEl.textContent = money(bal, cur);
+
+    let method = "crypto", amount = 25, custom = false;
+
     const methods = document.getElementById("tuMethods");
     if (methods) {
-      methods.innerHTML = PAY_METHODS.map(m =>
-        '<button type="button" class="fund-m' + (m.id === method ? " on" : "") + '" data-m="' + m.id + '">' +
-        '<span class="fm-ico">' + m.icon + '</span><span class="fm-txt"><b>' + m.label + "</b><span>" + m.note + "</span></span></button>").join("");
-      $$(".fund-m", methods).forEach(b => b.addEventListener("click", () => {
+      methods.innerHTML = TU_METHODS.map(m =>
+        '<button type="button" class="tu-m' + (m.id === method ? " on" : "") + '" data-m="' + m.id + '">' +
+        '<b>' + esc(m.label) + '</b><span>' + esc(m.note) + "</span></button>").join("");
+      $$(".tu-m", methods).forEach(b => b.addEventListener("click", () => {
         method = b.dataset.m;
-        $$(".fund-m", methods).forEach(x => x.classList.remove("on")); b.classList.add("on");
+        $$(".tu-m", methods).forEach(x => x.classList.toggle("on", x === b));
+        const m = TU_METHODS.find(x => x.id === method);
+        const note = document.getElementById("tuMethodNote");
+        if (note && m) note.textContent = m.note2;
         summary();
       }));
     }
-    let quote = null, quoteAmt = 0;
+
+    const amountsEl = document.getElementById("tuAmounts");
+    function paintAmounts() {
+      if (!amountsEl) return;
+      amountsEl.innerHTML = TU_AMOUNTS.map(a =>
+        '<button type="button" class="tu-amt' + (!custom && a.usd === amount ? " on" : "") + '" data-usd="' + a.usd + '">' +
+        (a.tag ? '<span class="tu-tag">' + a.tag + "</span>" : "") +
+        '<b>$' + a.usd.toLocaleString() + "</b>" +
+        (a.bonus ? '<span class="tu-bonus">+$' + a.bonus.toLocaleString() + " bonus</span>" : "") +
+        (a.pct ? '<span class="tu-pct">· ' + a.pct + "%</span>" : "") +
+        "</button>").join("");
+      $$(".tu-amt", amountsEl).forEach(b => b.addEventListener("click", () => {
+        custom = false;
+        amount = Number(b.dataset.usd);
+        const amtInp = document.getElementById("tuAmt");
+        if (amtInp) amtInp.value = "";
+        paintAmounts(); summary();
+      }));
+    }
+    paintAmounts();
+
+    const toggle = document.getElementById("tuCustomToggle");
+    const customBox = document.getElementById("tuCustom");
+    const amtInp = document.getElementById("tuAmt");
+    if (toggle) toggle.addEventListener("click", () => {
+      custom = !custom;
+      if (customBox) customBox.hidden = !custom;
+      if (custom && amtInp) { amtInp.value = String(amount); amtInp.focus(); }
+      paintAmounts(); summary();
+    });
+    if (amtInp) amtInp.addEventListener("input", () => {
+      custom = true; amount = Number(amtInp.value || 0); paintAmounts(); summary();
+    });
+
+    function bonusFor(usd) {
+      let best = { bonus: 0, pct: 0 };
+      for (const a of TU_AMOUNTS) if (usd >= a.usd) best = { bonus: a.bonus, pct: a.pct };
+      return best;
+    }
     function summary() {
-      const sum = document.getElementById("tuSummary");
+      const b = custom ? bonusFor(amount) : (TU_AMOUNTS.find(a => a.usd === amount) || { bonus: 0, pct: 0 });
+      const bonus = custom ? amount * (b.pct / 100) : b.bonus;
+      const total = amount + bonus;
+      const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+      set("tuSumAmount", "$" + amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+      set("tuSumBonus", "+$" + bonus.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+      set("tuSumTotal", "$" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+      set("tuSumTotal2", "$" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+      const lbl = document.getElementById("tuSumBonusLabel");
+      if (lbl) lbl.textContent = "Bonus credits" + (b.pct ? " (" + b.pct + "%)" : "");
       const btn = document.getElementById("tuBtn");
-      if (!sum) return;
-      const amt = Number((amtEl || {}).value || 0);
-      const m = PAY_METHODS.find(x => x.id === method) || PAY_METHODS[0];
-      const fee = (quote && quoteAmt === amt) ? quote : null;
-      sum.innerHTML =
-        '<div class="fs-row"><span>Amount</span><b>' + money(amt, c) + "</b></div>" +
-        '<div class="fs-row"><span>Method</span><b>' + esc(m.label) + "</b></div>" +
-        (fee
-          ? '<div class="fs-row"><span>Fee <span class="fs-pct">' + (fee.fee_percent || 0) + '%</span></span><b>-' + money(fee.fee, c) + "</b></div>" +
-            '<div class="fs-row fs-total"><span>Wallet credit</span><b>' + money(fee.net, c) + "</b></div>"
-          : '<div class="fs-row fs-total"><span>You pay</span><b>' + money(amt, c) + "</b></div>");
-      if (btn) { btn.textContent = amt > 0 ? "Top up " + money(amt, c) : "Enter an amount"; btn.disabled = !(amt > 0); }
-      if (amt > 0 && SMSPIN.feeQuote && quoteAmt !== amt) {
-        quoteAmt = amt;
-        SMSPIN.feeQuote(amt, c).then(q => { if (q && Number((amtEl || {}).value || 0) === amt) { quote = q; summary(); } });
+      const m = TU_METHODS.find(x => x.id === method) || TU_METHODS[0];
+      if (btn) {
+        btn.textContent = "Pay with " + (m.id === "local" ? "card" : m.id === "binance" ? "Binance Pay" : "crypto") +
+          " · $" + amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        btn.disabled = !(amount > 0);
       }
     }
-    if (amtEl) amtEl.addEventListener("input", summary);
     summary();
 
     const btn = document.getElementById("tuBtn");
     if (btn) btn.addEventListener("click", async () => {
-      const amt = Number((amtEl || {}).value || 0);
-      if (!(amt > 0)) { toast("Enter an amount", "err"); return; }
-      btn.disabled = true; btn.textContent = "Redirecting to checkout…";
+      if (!(amount > 0)) { toast("Enter an amount", "err"); return; }
+      btn.disabled = true; const label = btn.textContent; btn.textContent = "Redirecting to checkout…";
       try {
         const sess = SMSPIN.getSession();
         const res = await fetch("/api/payments/initialize", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: "Bearer " + (sess && sess.access_token || "") },
-          body: JSON.stringify({ amount: amt, currency: (curEl && curEl.value) || c,
+          body: JSON.stringify({ amount: Math.round(amount * usd), currency: cur,
             country: (GEO && GEO.country) || undefined }),
         });
         const d = await res.json();
         if (!res.ok || !d.checkout_url) throw new Error((d && d.error) || "Could not start payment");
         location.href = d.checkout_url;
-      } catch (e) { toast(e.message, "err"); btn.disabled = false; summary(); }
+      } catch (e) { toast(e.message, "err"); btn.disabled = false; btn.textContent = label; }
     });
 
     async function paintPayments() {
-      const host = document.getElementById("tuPayList");
-      if (!host) return;
+      const body = document.getElementById("tuInvBody");
+      if (!body) return;
       let rows = [];
       try { rows = await SMSPIN.rpc("my_payments", { p_limit: 25 }); } catch (e) {}
       if (!rows || !rows.length) {
-        host.innerHTML = '<p class="muted">No top-ups yet. Your payment history will appear here.</p>';
+        body.innerHTML = '<p class="muted">No payments yet. Your invoices will appear here.</p>';
         return;
       }
-      host.innerHTML = rows.map(p =>
-        '<div class="num-item"><div class="meta"><b>' + esc((p.provider || "Payment")) +
-        " · " + esc(p.reference || "") + "</b><span>" + esc(fmtDate(p.created_at)) +
-        (p.fee_ngn ? " · fee " + money(p.fee_ngn, "NGN") : "") + "</span></div>" +
-        '<div class="my-order-meta">' + badge(p.status === "success" ? "received" : p.status === "pending" ? "waiting" : "cancelled") +
-        '<span class="my-order-price">' + money(p.amount, p.currency || c) + "</span></div></div>").join("");
+      body.innerHTML = rows.map(p => {
+        const inv = String(p.reference || "").slice(0, 12) + "…";
+        const st = p.status === "success" ? "Completed" : p.status === "pending" ? "Pending" : "Cancelled";
+        const cls = p.status === "success" ? "ok" : p.status === "pending" ? "wait" : "err";
+        return '<div class="tu-inv-row">' +
+          '<span class="tu-inv-ref" title="' + esc(p.reference || "") + '">' + esc(inv) + "</span>" +
+          '<span>' + esc((p.provider || "—").replace(/^./, c => c.toUpperCase())) + "</span>" +
+          '<span>' + money(p.amount, p.currency || cur) + "</span>" +
+          '<span><span class="badge ' + cls + '">' + st + "</span></span>" +
+          '<span class="tu-inv-date">' + esc(fmtDate(p.created_at)) + "</span></div>";
+      }).join("");
     }
     const refresh = document.getElementById("tuRefresh");
     if (refresh) refresh.addEventListener("click", paintPayments);
     await paintPayments();
   }
 
+  async function usdRate() {
+    try {
+      const r = await fetch("/api/fx?to=USD&amount=" + ((WALLET && WALLET.balance) || 1));
+      const d = await r.json();
+      const rate = Number(d && d.amount) || 1;
+      const perUsd = ((WALLET && WALLET.balance) || 1) / rate;
+      return perUsd > 0 ? perUsd : 1;
+    } catch (e) { return 1; }
+  }
+
+  // ===== History (Orders) =====
   async function renderHistory() {
     const cur = (WALLET && WALLET.currency) || "NGN";
-    let orders = [], pays = [];
-    try { orders = (await SMSPIN.rpc("my_orders", { p_limit: 200 })) || []; } catch (e) {}
-    try { pays = (await SMSPIN.rpc("my_payments", { p_limit: 200 })) || []; } catch (e) {}
+    let orders = [];
+    try { orders = (await SMSPIN.rpc("my_orders", { p_limit: 300 })) || []; } catch (e) {}
 
-    const done = orders.filter(o => o.status !== "waiting");
-    const ok = orders.filter(o => o.status === "received").length;
-    const spent = orders.filter(o => o.status !== "refunded").reduce((s, o) => s + Number(o.price || 0), 0);
-    const refunded = orders.filter(o => o.status === "refunded").reduce((s, o) => s + Number(o.price || 0), 0);
-    const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-    set("hOrders", String(orders.length));
-    set("hSpent", money(spent, cur));
-    set("hRate", done.length ? Math.round(100 * ok / done.length) + "%" : "—");
-    set("hRateSub", ok + " of " + done.length + " completed");
-    set("hRefund", money(refunded, cur));
+    let tab = "temp", status = "all", query = "", range = "7";
+    const norm = s => s === "expired" ? "refunded" : (s === "completed" ? "received" : (s === "active" ? "waiting" : s));
+    const cutoff = () => range === "all" ? 0 : Date.now() - Number(range) * 86400000;
 
-    let tab = "all", filter = "all", query = "", range = "all";
-    const FILTERS = [
-      ["all", "All"], ["waiting", "Active"], ["received", "Completed"],
-      ["cancelled", "Cancelled"], ["refunded", "Expired"],
-    ];
-    const norm = s => s === "expired" ? "refunded" : s;
-    const tabs = document.getElementById("hTabs");
-    if (tabs) {
-      tabs.innerHTML = [["all", "Everything"], ["temp", "Temp orders"], ["rent", "Rent orders"]].map(([k, l]) =>
-        '<button type="button" class="tx-tab' + (k === tab ? " on" : "") + '" data-t="' + k + '">' + l + "</button>").join("");
-      $$("[data-t]", tabs).forEach(b => b.addEventListener("click", () => {
-        tab = b.dataset.t;
-        $$("[data-t]", tabs).forEach(x => x.classList.toggle("on", x === b));
-        paint();
-      }));
-    }
     function rows() {
-      const cutoff = range === "all" ? 0 : Date.now() - Number(range) * 86400000;
+      const c = cutoff();
       return orders
-        .filter(o => tab === "all" || (tab === "rent" ? o.is_rental : !o.is_rental))
-        .filter(o => filter === "all" || norm(o.status) === filter)
-        .filter(o => !query || String(o.phone_number || "").toLowerCase().includes(query))
-        .filter(o => !cutoff || new Date(o.created_at).getTime() >= cutoff);
+        .filter(o => tab === "rent" ? o.is_rental : !o.is_rental)
+        .filter(o => status === "all" || norm(o.status) === norm(status))
+        .filter(o => !query || [o.phone_number, o.service, o.country, o.otp].some(v => String(v || "").toLowerCase().includes(query)))
+        .filter(o => !c || new Date(o.created_at).getTime() >= c);
     }
-    function paint() {
+
+    function paintStats() {
+      const list = rows();
+      const done = list.filter(o => o.status !== "waiting" && o.status !== "pending");
+      const ok = list.filter(o => o.status === "received").length;
+      const spent = list.filter(o => o.status !== "refunded").reduce((s, o) => s + Number(o.price || 0), 0);
+      const otps = list.filter(o => o.status === "received" || o.otp).length;
+      const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+      set("hOrders", String(list.length));
+      set("hRate", done.length ? Math.round(100 * ok / done.length) + "%" : "—");
+      set("hRateSub", ok + " completed");
+      set("hOtps", String(otps));
+      set("hSpent", money(spent, cur));
+    }
+
+    function paintList() {
       const host = document.getElementById("hList");
       if (!host) return;
       const list = rows();
       if (!list.length) {
-        host.innerHTML = emptyState({ icon: "\u{1F4EC}", title: "Nothing here yet",
-          body: "Orders you place will show up here with their status and price.",
-          cta: "Buy a number", href: "/dashboard/buy/" });
+        host.innerHTML = emptyState({ icon: "\u{1F4EC}", title: "No orders match your filters",
+          body: "Try widening the date range or clearing the search." }) +
+          '<div class="hist-reset-wrap"><button class="btn btn-ghost" type="button" id="hReset">Reset filters</button></div>';
+        const r = document.getElementById("hReset");
+        if (r) r.addEventListener("click", () => {
+          status = "all"; query = ""; range = "7"; tab = "temp";
+          const s = document.getElementById("hSearch"); if (s) s.value = "";
+          $$("#hChips .hist-chip").forEach(x => x.classList.toggle("on", x.dataset.status === "all"));
+          $$("#hRanges .hist-range").forEach(x => x.classList.toggle("on", x.dataset.range === "7"));
+          $$(".hist-tabs-row .buy-mode").forEach(x => x.classList.toggle("on", x.dataset.htab === "temp"));
+          paintStats(); paintList();
+        });
         return;
       }
       host.innerHTML = list.map(o =>
@@ -2012,10 +2068,32 @@
           '<span class="my-order-price">' + money(price(o.price)) + "</span>" +
           '<span class="muted">' + esc(fmtDate(o.created_at)) + "</span></div></div>").join("");
     }
+
+    const tabs = document.querySelector(".hist-tabs-row");
+    if (tabs) $$(".buy-mode", tabs).forEach(b => b.addEventListener("click", () => {
+      tab = b.dataset.htab;
+      $$(".buy-mode", tabs).forEach(x => x.classList.toggle("on", x === b));
+      paintStats(); paintList();
+    }));
+    const chips = document.getElementById("hChips");
+    if (chips) $$(".hist-chip", chips).forEach(b => b.addEventListener("click", () => {
+      status = b.dataset.status;
+      $$(".hist-chip", chips).forEach(x => x.classList.toggle("on", x === b));
+      paintStats(); paintList();
+    }));
+    const ranges = document.getElementById("hRanges");
+    if (ranges) $$(".hist-range", ranges).forEach(b => b.addEventListener("click", () => {
+      range = b.dataset.range;
+      $$(".hist-range", ranges).forEach(x => x.classList.toggle("on", x === b));
+      paintStats(); paintList();
+    }));
     const search = document.getElementById("hSearch");
-    if (search) search.addEventListener("input", () => { query = search.value.trim().toLowerCase(); paint(); });
-    const rangeEl = document.getElementById("hRange");
-    if (rangeEl) rangeEl.addEventListener("change", () => { range = rangeEl.value; paint(); });
+    if (search) {
+      search.addEventListener("input", () => { query = search.value.trim().toLowerCase(); paintStats(); paintList(); });
+      document.addEventListener("keydown", e => {
+        if (e.key === "/" && document.activeElement !== search) { e.preventDefault(); search.focus(); }
+      });
+    }
     const refresh = document.getElementById("hRefresh");
     if (refresh) refresh.addEventListener("click", () => renderHistory());
     const exp = document.getElementById("hExport");
@@ -2030,7 +2108,7 @@
       a.download = "smspin-history-" + new Date().toISOString().slice(0, 10) + ".csv";
       a.click(); URL.revokeObjectURL(a.href);
     });
-    paint();
+    paintStats(); paintList();
   }
 
   const RENDER = {
@@ -2188,13 +2266,58 @@
     if (el) { el.classList.add("out"); setTimeout(() => el.remove(), 220); }
   }
 
+  // Mobile app chrome: a floating top-right balance pill ("$0.00 +"), a bottom
+  // tab bar (Home / History / raised Buy / Top Up) and a floating support chat.
+  function buildMobileChrome() {
+    if ($("#dashBottomNav")) return;
+    const pill = document.createElement("a");
+    pill.className = "dash-balpill"; pill.href = "/dashboard/topup/";
+    pill.setAttribute("aria-label", "Wallet balance — add funds");
+    pill.innerHTML = '<span id="balPillVal">—</span><span class="bp-plus">+</span>';
+    document.body.appendChild(pill);
+
+    const nav = document.createElement("nav");
+    nav.className = "dash-bottomnav"; nav.id = "dashBottomNav";
+    nav.setAttribute("aria-label", "Primary");
+    nav.innerHTML =
+      '<a class="bn" href="/dashboard/">' +
+        '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg></span>Home</a>' +
+      '<a class="bn" href="/dashboard/history/">' +
+        '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4v4h4"/><path d="M12 8v4.5l3 1.8"/></svg></span>History</a>' +
+      '<a class="bn bn-buy" href="/dashboard/buy/">' +
+        '<span class="bn-buy-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5h3l1.5 4-2 1.4a12 12 0 0 0 5.6 5.6l1.4-2 4 1.5v3a2 2 0 0 1-2.2 2A16 16 0 0 1 4.5 5.7 2 2 0 0 1 6.5 3.5Z"/></svg></span>' +
+        '<span class="bn-lbl">Buy</span></a>' +
+      '<a class="bn" href="/dashboard/topup/">' +
+        '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/><path d="M12 13v4M10 15h4"/></svg></span>Top Up</a>';
+    document.body.appendChild(nav);
+
+    const chat = document.createElement("button");
+    chat.className = "dash-chat"; chat.type = "button";
+    chat.setAttribute("aria-label", "Chat with support");
+    chat.innerHTML = '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" aria-hidden="true"><path d="M4 5c0-1.1.9-2 2-2h12c1.1 0 2 .9 2 2v9c0 1.1-.9 2-2 2h-5l-3.5 3.5c-.5.5-1.5.1-1.5-.6V16H6c-1.1 0-2-.9-2-2V5z" fill="#fff"/></svg>';
+    chat.addEventListener("click", () => {
+      const help = document.querySelector(".help-fab, #helpFab, [data-help-open]");
+      if (help) help.click(); else location.href = "/dashboard/support/";
+    });
+    document.body.appendChild(chat);
+    applyActiveNav();
+  }
+
+  async function fillBalancePill() {
+    const el = $("#balPillVal"); if (!el) return;
+    try { const w = await SMSPIN.rpc("wallet_summary"); el.textContent = money(w.balance, w.currency); }
+    catch (e) {}
+  }
+
   document.addEventListener("DOMContentLoaded", async () => {
     if (!(await guard())) return;
     await loadSite();
     // One-time startup: panel, links and sidebar data are wired once; every
     // subsequent navigation only re-renders <main> from the client-side router.
+    buildMobileChrome();
     wireSidePanel();
     fillSideBalance();
+    fillBalancePill();
     fillSideNumbers();
     fillSideOrders();
     await loadGeo();
@@ -2229,7 +2352,7 @@
 
   function applyActiveNav() {
     const cur = location.pathname.replace(/\/index\.html$/, "/");
-    $$(".dash-side a[href^='/dashboard/']").forEach(a => {
+    $$(".dash-side a[href^='/dashboard/'], .dash-bottomnav a.bn[href^='/dashboard/']").forEach(a => {
       const href = a.getAttribute("href");
       a.classList.toggle("active", href === cur || (cur === "/dashboard/" && href === "/dashboard/"));
     });
