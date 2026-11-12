@@ -132,10 +132,17 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
   injects it into review-eligible pages (`_REVIEW_PAGES`). Cached 10 min via
   `_reviews_cache()`; injected HTML cached in `_LD_CACHE`.
 - **G3 caching + consent**: `_serve_static_file()` sets `ETag`/`Last-Modified` and
-  `Cache-Control` (immutable for `/_next/static/`, `must-revalidate` for HTML) and
+  `Cache-Control` (immutable only for content-hashed `/_next/static/`; `no-cache,
+  must-revalidate` for HTML **and** for our own hand-edited CSS/JS — a long max-age
+  there pins a stale copy because the `?v=` bust string is not always bumped) and
   answers `304` on `If-None-Match`. Every public page gets
   `<script src="/consent-log.js" defer>`, which mirrors the `smspin_consent` cookie to
   `POST /api/consent` (stored in `consent_log`).
+- **Editing front-end CSS/JS**: `sw.js` is network-first for static assets and the
+  `?v=` query on `/theme.css`, `/dashboard/*.css|js`, `ui.js`, `help.js` in the HTML
+  must be bumped (`grep -rl '?v=<old>' site --include=*.html | xargs sed -i ...`) so a
+  browser still running the old worker misses its cache. The SW itself is registered
+  with `updateViaCache:'none'`; bump its `VERSION` when its strategy changes.
 - **G6 trust**: `/reviews` (static page + live `/api/reviews` feed, `POST` to submit
   pending reviews) and `/status` uptime bars (`/api/status/uptime`) + incident
   subscribe (`POST /api/status/subscribe`). Migration:
