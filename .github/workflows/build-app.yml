@@ -145,9 +145,14 @@ jobs:
       - name: Email download link to the tenant
         if: ${{ inputs.notify_email != '' }}
         env:
-          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
-          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          Smspin_novu: ${{ secrets.Smspin_novu }}
           TO: ${{ inputs.notify_email }}
           LINK: ${{ steps.release.outputs.url }}
+          TENANT_SLUG: ${{ inputs.slug }}
           TENANT: ${{ inputs.name }}
+          VERSION: 1.0.${{ github.run_number }}
+          BRAND_PRIMARY: ${{ inputs.primary }}
+          BRAND_SECONDARY: ${{ inputs.secondary }}
+          SUPPORT_EMAIL: ${{ inputs.support_email }}
+          API_BASE: ${{ inputs.api_base }}
         run: python3 scripts/send-apk-email.py

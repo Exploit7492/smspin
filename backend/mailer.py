@@ -1,7 +1,9 @@
-"""Transactional email via SMTP (stdlib only).
+"""Transactional email via SMTP (stdlib only) — legacy fallback.
 
-Configured through the environment; when credentials are absent every send is a
-no-op that returns ``False`` so callers can fall back to in-app notices:
+Novu (see ``novu.py``) is the platform's email infrastructure; this module is
+only used when Novu is not configured (e.g. a bare local checkout). Configured
+through the environment; when credentials are absent every send is a no-op that
+returns ``False`` so callers can fall back to in-app notices:
 
     MAIL_USERNAME, MAIL_PASSWORD   SMTP login (Gmail app password in prod)
     MAIL_HOST, MAIL_PORT           defaults to smtp.gmail.com:465 (SSL)

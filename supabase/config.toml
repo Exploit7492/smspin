@@ -5,3 +5,15 @@ verify_jwt = true
 
 [functions.purchase]
 verify_jwt = true
+
+# Multi-tenant transactional email dispatcher (Novu). Invoked by a schedule with
+# the service-role key, so JWT verification is off and the function is not
+# reachable without that key.
+[functions.email]
+verify_jwt = false
+
+# Serverless API router. Replaces the Python backend's /api/* surface; Vercel
+# rewrites /api/* here. JWT verification is off at the platform edge because the
+# function does its own auth (tenant token, Supabase JWT, or hashed API key).
+[functions.api]
+verify_jwt = false

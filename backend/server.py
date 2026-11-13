@@ -30,7 +30,8 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pricing  # real-time FX + PPP funding fees (forex-python + wbdata)
 import smspin_api  # upstream SMS provider client
-import mailer  # transactional email (SMTP)
+import mailer  # legacy SMTP fallback (kept for environments without Novu)
+import novu  # multi-tenant transactional email (Novu)
 
 SITE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "site")
 # Session handoff artifacts (repo bundle + notes) staged for a follow-up session
@@ -1152,7 +1153,7 @@ def job_worker_step(budget=5):
 
 
 def dispatch_refund_notices():
-    """K5: email pending refund notices, then mark them sent (or failed)."""
+    """K5: email pending refund notices (tenant-branded), then mark them sent."""
     try:
         pending = _svc("refund_notices_pending", {"p_limit": 20}) or []
     except Exception:
@@ -1160,25 +1161,22 @@ def dispatch_refund_notices():
     sent = 0
     for n in pending:
         to = n.get("email")
-        subject = "Your SMSPin refund"
-        body = (
-            f"We've refunded {n.get('currency', 'NGN')} {n.get('amount')} to your wallet "
-            f"for order #{n.get('order_id')}.\n\n"
-            f"Reason: {n.get('reason') or 'order could not be completed'}\n\n"
-            "The amount is available now and can be used for another number or withdrawn "
-            "per our refund policy.\n\n— SMSPin"
-        )
-        ok = mailer.send(to, subject, body) if (to and mailer.configured()) else False
+        slug = n.get("tenant_slug")
+        ok = send_email("refund", to, slug=slug,
+                        amount=n.get("amount"), currency=n.get("currency", "NGN"),
+                        order_id=n.get("order_id"),
+                        reason=n.get("reason") or "order could not be completed")
         # With no mailer configured the notice still becomes visible in-app.
-        status = "sent" if ok else ("failed" if (to and mailer.configured()) else "read")
+        status = "sent" if ok else ("failed" if (novu.configured() or mailer.configured()) else "read")
         try:
             _svc("refund_notice_mark", {"p_id": n["id"], "p_status": status,
-                                        "p_error": None if ok else "mailer unavailable"})
+                                        "p_error": None if ok else "email send failed"})
         except Exception:
             pass
         if ok:
             sent += 1
-        LOG.info("refund_notice", order=str(n.get("order_id")), status=status)
+        LOG.info("refund_notice", order=str(n.get("order_id")), tenant=slug or "platform",
+                 status=status)
     return sent
 
 
@@ -1344,28 +1342,98 @@ def notify_user_event(user_id, event, payload):
 
 
 # ---------------------------------------------------------------- I6 lifecycle email
+_EMAIL_SENDER_CACHE = {}
+
+
+def email_sender(slug):
+    """Resolve the sender identity (brand, colours, reply-to) for a store slug.
+
+    Cached briefly in-process; falls back to the platform identity when the DB
+    call fails so an email is never dropped for want of branding data.
+    """
+    key = slug or ""
+    hit = _EMAIL_SENDER_CACHE.get(key)
+    if hit and time.time() - hit[0] < 300:
+        return hit[1]
+    ident = None
+    try:
+        ident = _svc("email_sender", {"p_slug": slug}) or None
+    except Exception as e:
+        LOG.warn("email_sender_error", slug=key, error=str(e)[:200])
+    if not ident:
+        ident = {"tenant_id": "smspin-platform", "brand_name": "SMSPin",
+                 "primary_color": "#E11D2E", "secondary_color": "#F26B7A",
+                 "support_email": setting_get("support_email", "support@smspin.io") or "support@smspin.io"}
+    _EMAIL_SENDER_CACHE[key] = (time.time(), ident)
+    return ident
+
+
+def _recipient(email, slug, name=None):
+    """A stable Novu subscriber id, scoped to the sending tenant."""
+    sub = ("smspin:" + (slug or "platform") + ":" + (email or "")).lower()
+    r = {"subscriberId": sub, "email": email}
+    if name:
+        r["firstName"] = str(name).split(" ")[0]
+    return r
+
+
+def send_email(event, email, slug=None, name=None, base_url=None, **kw):
+    """Send a branded transactional email through Novu.
+
+    Returns True on success. Novu is the infrastructure for every account; the
+    legacy SMTP mailer is only used when Novu is not configured.
+    """
+    if not email:
+        return False
+    ident = email_sender(slug)
+    if novu.configured():
+        r = novu.send_event(event, _recipient(email, slug, name), ident,
+                            base_url=base_url, **kw)
+        if r.get("ok"):
+            return True
+        LOG.error("novu_send_failed", event=event, slug=slug or "platform",
+                  error=str(r.get("error"))[:200])
+        return False
+    # Fallback: plain SMTP (legacy environments without Novu).
+    if mailer.configured():
+        brand = ident.get("brand_name", "SMSPin")
+        subject = {"welcome": "Welcome to " + brand,
+                   "receipt": "Your " + brand + " receipt",
+                   "refund": "Your " + brand + " refund",
+                   "apk": "Your " + brand + " app is ready"}.get(event, brand)
+        return mailer.send(email, subject, json.dumps(kw, indent=2))
+    return False
+
+
 def dispatch_email_queue():
-    """I6: send queued lifecycle emails, then mark them sent/failed."""
+    """I6: send queued lifecycle emails through Novu (tenant-branded), then mark
+    them sent/failed. Every store shares this infrastructure; the tenant slug on
+    the queue row selects the brand."""
     try:
         pending = _svc("email_queue_pending", {"p_limit": 20}) or []
     except Exception:
         return 0
     sent = 0
     for m in pending:
-        subject = {"welcome": "Welcome to SMSPin", "winback": "We saved your numbers",
-                   "abandoned_fund": "Finish funding your wallet",
-                   "receipt": "Your SMSPin receipt"}.get(m.get("template"), "SMSPin")
-        body = json.dumps(m.get("payload") or {}, indent=2)
-        ok = mailer.send(m["to_email"], subject, body) if mailer.configured() else False
-        status = "sent" if ok else ("failed" if mailer.configured() else "read")
+        tpl = m.get("template")
+        slug = m.get("tenant_slug")
+        payload = m.get("payload") or {}
+        event = {"winback": "notice", "abandoned_fund": "notice"}.get(tpl, tpl or "notice")
+        kw = dict(payload) if isinstance(payload, dict) else {}
+        if event == "notice":
+            kw.setdefault("subject", "%s update" % email_sender(slug).get("brand_name", "SMSPin"))
+            kw.setdefault("body", json.dumps(payload))
+        ok = send_email(event, m["to_email"], slug=slug,
+                        name=kw.get("name"), **kw)
+        status = "sent" if ok else ("failed" if (novu.configured() or mailer.configured()) else "read")
         try:
             _svc("email_queue_mark", {"p_id": m["id"], "p_ok": ok,
-                                      "p_error": None if ok else "mailer unavailable"})
+                                      "p_error": None if ok else "email send failed"})
         except Exception:
             pass
         if ok:
             sent += 1
-        LOG.info("lifecycle_email", template=m.get("template"), status=status)
+        LOG.info("lifecycle_email", template=tpl, tenant=slug or "platform", status=status)
     return sent
 
 
@@ -1379,25 +1447,29 @@ def dispatch_app_builds():
     built = 0
     for b in pending:
         token = hashlib.sha256(f"{b['id']}:{time.time()}".encode()).hexdigest()[:32]
+        hook = os.environ.get("APP_BUILD_HOOK", "")
+        if not hook:
+            # No CI hook configured: fail the build loudly instead of marking a
+            # fake artefact "ready" — a customer must never receive a stub APK.
+            _svc("app_build_mark", {"p_id": b["id"], "p_status": "failed",
+                                    "p_error": "no APP_BUILD_HOOK configured"})
+            LOG.error("app_build_no_hook", build=b["id"], slug=b.get("slug"))
+            continue
         try:
             # The heavy lifting (Gradle + signing) happens in CI; the backend
             # dispatches the workflow and records the artefact it produces.
-            hook = os.environ.get("APP_BUILD_HOOK", "")
-            if hook:
-                body = json.dumps({
-                    "business_id": b["business_id"], "slug": b["slug"], "name": b["name"],
-                    "primary": b.get("primary_color"), "secondary": b.get("secondary_color"),
-                    "tagline": b.get("tagline"), "support_email": b.get("support_email"),
-                    "domain": b.get("domain"), "version": b["version"], "token": token,
-                }).encode()
-                req = urllib.request.Request(hook, data=body, method="POST",
-                                             headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=15)
-            # No CI hook configured (dev/staging): provision a placeholder artefact
-            # so the distribution flow is exercisable end to end.
+            body = json.dumps({
+                "business_id": b["business_id"], "slug": b["slug"], "name": b["name"],
+                "primary": b.get("primary_color"), "secondary": b.get("secondary_color"),
+                "tagline": b.get("tagline"), "support_email": b.get("support_email"),
+                "domain": b.get("domain"), "version": b["version"], "token": token,
+            }).encode()
+            req = urllib.request.Request(hook, data=body, method="POST",
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=15)
             url = f"/api/app/download/{token}"
             _svc("app_build_mark", {"p_id": b["id"], "p_status": "ready", "p_url": url,
-                                    "p_token": token, "p_size": 8_400_000})
+                                    "p_token": token})
             built += 1
             LOG.info("app_build_ready", build=b["id"], slug=b.get("slug"))
         except Exception as e:
@@ -1905,6 +1977,9 @@ class Handler(SimpleHTTPRequestHandler):
         # Real files (e.g. /store/auth.css) are served as-is.
         if path.startswith("/store/") and not os.path.isfile(os.path.join(SITE_DIR, path.lstrip("/"))):
             parts = [p for p in path.split("/") if p]   # ["store", "<slug>", ...]
+            if len(parts) < 2:
+                # "/store/" with no slug: show the storefront directory as-is.
+                return urlparse(self.path).path
             sub = parts[2] if len(parts) > 2 else ""
             # Tenants are verbatim clones: the SAME dashboard/admin files serve
             # every store, so a UI change to the main app lands on all of them.
@@ -3040,17 +3115,24 @@ class Handler(SimpleHTTPRequestHandler):
                           extra={"Content-Disposition": 'attachment; filename="smspin-transactions.csv"'})
 
     def api_app_download(self, token):
-        """M5: time-limited branded APK download link (no auth — the token is the key)."""
+        """M5: time-limited branded APK download link (no auth — the token is the key).
+
+        The real artefact lives in CI/object storage; this redirects the browser
+        to it. If a build has no artefact (CI not configured) the link is a hard
+        404 rather than a fake file, so a customer never installs a stub.
+        """
         b = _svc("app_build_by_token", {"p_token": token})
         if not b or b == "null":
             return self._send(404, {"error": "link expired or invalid"})
-        # A real deployment redirects to the CI artefact in object storage; in
-        # dev/staging we return a small placeholder APK so the flow is testable.
-        name = (b.get("slug") or "app") + "-" + (b.get("version") or "1.0.0") + ".apk"
-        body = ("SMSPin branded build placeholder\n"
-                f"app={b.get('name')} version={b.get('version')}\n").encode()
-        return self._send(200, body, ctype="application/vnd.android.package-archive",
-                          extra={"Content-Disposition": f'attachment; filename="{name}"'})
+        url = b.get("artifact_url") or ""
+        if url.startswith("http"):
+            return self._send(302, {}, extra={"Location": url})
+        # No real artefact: serve it from the storage bucket if configured.
+        store = os.environ.get("APP_ARTIFACT_BASE", "").rstrip("/")
+        if store:
+            name = (b.get("slug") or "app") + "-" + (b.get("version") or "1.0.0") + ".apk"
+            return self._send(302, {}, extra={"Location": store + "/" + name})
+        return self._send(404, {"error": "app artefact not available yet"})
 
     def _tenant_key(self):
         """C6: authenticate a caller via a tenant API key; returns key info or None."""
@@ -3211,7 +3293,6 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send(401, {"error": "invalid or missing API key"})
         key = getattr(self, "_api_key", {}) or {}
         scopes = key.get("scopes") or []
-        sandbox = bool(key.get("sandbox"))
         q = parse_qs(urlparse(self.path).query)
         one = lambda k, d=None: (q.get(k, [d])[0] if q.get(k) else d)
         status = 200
@@ -3239,12 +3320,6 @@ class Handler(SimpleHTTPRequestHandler):
                     prev = _svc("idempotency_lookup", {"p_key": idem, "p_user": uid})
                     if prev and prev != "null":
                         return self._send(200, prev)
-                # H4: sandbox keys get a simulated number + fake OTP, never billed.
-                if sandbox:
-                    res = self._sandbox_order(uid, cc, sv)
-                    if idem:
-                        _svc("idempotency_store", {"p_key": idem, "p_user": uid, "p_response": json.dumps(res)})
-                    return self._send(200, res)
                 if upstream_enabled():
                     try:
                         res = buy_real(cc.lower(), sv, user_id=uid, operator=body.get("operator"))
@@ -3284,13 +3359,6 @@ class Handler(SimpleHTTPRequestHandler):
             return
         st, data = supabase_rpc(fn, args, token=self._bearer())
         return self._send(st, data if data is not None else {})
-
-    def _sandbox_order(self, uid, country, service):
-        """H4: a fake order that never touches the provider or the wallet."""
-        code = f"{abs(hash((uid, country, service, time.time()))) % 900000 + 100000}"
-        return {"order_id": None, "phone_number": "+1 555 000 0000", "status": "received",
-                "country": country, "service": service, "sandbox": True,
-                "otp": code, "message": f"Sandbox code {code} (simulated, never billed)."}
 
     def _rpc_svc(self, fn, params):
         with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
