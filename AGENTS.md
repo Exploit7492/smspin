@@ -764,3 +764,37 @@ visible pixel is the `--page-bg` colour (looks like a black/blank screen).
 - Verify a build with headless Chromium (not just `curl`): check `document.title`,
   `document.body.innerText`, and for `pageerror` #423. `curl` returns the full
   HTML even when hydration fails, so a 200 + 100 KB response proves nothing.
+
+## Tenant branding is baked at build time (no FOUC) — 2026-11-13
+Routing to a tenant used to paint the platform brand ("SMSPin") first and flip
+to the tenant's own name/palette ~2s later, once `tenant-brand.js` finished an
+async `business_branding` RPC — a visible flash that made visitors associate the
+host with the platform. The brand is now resolved before first paint:
+- `scripts/vercel-build.mjs` calls the `tenant_brands()` RPC at build time and
+  bakes `window.SMSPIN_TENANT_BRANDS` into every public page, plus a small head
+  bootstrap that sets `<title>`, meta and the palette synchronously (the body is
+  not parsed yet at end of `<head>`) and hides the logo mark until
+  `tenant-brand.js` swaps it in.
+- `site/tenant-brand.js` reads the baked map (no RPC) and applies the palette as
+  **inline** custom properties on `.home`. A stylesheet rule loses to the
+  mirrored marketing CSS (`theme.css` repaints `.home` sky-blue in light mode;
+  the Next chunk sets the ruby `--red`), so inline is required.
+- The build stamps `/tenant-brand.js` and `/consent-log.js` with the commit sha:
+  `vercel.json` caches `.js` for a week, so an un-versioned re-skin script can
+  keep serving a stale tenant long after a deploy.
+- `site/` is committed **pre-build source** (still contains `smspin.io`, no brand
+  injection). Do not commit build output: run the build, test, then
+  `git checkout -- site/` and re-apply only the intended source edits.
+
+## Multi-tenant transactional email (one infra, per-tenant branding)
+All accounts — the platform and every store — send through ONE Novu environment,
+branded from `businesses` (name, colours, logo, support address). Adding a store
+needs no code change.
+- `email_queue.tenant_slug` records the brand; `email_sender(slug)` resolves the
+  full identity (NULL = platform). `email_enqueue(..., p_tenant_slug)` enqueues.
+- The Supabase Edge Function `email` drains the queue, renders the branded HTML
+  (`_shared/email_template.ts`) and hands it to Novu as `payload.html`, so Novu
+  only transports it. `pg_cron` drives it every minute via `smspin_dispatch_emails()`
+  (worker URL/key live in Vault, never in the repo).
+- Verify a real send by queueing with `email_enqueue` and reading `email_events`;
+  confirm the Novu message payload carries the tenant's brand name and colour.
