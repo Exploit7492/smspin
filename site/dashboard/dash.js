@@ -1972,7 +1972,9 @@
 
   async function renderTopUp() {
     try { WALLET = await SMSPIN.rpc("wallet_summary"); } catch (e) {}
-    const cur = (WALLET && WALLET.currency) || "NGN";
+    // KoraPay settles the charge in NGN and this page is NGN-denominated, so
+    // the amount, fee and balance shown here are all in NGN.
+    const cur = "NGN";
 
     let methods = TU_FALLBACK, feePercent = 2.5;
     try {

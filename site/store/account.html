@@ -35,8 +35,11 @@
           <h2>Fund your wallet</h2>
           <div class="ta-amt-row" id="amts"></div>
           <div class="ta-field"><label for="custom">Or enter an amount (₦)</label><input id="custom" type="number" min="100" step="50" placeholder="e.g. 2500"></div>
-          <button class="ta-btn" id="fundBtn">Pay with card / transfer</button>
-          <p class="ta-note">Secured by KoraPay. Your balance is stored on this store and is only spendable here.</p>
+          <div class="ta-field"><label id="methodsLbl">Payment method</label>
+            <div class="ta-method-row" id="methods" role="radiogroup" aria-labelledby="methodsLbl"></div>
+          </div>
+          <button class="ta-btn" id="fundBtn">Continue to payment</button>
+          <p class="ta-note" id="fundNote">Secured by KoraPay. Your balance is stored on this store and is only spendable here.</p>
         </div>
       </div>
       <div>
@@ -116,6 +119,39 @@
     document.getElementById('amts').appendChild(b);
   });
 
+  // Payment methods come from the backend so the storefront only offers the
+  // channels KoraPay actually enabled (card + bank transfer).
+  var METHODS = [{ id: "card", label: "Card", note: "Visa, Mastercard, Verve" },
+                 { id: "bank_transfer", label: "Bank transfer", note: "Instant NGN transfer" }];
+  var method = METHODS[0].id;
+  function renderMethods() {
+    var host = document.getElementById('methods');
+    if (!host) return;
+    host.innerHTML = METHODS.map(function (m) {
+      return '<button type="button" class="ta-method' + (m.id === method ? ' on' : '') + '" data-m="' + esc(m.id) + '" role="radio" aria-checked="' + (m.id === method) + '">' +
+        '<b>' + esc(m.label) + '</b><span>' + esc(m.note || '') + '</span></button>';
+    }).join('');
+    Array.prototype.forEach.call(host.querySelectorAll('.ta-method'), function (b) {
+      b.addEventListener('click', function () {
+        method = b.getAttribute('data-m');
+        Array.prototype.forEach.call(host.querySelectorAll('.ta-method'), function (x) {
+          var on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-checked', String(on));
+        });
+      });
+    });
+  }
+  fetch("/api/payment-methods").then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) {
+      if (d && Array.isArray(d.methods) && d.methods.length) {
+        METHODS = d.methods; method = METHODS[0].id;
+        if (d.fee_percent) {
+          var n = document.getElementById('fundNote');
+          if (n) n.textContent = "A " + d.fee_percent + "% processing fee applies. Secured by KoraPay; your balance is only spendable on this store.";
+        }
+      }
+      renderMethods();
+    }).catch(function () { renderMethods(); });
+
   document.getElementById('fundBtn').addEventListener('click', async function () {
     var amt = Number(document.getElementById('custom').value || 0);
     if (amt < 100) { TENANT_AUTH.show(msg, 'Enter at least ₦100', 'err'); return; }
@@ -123,7 +159,7 @@
     try {
       var res = await fetch("/api/payments/initialize", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount: amt, tenant_token: SMSPIN.tenant.token(S) })
+        body: JSON.stringify({ amount: amt, channel: method, tenant_token: SMSPIN.tenant.token(S) })
       });
       var d = await res.json();
       if (!res.ok || !d.checkout_url) throw new Error((d && d.error) || "Could not start payment");

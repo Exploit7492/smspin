@@ -3102,9 +3102,12 @@ class Handler(SimpleHTTPRequestHandler):
             if st != 200:
                 return self._send(400, {"error": "could not create payment", "detail": pay})
             reference = pay["reference"]
-            cc, cur, _ = geo_from_ip(self.headers.get("X-Forwarded-For", "").split(",")[0].strip() or self.client_address[0])
-            cc = (body.get("country") or cc or "NG").upper()
-            cur = (body.get("currency") or cur or "NGN").upper()
+            # KoraPay settles this charge in NGN and the store form is
+            # NGN-denominated, so the fee is 2.5% of the NGN amount. The
+            # visitor's geo currency is display-only and must not be applied
+            # here (a US-geolocated browser would otherwise be quoted a fee on
+            # a USD figure while being charged NGN).
+            cc, cur = "NG", "NGN"
             try:
                 q = pricing.quote(float(amount), cc, cur)
                 with db() as conn, conn.cursor() as cur2:
@@ -3150,9 +3153,10 @@ class Handler(SimpleHTTPRequestHandler):
         if st != 200:
             return self._send(400, {"error": "could not create payment", "detail": pay})
         reference = pay["reference"]
-        cc, cur, _ = geo_from_ip(self.headers.get("X-Forwarded-For", "").split(",")[0].strip() or self.client_address[0])
-        cc = (body.get("country") or cc or "NG").upper()
-        cur = (body.get("currency") or cur or "NGN").upper()
+        # The charge is settled in NGN (see korapay_init) and the top-up form is
+        # NGN-denominated, so the 2.5% fee is taken on the NGN amount. Geo
+        # currency is display-only and must not leak into the fee base.
+        cc, cur = "NG", "NGN"
         try:
             q = pricing.quote(float(amount), cc, cur)
             with db() as conn, conn.cursor() as cur2:
