@@ -231,6 +231,9 @@ SUPABASE_URL = os.environ["Smspin_Supabase_url"].rstrip("/")
 ANON_KEY = os.environ["Smspin_supabase_annonkey"]
 SERVICE_KEY = os.environ.get("Smspin_supabase_secretskey", "")
 PG_DSN = os.environ["Smspin_supabase_Postgresql"]
+# SMSPool is the default upstream provider; SMSPin is the fallback. Either key
+# alone is enough to run.
+SMSPOOL_KEY = os.environ.get("Smepool_token", "")
 SMSPIN_KEY = os.environ.get("Smspin_apikey", "")
 
 # Site-wide minimum sell price. Every buyer-facing price is a whole number of
@@ -430,9 +433,30 @@ def convert(amount_ngn, to):
 
 
 # =========================================================================
-# Upstream SMS provider (SMSPin) integration
+# Upstream SMS provider integration (SMSPool default, SMSPin fallback)
 # =========================================================================
-_SMS_CLIENT = smspin_api.SmspinClient(SMSPIN_KEY) if SMSPIN_KEY else None
+_SMS_CLIENT = (smspin_api.SmspinClient(primary_key=SMSPOOL_KEY, fallback_key=SMSPIN_KEY)
+               if (SMSPOOL_KEY or SMSPIN_KEY) else None)
+
+
+def load_service_names():
+    """Give the provider client our {code: name} map.
+
+    SMSPool keys services by their human name (e.g. 'WhatsApp'), not by our
+    short code, so the client needs the names to resolve a pair. Cheap to load
+    and only used for the default provider.
+    """
+    if _SMS_CLIENT is None:
+        return 0
+    try:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("select code, name from services")
+            mapping = {code: name for code, name in cur.fetchall()}
+        _SMS_CLIENT.set_service_names(mapping)
+        return len(mapping)
+    except Exception as e:
+        LOG.error("service_names_error", error=str(e)[:200])
+        return 0
 
 
 def upstream_enabled():
@@ -3145,6 +3169,9 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"SMSPin backend on :{PORT}  (korapay mode={KORA_MODE}, site={SITE_DIR})", flush=True)
+    print(f"upstream: default={'smspool' if SMSPOOL_KEY else '-'} "
+          f"fallback={'smspin.io' if SMSPIN_KEY else '-'}", flush=True)
+    load_service_names()
 
     def _warm_pricing():
         try:

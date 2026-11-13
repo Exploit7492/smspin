@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""SMSPin upstream API client (stdlib only).
+"""Upstream provider facade (stdlib only).
 
-Talks to the SMS provider at https://smspin.io/api/v1 with our own API key
-(secret `Smspin_apikey`). The provider fronts its API with Cloudflare, which
-rejects non-browser user agents (error 1010), so every request carries a
-browser User-Agent.
+The site is served by two upstream SMS providers:
 
-The API exposes no bulk catalog: price and availability are per
-(country, service) pair, so callers should query the pairs they need rather
-than expecting a full matrix.
+  * SMSPool (secret `Smepool_token`) — the DEFAULT provider. Its native client
+    lives in `smspool_api.py`.
+  * SMSPin (secret `Smspin_apikey`) — the FALLBACK provider. `SmspinIOClient`
+    below talks to https://smspin.io/api/v1.
+
+`SmspinClient` is the single entry point server.py uses. It tries the default
+provider first and transparently falls back to the other one whenever the
+default cannot serve a request (unknown country/service, no price, transport
+error). Both speak the same internal interface, so callers stay provider-blind.
+
+The smspin.io API exposes no bulk catalog: price and availability are per
+(country, service) pair. It fronts its API with Cloudflare, which rejects
+non-browser user agents (error 1010), so every request carries a browser
+User-Agent.
 """
 from __future__ import annotations
 
@@ -19,6 +27,8 @@ import time
 import urllib.error
 import urllib.request
 
+import smspool_api
+
 DEFAULT_BASE = "https://smspin.io/api/v1"
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
@@ -27,15 +37,12 @@ _CTX.check_hostname = False
 _CTX.verify_mode = ssl.CERT_NONE
 
 
-class SmspinError(Exception):
-    def __init__(self, status, message, body=None):
-        super().__init__(f"SMSPin API {status}: {message}")
-        self.status = status
-        self.message = message
-        self.body = body or {}
+# Errors are raised as smspool_api.SmspinError by both providers so call sites
+# can keep catching a single type.
+SmspinError = smspool_api.SmspinError
 
 
-class SmspinClient:
+class SmspinIOClient:
     def __init__(self, api_key, base=DEFAULT_BASE, timeout=30, retries=3):
         if not api_key:
             raise SmspinError(0, "missing API key")
@@ -96,13 +103,13 @@ class SmspinClient:
     def services(self, country=None):
         return self._get("/services", {"country": country}).get("services", [])
 
-    def operators(self, country, service):
+    def operators(self, country, service, service_name=None):
         return self._get("/operators", {"country": country, "service": service}).get("operators", [])
 
     def numbers(self, country=None, service=None):
         return self._get("/numbers", {"country": country, "service": service})
 
-    def live_price(self, country, service):
+    def live_price(self, country, service, service_name=None):
         """Live USD price + stock + operator breakdown for one (country, service).
 
         The provider's headline `price` is the *most expensive* operator tier,
@@ -134,7 +141,7 @@ class SmspinClient:
         }
 
     # ---- orders ----
-    def create_order(self, country, service, operator=None):
+    def create_order(self, country, service, operator=None, service_name=None):
         body = {"country": country, "service": service}
         if operator is not None:
             body["operator"] = int(operator)
@@ -167,8 +174,141 @@ if __name__ == "__main__":
     import os
     import urllib.parse  # noqa: F401  (used by _request)
 
-    c = SmspinClient(os.environ["Smspin_apikey"])
+    c = SmspinIOClient(os.environ["Smspin_apikey"])
     print("account:", c.account())
     print("countries:", len(c.countries()))
     print("services:", len(c.services()))
     print("live gb/wa:", json.dumps(c.live_price("gb", "wa"))[:300])
+
+
+# A provider "answer" that carries no usable data (no price / no rentals) is
+# treated like a miss so the facade tries the next provider.
+def _is_empty_result(method, result):
+    if not result:
+        return True
+    if method == "live_price":
+        return result.get("price_usd") is None
+    if method == "rent_prices":
+        return not result.get("countries") and not result.get("durations")
+    return False
+
+
+class SmspinClient:
+    """Provider-blind facade: SMSPool first, smspin.io as fallback.
+
+    Both providers implement the same method names. Read methods fall back
+    whenever the default provider errors or returns nothing useful; write
+    methods (create_*/cancel_*) fall back only on error, so we never double-book
+    an order that the default provider actually accepted.
+    """
+
+    def __init__(self, primary_key=None, fallback_key=None, service_names=None):
+        self.primary = smspool_api.SmspoolClient(primary_key) if primary_key else None
+        self.fallback = SmspinIOClient(fallback_key) if fallback_key else None
+        if self.primary is None and self.fallback is None:
+            raise SmspinError(0, "missing API key")
+        # Optional {code: name} map so SMSPool can resolve a service by its
+        # human name (SMSPool keys services by name, not by our short code).
+        self._names = service_names or {}
+
+    def set_service_names(self, mapping):
+        self._names = mapping or {}
+
+    def _name_for(self, service):
+        return self._names.get(service)
+
+    def _try(self, method, *args, **kwargs):
+        """Call `method` on the default provider, then the fallback.
+
+        Returns the first non-empty result. When a provider answers with an
+        empty result (no price / no rentals) the facade tries the next one, but
+        remembers it: if every provider answers empty, the last empty result is
+        returned so callers can still record a zero-stock pair. Only when every
+        provider *errors* does this raise.
+        """
+        providers = [p for p in (self.primary, self.fallback) if p is not None]
+        first_err = None
+        empty_result = None
+        for p in providers:
+            fn = getattr(p, method, None)
+            if fn is None:
+                continue
+            try:
+                result = fn(*args, **kwargs)
+            except SmspinError as e:
+                if first_err is None:
+                    first_err = e
+                continue
+            if _is_empty_result(method, result):
+                empty_result = result
+                continue
+            return result
+        if empty_result is not None:
+            return empty_result
+        if first_err is not None:
+            raise first_err
+        raise SmspinError(0, f"no provider implements {method}")
+
+    # ---- reference data ----
+    def account(self):
+        return self._try("account")
+
+    def countries(self):
+        return self._try("countries")
+
+    def services(self, country=None):
+        return self._try("services", country)
+
+    def operators(self, country, service):
+        return self._try("operators", country, service, service_name=self._name_for(service))
+
+    def numbers(self, country=None, service=None):
+        return self._try("numbers", country, service)
+
+    def pools(self):
+        return self._try("pools")
+
+    def order_status(self):
+        return self._try("order_status")
+
+    def live_price(self, country, service):
+        return self._try("live_price", country, service, service_name=self._name_for(service))
+
+    # ---- orders ----
+    def create_order(self, country, service, operator=None):
+        return self._try("create_order", country, service, operator,
+                         service_name=self._name_for(service))
+
+    def get_order(self, order_id):
+        return self._try("get_order", order_id)
+
+    def list_orders(self):
+        return self._try("list_orders")
+
+    def orders(self):
+        return self._try("orders")
+
+    def order_history(self):
+        return self._try("order_history")
+
+    def resend_order(self, order_id):
+        return self._try("resend_order", order_id)
+
+    def cancel_order(self, order_id):
+        return self._try("cancel_order", order_id)
+
+    # ---- rentals ----
+    def rent_prices(self, service, country=None):
+        return self._try("rent_prices", service, country)
+
+    def create_rental(self, service, country, duration, max_price=None):
+        return self._try("create_rental", service, country, duration, max_price)
+
+    def get_rental(self, rental_id):
+        return self._try("get_rental", rental_id)
+
+    def list_rentals(self):
+        return self._try("list_rentals")
+
+    def extend_rental(self, rental_id, days):
+        return self._try("extend_rental", rental_id, days)
