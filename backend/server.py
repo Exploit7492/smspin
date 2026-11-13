@@ -303,6 +303,15 @@ KORA_SECRET = os.environ["Kora_test_secrete_key"] if KORA_MODE == "test" else os
 KORA_PUBLIC = os.environ["Kora_test_public_key"] if KORA_MODE == "test" else os.environ["Kora_public_key"]
 KORA_BASE = "https://api.korapay.com/merchant/api/v1"
 
+# The only KoraPay channels this merchant account has enabled for NGN. Probed
+# against the live test key: "ussd"/"mobile_money" are rejected for NGN, so the
+# checkout must be restricted to these two or KoraPay returns a validation error.
+KORA_CHANNELS = [
+    {"id": "card", "label": "Card", "note": "Visa, Mastercard, Verve"},
+    {"id": "bank_transfer", "label": "Bank transfer", "note": "Instant NGN transfer"},
+]
+KORA_CHANNEL_IDS = {c["id"] for c in KORA_CHANNELS}
+
 # J9: environment identity. dev | staging | prod. Drives safe defaults so a
 # non-prod deploy can never take live payments or hit the live provider.
 ENVIRONMENT = os.environ.get("SMSPIN_ENV", "dev").lower()
@@ -375,14 +384,17 @@ def _valid_pay_email(email):
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", email)) and tld not in {"local", "test", "invalid", "example", "localhost"}
 
 
-def korapay_init(reference, amount, email, name, redirect_url, notification_url):
+def korapay_init(reference, amount, email, name, redirect_url, notification_url, channels=None):
+    body = {"amount": int(round(float(amount))), "currency": "NGN", "reference": reference,
+            "redirect_url": redirect_url, "notification_url": notification_url,
+            "customer": {"name": name or "SMSPin User", "email": email},
+            "narration": "SMSPin wallet top-up"}
+    if channels:
+        body["channels"] = list(channels)
     return http_json(
         f"{KORA_BASE}/charges/initialize", "POST",
         {"Authorization": "Bearer " + KORA_SECRET, "Content-Type": "application/json"},
-        {"amount": int(round(float(amount))), "currency": "NGN", "reference": reference,
-         "redirect_url": redirect_url, "notification_url": notification_url,
-         "customer": {"name": name or "SMSPin User", "email": email},
-         "narration": "SMSPin wallet top-up"})
+        body)
 
 
 def korapay_verify(reference):
@@ -1958,6 +1970,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send(200, art)
         if path == "/api/rails":
             return self._send(200, {"rails": _svc("payment_rails", {})})
+        if path == "/api/payment-methods":
+            return self._send(200, {"methods": KORA_CHANNELS, "provider": "korapay",
+                                    "mode": KORA_MODE, "currency": "NGN",
+                                    "fee_percent": pricing.FEE_PERCENT})
         if path == "/api/wallet/export":
             return self.api_wallet_export()
         if path == "/api/audit":
@@ -3066,6 +3082,14 @@ class Handler(SimpleHTTPRequestHandler):
         if not amount or float(amount) <= 0:
             return self._send(400, {"error": "invalid amount"})
 
+        # Restrict to the channels KoraPay actually enabled for this account.
+        # An unknown channel is rejected rather than silently ignored, so the
+        # UI can never advertise a method the provider will not honour.
+        channel = (body.get("channel") or body.get("method") or "card").strip().lower()
+        if channel not in KORA_CHANNEL_IDS:
+            return self._send(400, {"error": "unsupported payment method",
+                                    "allowed": sorted(KORA_CHANNEL_IDS)})
+
         # Tenant (white-label store) payments carry an opaque tenant session token
         # instead of a Supabase bearer token, so the SAME email can fund each tenant.
         tenant_token = body.get("tenant_token") or self.headers.get("x-tenant-token")
@@ -3085,9 +3109,9 @@ class Handler(SimpleHTTPRequestHandler):
                 q = pricing.quote(float(amount), cc, cur)
                 with db() as conn, conn.cursor() as cur2:
                     cur2.execute("select set_payment_fee(%s,%s,%s)",
-                                 (reference, q["fee_ngn"], json.dumps({"ppp": q["ppp_factor"], "usd_ngn": q["usd_ngn"], "country": cc, "currency": cur})))
-            except Exception:
-                pass
+                                 (reference, q["fee_ngn"], json.dumps({"usd_ngn": q["usd_ngn"], "country": cc, "currency": cur})))
+            except Exception as e:
+                LOG.warn("set_payment_fee_failed", reference=reference, error=str(e))
             email = me.get("email") or ""
             if not _valid_pay_email(email):
                 email = f"tenant-{me.get('account_id','anon')}@smspin.io"
@@ -3097,13 +3121,15 @@ class Handler(SimpleHTTPRequestHandler):
             proto = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
             redirect_url = f"{proto}://{host}/store/{slug}/?ref={reference}"
             notify_url = f"{proto}://{host}/api/korapay/webhook"
-            st, init = korapay_init(reference, amount, email, name, redirect_url, notify_url)
+            st, init = korapay_init(reference, amount, email, name, redirect_url, notify_url,
+                                    channels=[channel])
             if st != 200 or not init.get("status"):
                 return self._send(502, {"error": "korapay init failed", "detail": init})
             checkout_url = init["data"]["checkout_url"]
             with db() as conn, conn.cursor() as cur:
                 cur.execute("select tenant_set_payment_checkout(%s,%s,%s)",
                             (reference, checkout_url, init["data"].get("reference")))
+                cur.execute("update payments set channel=%s where reference=%s", (channel, reference))
             return self._send(200, {"reference": reference, "checkout_url": checkout_url,
                                     "public_key": KORA_PUBLIC, "mode": KORA_MODE})
 
@@ -3131,16 +3157,17 @@ class Handler(SimpleHTTPRequestHandler):
             q = pricing.quote(float(amount), cc, cur)
             with db() as conn, conn.cursor() as cur2:
                 cur2.execute("select set_payment_fee(%s,%s,%s)",
-                             (reference, q["fee_ngn"], json.dumps({"ppp": q["ppp_factor"], "usd_ngn": q["usd_ngn"], "country": cc, "currency": cur})))
-        except Exception:
-            pass
+                             (reference, q["fee_ngn"], json.dumps({"usd_ngn": q["usd_ngn"], "country": cc, "currency": cur})))
+        except Exception as e:
+            LOG.warn("set_payment_fee_failed", reference=reference, error=str(e))
 
         host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or f"localhost:{PORT}"
         proto = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
         redirect_url = f"{proto}://{host}/dashboard/wallet/?ref={reference}"
         notify_url = f"{proto}://{host}/api/korapay/webhook"
 
-        st, init = korapay_init(reference, amount, email, name, redirect_url, notify_url)
+        st, init = korapay_init(reference, amount, email, name, redirect_url, notify_url,
+                                channels=[channel])
         if st != 200 or not init.get("status"):
             return self._send(502, {"error": "korapay init failed", "detail": init})
         checkout_url = init["data"]["checkout_url"]
@@ -3149,6 +3176,7 @@ class Handler(SimpleHTTPRequestHandler):
             with conn.cursor() as cur:
                 cur.execute("select set_payment_checkout(%s,%s,%s)",
                             (reference, checkout_url, init["data"].get("reference")))
+                cur.execute("update payments set channel=%s where reference=%s", (channel, reference))
         return self._send(200, {"reference": reference, "checkout_url": checkout_url,
                                 "public_key": KORA_PUBLIC, "mode": KORA_MODE})
 

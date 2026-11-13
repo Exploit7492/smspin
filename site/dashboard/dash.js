@@ -1954,54 +1954,49 @@
     window.__smsTimer = setInterval(tick, 1000);
   }
 
-  // ===== Top Up (Billing · Top up) =====
+  // ===== Top Up (Billing · Add funds) =====
+  // The methods shown are the channels KoraPay actually enabled for this
+  // merchant (card + bank transfer), fetched from the backend so the UI can
+  // never advertise a method the provider would reject.
   const TU_ICON = {
-    crypto: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 5v10l-8 5-8-5V7z"/><path d="M12 8v8M9.5 10h4a1.5 1.5 0 0 1 0 3h-3a1.5 1.5 0 0 0 0 3H14"/></svg>',
-    crypto2: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 9.5 12 14l3-4.5M9 14.5h6"/></svg>',
-    binance: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l3 3-3 3-3-3zM12 15l3 3-3 3-3-3zM3 12l3-3 3 3-3 3zM15 12l3-3 3 3-3 3z"/></svg>',
-    local: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/></svg>',
+    card: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/><path d="M6 15h4"/></svg>',
+    bank_transfer: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10 12 4l9 6"/><path d="M5 10v9M9.5 10v9M14.5 10v9M19 10v9"/><path d="M3 20h18"/></svg>',
   };
-  const TU_METHODS = [
-    { id: "crypto", label: "Crypto", note: "Usually confirms in minutes", note2: "Crypto payments are credited after 1 confirmation. Fast top-ups with no lengthy signup." },
-    { id: "crypto2", label: "Crypto 2", note: "60+ coins supported", note2: "60+ coins via our second crypto gateway, credited after 1 confirmation." },
-    { id: "binance", label: "Binance Pay", note: "BNB · USDT · BUSD", note2: "Pay from Binance Pay; credited instantly after the transfer confirms." },
-    { id: "local", label: "Card", note: "Instant", note2: "Card and local wallet payments. Your balance updates the moment it clears." },
+  const TU_FALLBACK = [
+    { id: "card", label: "Card", note: "Visa, Mastercard, Verve" },
+    { id: "bank_transfer", label: "Bank transfer", note: "Instant NGN transfer" },
   ];
-  const TU_AMOUNTS = [
-    { usd: 5, bonus: 0, pct: 0 },
-    { usd: 10, bonus: 0.5, pct: 5 },
-    { usd: 25, bonus: 2, pct: 8, tag: "Popular" },
-    { usd: 50, bonus: 5, pct: 10 },
-    { usd: 100, bonus: 11, pct: 11 },
-    { usd: 250, bonus: 30, pct: 12 },
-    { usd: 500, bonus: 65, pct: 13, tag: "Best value" },
-    { usd: 1000, bonus: 140, pct: 14 },
-    { usd: 5000, bonus: 750, pct: 15 },
-  ];
-  const TU_PRESETS = [5, 10, 25, 50];
-  const fmtUsd = n => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const TU_PRESETS = [1000, 2000, 5000, 10000];
+  const TU_DEFAULT = 5000;
+  const fmtNgn = n => "\u20a6" + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
 
   async function renderTopUp() {
     try { WALLET = await SMSPIN.rpc("wallet_summary"); } catch (e) {}
     const cur = (WALLET && WALLET.currency) || "NGN";
-    const usd = GEO && GEO.currency === "USD" ? 1 : await usdRate();
 
-    let method = "crypto", amount = 10;
+    let methods = TU_FALLBACK, feePercent = 2.5;
+    try {
+      const r = await fetch("/api/payment-methods");
+      if (r.ok) {
+        const d = await r.json();
+        if (d && Array.isArray(d.methods) && d.methods.length) methods = d.methods;
+        if (d && d.fee_percent) feePercent = Number(d.fee_percent);
+      }
+    } catch (e) {}
 
-    const methods = document.getElementById("tuMethods");
-    if (methods) {
-      methods.innerHTML = TU_METHODS.map(m =>
-        '<button type="button" class="tu-m' + (m.id === method ? " on" : "") + '" data-m="' + m.id + '">' +
-          '<span class="ic" aria-hidden="true">' + TU_ICON[m.id] + "</span>" +
-          '<span class="tx"><b>' + esc(m.label) + "</b><small>" + esc(m.note) + "</small></span>" +
+    let method = methods[0].id, amount = TU_DEFAULT, fee = null, feeAmt = -1;
+
+    const methodsEl = document.getElementById("tuMethods");
+    if (methodsEl) {
+      methodsEl.innerHTML = methods.map((m, i) =>
+        '<button type="button" class="tu-m' + (m.id === method ? " on" : "") + '" data-m="' + esc(m.id) + '">' +
+          '<span class="ic" aria-hidden="true">' + (TU_ICON[m.id] || TU_ICON.card) + "</span>" +
+          '<span class="tx"><b>' + esc(m.label) + "</b><small>" + esc(m.note || "") + "</small></span>" +
           '<span class="rd" aria-hidden="true"></span>' +
         "</button>").join("");
-      $$(".tu-m", methods).forEach(b => b.addEventListener("click", () => {
+      $$(".tu-m", methodsEl).forEach(b => b.addEventListener("click", () => {
         method = b.dataset.m;
-        $$(".tu-m", methods).forEach(x => x.classList.toggle("on", x === b));
-        const m = TU_METHODS.find(x => x.id === method);
-        const note = document.getElementById("tuMethodNote");
-        if (note && m) note.textContent = m.note2;
+        $$(".tu-m", methodsEl).forEach(x => x.classList.toggle("on", x === b));
         summary();
       }));
     }
@@ -2019,58 +2014,59 @@
     const presetsEl = document.getElementById("tuPresets");
     function paintPresets() {
       if (!presetsEl) return;
-      presetsEl.innerHTML = TU_PRESETS.map(v => {
-        const a = TU_AMOUNTS.find(x => x.usd === v) || { bonus: 0 };
-        return '<button type="button" class="tu-pre' + (a.usd === amount ? " on" : "") + '" data-usd="' + v + '">' +
-          "<b>$" + v.toLocaleString() + "</b>" +
-          (a.bonus ? "<span>+$" + a.bonus.toLocaleString() + "</span>" : "") + "</button>";
-      }).join("");
+      presetsEl.innerHTML = TU_PRESETS.map(v =>
+        '<button type="button" class="tu-pre' + (v === amount ? " on" : "") + '" data-v="' + v + '">' +
+          "<b>" + fmtNgn(v) + "</b></button>").join("");
       $$(".tu-pre", presetsEl).forEach(b => b.addEventListener("click", () => {
-        amount = Number(b.dataset.usd);
+        amount = Number(b.dataset.v);
         if (amtInp) amtInp.value = String(amount);
         paintPresets(); summary();
       }));
     }
     paintPresets();
 
-    function bonusFor(usdAmt) {
-      let best = { bonus: 0, pct: 0 };
-      for (const a of TU_AMOUNTS) if (usdAmt >= a.usd) best = { bonus: a.bonus, pct: a.pct };
-      return best;
+    // Live fee from the same engine that stamps the payment (flat 2.5%).
+    function quote() {
+      if (!(amount > 0) || feeAmt === amount) return;
+      feeAmt = amount;
+      fetch("/api/funding/quote?amount=" + encodeURIComponent(amount) + "&currency=" + encodeURIComponent(cur))
+        .then(r => r.ok ? r.json() : null)
+        .then(q => { if (q && feeAmt === amount) { fee = q; summary(); } })
+        .catch(() => {});
     }
+
     function summary() {
-      const exact = TU_AMOUNTS.find(a => a.usd === amount);
-      const b = exact || bonusFor(amount);
-      const bonus = exact ? b.bonus : amount * (b.pct / 100);
-      const total = amount + bonus;
+      const gross = amount > 0 ? amount : 0;
+      const f = fee && fee.amount === gross ? Number(fee.fee) : gross * feePercent / 100;
+      const net = Math.max(gross - f, 0);
       const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-      set("tuSumAmount", fmtUsd(amount));
-      set("tuSumBonus", "+" + fmtUsd(bonus));
-      set("tuSumTotal", fmtUsd(total));
-      set("tuSumTotal2", fmtUsd(total));
-      const row = document.getElementById("tuSumBonusRow");
-      if (row) row.hidden = !(bonus > 0);
-      const lbl = document.getElementById("tuSumBonusLabel");
-      if (lbl) lbl.textContent = "Bonus" + (b.pct ? " (" + b.pct + "%)" : "");
-      const m = TU_METHODS.find(x => x.id === method) || TU_METHODS[0];
+      set("tuSumAmount", money(gross, cur));
+      set("tuSumFee", "\u2212" + money(f, cur));
+      set("tuSumFeeLbl", "Processing fee (" + feePercent + "%)");
+      set("tuSumTotal", money(net, cur));
+      set("tuSumTotal2", money(net, cur));
+      const m = methods.find(x => x.id === method) || methods[0];
       set("tuSumMethod", m.label);
       const btn = document.getElementById("tuBtn");
-      if (btn) btn.disabled = !(amount > 0);
+      if (btn) btn.innerHTML = "Pay " + money(gross, cur) +
+        ' <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>';
+      if (btn) btn.disabled = !(gross >= 100);
+      quote();
     }
     summary();
 
     const btn = document.getElementById("tuBtn");
     if (btn) btn.addEventListener("click", async () => {
-      if (!(amount > 0)) { toast("Enter an amount", "err"); return; }
+      if (!(amount >= 100)) { toast("Enter at least \u20a6100", "err"); return; }
       btn.disabled = true;
       const html = btn.innerHTML;
-      btn.textContent = "Redirecting to checkout…";
+      btn.textContent = "Redirecting to checkout\u2026";
       try {
         const sess = SMSPIN.getSession();
         const res = await fetch("/api/payments/initialize", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: "Bearer " + (sess && sess.access_token || "") },
-          body: JSON.stringify({ amount: Math.round(amount * usd), currency: cur,
+          body: JSON.stringify({ amount: Math.round(amount), channel: method, currency: cur,
             country: (GEO && GEO.country) || undefined }),
         });
         const d = await res.json();
@@ -2088,13 +2084,14 @@
         body.innerHTML = '<p class="muted">No payments yet. Your invoices will appear here.</p>';
         return;
       }
+      const methodLabel = id => (methods.find(m => m.id === id) || {}).label || (id === "bank_transfer" ? "Bank transfer" : "Card");
       body.innerHTML = rows.map(p => {
-        const inv = String(p.reference || "").slice(0, 12) + "…";
+        const inv = String(p.reference || "").slice(0, 12) + "\u2026";
         const st = p.status === "success" ? "Completed" : p.status === "pending" ? "Pending" : "Cancelled";
         const cls = p.status === "success" ? "ok" : p.status === "pending" ? "wait" : "err";
         return '<div class="tu-inv-row">' +
           '<span class="tu-inv-ref" title="' + esc(p.reference || "") + '">' + esc(inv) + "</span>" +
-          '<span>' + esc((p.provider || "—").replace(/^./, c => c.toUpperCase())) + "</span>" +
+          '<span>' + esc(p.channel ? methodLabel(p.channel) : "KoraPay") + "</span>" +
           '<span>' + money(p.amount, p.currency || cur) + "</span>" +
           '<span><span class="badge ' + cls + '">' + st + "</span></span>" +
           '<span class="tu-inv-date">' + esc(fmtDate(p.created_at)) + "</span></div>";
@@ -2103,16 +2100,6 @@
     const refresh = document.getElementById("tuRefresh");
     if (refresh) refresh.addEventListener("click", paintPayments);
     await paintPayments();
-  }
-
-  async function usdRate() {
-    try {
-      const r = await fetch("/api/fx?to=USD&amount=" + ((WALLET && WALLET.balance) || 1));
-      const d = await r.json();
-      const rate = Number(d && d.amount) || 1;
-      const perUsd = ((WALLET && WALLET.balance) || 1) / rate;
-      return perUsd > 0 ? perUsd : 1;
-    } catch (e) { return 1; }
   }
 
   // ===== History (Orders) =====

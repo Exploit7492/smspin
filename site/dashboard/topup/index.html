@@ -28,9 +28,9 @@
 <section class="tu-card">
   <div class="tu-lbl"><span class="tu-step-n">1</span>Amount</div>
   <div class="tu-amt-wrap" id="tuAmtWrap">
-    <span class="tu-cur">$</span>
-    <input id="tuAmt" class="tu-amt-input" type="text" inputmode="decimal" value="10" aria-label="Amount in USD">
-    <em class="tu-unit">USD</em>
+    <span class="tu-cur">₦</span>
+    <input id="tuAmt" class="tu-amt-input" type="text" inputmode="decimal" value="5000" aria-label="Amount in Nigerian Naira">
+    <em class="tu-unit">NGN</em>
   </div>
   <div class="tu-presets" id="tuPresets"></div>
 </section>
@@ -38,18 +38,17 @@
 <section class="tu-card">
   <div class="tu-lbl"><span class="tu-step-n">2</span>Payment method</div>
   <div class="tu-methods" id="tuMethods"></div>
-  <p class="tu-note" id="tuMethodNote">Crypto payments are credited after 1 confirmation. Fast top-ups with no lengthy signup.</p>
+  <p class="tu-note" id="tuMethodNote">Pay by card or instant bank transfer. Your balance updates automatically once KoraPay confirms the payment.</p>
 </section>
 
 <section class="tu-card">
   <div class="tu-lbl"><span class="tu-step-n">3</span>Summary</div>
   <div class="tu-sum" id="tuSummary">
-    <div class="tu-row"><span>Amount</span><b id="tuSumAmount">$0.00</b></div>
-    <div class="tu-row" id="tuSumBonusRow" hidden><span id="tuSumBonusLabel">Bonus</span><b class="tu-ok" id="tuSumBonus">+$0.00</b></div>
-    <div class="tu-row"><span>Method</span><b id="tuSumMethod">Crypto</b></div>
-    <div class="tu-row"><span>Processing fee</span><b>$0.00</b></div>
-    <div class="tu-row tu-tot"><span>You pay</span><b id="tuSumTotal">$0.00</b></div>
-    <b id="tuSumTotal2" hidden>$0.00</b>
+    <div class="tu-row"><span>Amount</span><b id="tuSumAmount">₦0</b></div>
+    <div class="tu-row"><span>Method</span><b id="tuSumMethod">Card</b></div>
+    <div class="tu-row"><span id="tuSumFeeLbl">Processing fee (2.5%)</span><b id="tuSumFee">₦0</b></div>
+    <div class="tu-row tu-tot"><span>Credited to wallet</span><b id="tuSumTotal">₦0</b></div>
+    <b id="tuSumTotal2" hidden>₦0</b>
   </div>
 </section>
 
@@ -70,9 +69,10 @@
   <div class="tu-lbl">Frequently asked</div>
   <div class="tu-faq" id="tuFaq">
     <details><summary>Will my balance expire?</summary><p>No. Your balance never expires and carries over indefinitely until you spend it.</p></details>
-    <details><summary>Are there any fees?</summary><p>No top-up fees. You are only charged for the SMS codes you actually receive.</p></details>
+    <details><summary>Which payment methods can I use?</summary><p>Debit and credit cards (Visa, Mastercard, Verve) and instant NGN bank transfer, both handled securely by KoraPay. The amount you top up is charged in Nigerian Naira (₦).</p></details>
+    <details><summary>Are there any fees?</summary><p>A flat 2.5% processing fee applies to every top-up; the summary above shows exactly what reaches your wallet. You are then only charged for the SMS codes you actually receive.</p></details>
+    <details><summary>How fast is my balance credited?</summary><p>Card and bank-transfer payments are credited automatically the moment KoraPay confirms them — usually within seconds. You never need to send us a receipt.</p></details>
     <details><summary>Can I get an invoice / VAT receipt?</summary><p>Yes. Every payment generates an invoice in the table above — contact support@smspin.io for a VAT receipt.</p></details>
-    <details><summary>Is crypto separate?</summary><p>Crypto top-ups are credited after 1 network confirmation. Crypto balance is spent the same way as any other funds.</p></details>
     <details><summary>What if a payment fails?</summary><p>Failed payments are never charged. If a charge fails after authorisation, it is reversed automatically within a few days.</p></details>
   </div>
 </section>

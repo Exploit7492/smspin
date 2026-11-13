@@ -509,7 +509,6 @@ table.tbl td.strong { color:var(--text-primary); font-weight:600; }
 .tu-sum { position: relative; z-index: 1; }
 .tu-row { display: flex; justify-content: space-between; padding: 9px 0; font-size: 14px; color: var(--text-secondary); }
 .tu-row b { color: var(--text-primary); font-weight: 600; }
-.tu-row .tu-ok { color: var(--ok, #2db45a); }
 .tu-tot { border-top: 1px dashed var(--glass-border); margin-top: 6px; padding-top: 14px; font-size: 16px; }
 .tu-tot b { font-size: 22px; font-weight: 800; }
 
