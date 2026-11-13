@@ -707,3 +707,39 @@ to their store. One set of files serves everyone; a UI change lands on all store
 
 **Demo:** `python scripts/seed-demo-tenant.py` seeds store `zenith-verify`; sign in at
 `/store/zenith-verify/login/` with `demo@smspin.local` / `StoreDemo123!`.
+
+## Production deployment (Vercel static host + Supabase)
+
+- **Product URL:** `https://smspin.vercel.app`. Vercel project `smspin`
+  (`prj_mJP7pAG7f00ONeprhwQva5fjW30s`, team `team_hC0ECJbEyal5BgAUlIvxPYCL`),
+  git-linked to `Exploit7492/smspin` (repo id `1454140163`).
+- **Do not deploy with the Vercel CLI.** The repo is ~12k files; CLI upload hits the
+  5000-files/day limit. Create Git-sourced deploys via the REST API instead:
+  `POST /v13/deployments?forceNew=1` with
+  `{"name":"smspin","project":"<prj>","target":"production","gitSource":{"type":"github","repoId":1454140163,"ref":"<branch>"}}`.
+  A production-targeted Git deploy takes the `smspin.vercel.app` alias automatically.
+- **Static tenant routing:** the Python backend stamped `window.SMSPIN_TENANT_SLUG/BASE`
+  per request; the static host cannot, so `scripts/vercel-build.mjs` injects a
+  bootstrap that derives the slug from `/store/<slug>/...` at runtime, or from the
+  host via the baked-in `tenant_domains()` map (white-label domains).
+- **Deep routes:** every tenant page lives under `/store/<slug>/...`. `vercel.json`
+  has rewrite rules for depth 1–3 (`/store/:slug`, `/:page`, `/:dir/:page`,
+  `/:dir/:sub/:page`, each with/without trailing slash) pointing at the real
+  `/<path>/index.html`. Filesystem files (e.g. `/store/login.html`) take precedence
+  over rewrites. Add a rule if a new marketing route depth appears.
+- **Build env:** `scripts/vercel-build.mjs` fails the build if `SUPABASE_URL` /
+  `SUPABASE_ANON_KEY` are unset, and if any sandbox URL (`:12000`,
+  `*.prod-runtime.all-hands.dev`, `*.onrender.com`) leaks into a text asset.
+  `SITE_URL` (default `https://smspin.vercel.app`) drives robots/sitemap/config.
+- **Edge functions:** deploy each with
+  `npx supabase functions deploy <name> --project-ref sdoykujqzpppwpropsdo --yes`.
+  `email`, `api`, `funding`, `purchase` are live. `SMSPIN_SITE_URL` secret = the
+  Vercel product URL.
+- **Email is fully multi-tenant:** `email_sender(slug)` resolves name/logo/colours/
+  tagline/footer/reply-to; both renderers (`_shared/email_template.ts` and
+  `backend/email_template.py`) produce branded HTML, passed to Novu as
+  `{{payload.html}}` / `{{payload.subject}}`. Verified per tenant via the Novu
+  notifications API.
+- **Tests need a fresh backend.** `python3 backend/server.py` caches bytecode; a
+  long-running instance keeps serving old code and can 500 on routes the current
+  source handles. Restart it before running `pytest tests/` (124 passed, 3 skipped).
