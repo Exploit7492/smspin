@@ -15,6 +15,7 @@ import json
 import gzip
 import hmac
 import time
+import shutil
 import hashlib
 import ssl
 import threading
@@ -32,6 +33,9 @@ import smspin_api  # upstream SMS provider client
 import mailer  # transactional email (SMTP)
 
 SITE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "site")
+# Session handoff artifacts (repo bundle + notes) staged for a follow-up session
+# to download. Kept outside the repo; set SMSPIN_HANDOFF_DIR to relocate.
+HANDOFF_DIR = os.environ.get("SMSPIN_HANDOFF_DIR", "/workspace/handoff")
 PORT = int(os.environ.get("PORT", "12000"))
 # G1: canonical host used for sitemap URLs and robots.txt's Sitemap directive.
 SITE_URL = os.environ.get("SMSPIN_SITE_URL", "https://smspin.io").rstrip("/")
@@ -1788,6 +1792,44 @@ class Handler(SimpleHTTPRequestHandler):
         _LD_CACHE[key] = out
         return out
 
+    def _serve_handoff(self, name, head=False):
+        """Stream a staged handoff artifact (repo bundle / tar / notes).
+
+        Reads from HANDOFF_DIR only, refuses path traversal, and supports a
+        conditional GET via ETag so a resumed download is cheap.
+        """
+        name = os.path.basename(name or "")
+        if not name:
+            return self._send(404, {"error": "not found"})
+        candidate = os.path.join(HANDOFF_DIR, name)
+        try:
+            f = open(candidate, "rb")
+        except OSError:
+            return self._send(404, {"error": "not found"})
+        st = os.fstat(f.fileno())
+        etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        if self.headers.get("If-None-Match") == etag:
+            f.close()
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.end_headers()
+            return None
+        ctype = "application/octet-stream"
+        if name.endswith(".md"):
+            ctype = "text/markdown; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(st.st_size))
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if head:
+            f.close()
+            return None
+        shutil.copyfileobj(f, self.wfile)
+        f.close()
+
     def _serve_static_file(self, candidate):
         try:
             f = open(candidate, "rb")
@@ -1913,6 +1955,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             return
+        if path.startswith("/handoff/"):
+            return self._serve_handoff(path[len("/handoff/"):], head=True)
         self._resolve_virtual_path()
         f = self.send_head()
         if f:
@@ -1926,6 +1970,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send(200, build_robots(), "text/plain; charset=utf-8")
         if path == "/sitemap.xml":
             return self._send(200, build_sitemap(), "application/xml; charset=utf-8")
+        # Session handoff: stream the staged repo bundle / notes as a download.
+        if path.startswith("/handoff/"):
+            return self._serve_handoff(path[len("/handoff/"):])
         # Alias legacy marketing links onto the real dashboard routes.
         if path == "/dashboard/referral":
             self.send_response(301)
