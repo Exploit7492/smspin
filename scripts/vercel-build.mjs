@@ -47,13 +47,34 @@ const SKIP = [/(^|\/)\.git\//, /node_modules/, /\.map$/];
 // page it served (window.SMSPIN_TENANT_SLUG/BASE) so the shared dashboard/admin
 // code and tenant-brand.js knew which store they were rendering. A static host
 // cannot do that per request, so the bootstrap below derives the slug from the
-// URL path (/store/<slug>/...) in the browser, before any app script runs.
+// URL path (/store/<slug>/...) in the browser, before any app script runs, and
+// from the host for a white-label custom domain (map baked in at build time).
 //
 // Faithful to the backend's split: the slug bootstrap goes on every page (it is
 // a no-op off /store/<slug>/), while the re-skin script and consent log go only
 // on the public marketing pages — the dashboard/admin re-brand themselves from
 // site_config and must not have their links rewritten underneath them.
-const BOOT = `<script>(function(){try{var m=location.pathname.match(/^\\/store\\/([^\\/?#.]+)(?:\\/|$)/);if(!m)return;var s=decodeURIComponent(m[1]);if(s==="login"||s==="register"||s==="account"||s==="index")return;if(!window.SMSPIN_TENANT_SLUG){window.SMSPIN_TENANT_SLUG=s;window.SMSPIN_TENANT_BASE="/store/"+s;}}catch(e){}})();</script>`;
+function tenantBoot(domains) {
+  const map = Object.keys(domains).length ? JSON.stringify(domains) : "null";
+  return `<script>(function(){try{var D=${map};var host=location.hostname.toLowerCase();var s=D&&D[host]?D[host]:null;var custom=!!s;if(!s){var m=location.pathname.match(/^\\/store\\/([^\\/?#.]+)(?:\\/|$)/);if(!m)return;s=decodeURIComponent(m[1]);if(s==="login"||s==="register"||s==="account"||s==="index")return;}if(!window.SMSPIN_TENANT_SLUG){window.SMSPIN_TENANT_SLUG=s;window.SMSPIN_TENANT_BASE=custom?"":"/store/"+s;}}catch(e){}})();</script>`;
+}
+
+// Active white-label domains, resolved to their store slug, so a visitor on a
+// tenant's own domain is recognised without a server. Read at build time via the
+// public RPC; a failure is non-fatal (falls back to /store/<slug> routing).
+async function fetchTenantDomains() {
+  try {
+    const r = await fetch(`${SUPA_URL}/rest/v1/rpc/tenant_domains`, {
+      method: "POST",
+      headers: { apikey: ANON, Authorization: `Bearer ${ANON}`, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!r.ok) return {};
+    const j = await r.json();
+    return j && typeof j === "object" ? j : {};
+  } catch { return {}; }
+}
+const BOOT = tenantBoot(await fetchTenantDomains());
 const BRAND_SRC = `<script src="/tenant-brand.js" defer></script>`;
 const CONSENT_SRC = `<script src="/consent-log.js" defer></script>`;
 
@@ -111,7 +132,6 @@ function injectTenantBootstrap(html, rel) {
   }
   return out === html ? null : out;
 }
-
 function walk(dir) {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
