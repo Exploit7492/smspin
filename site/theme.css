@@ -44,6 +44,13 @@
   --text-primary: #0f172a;
   --text-secondary: #46536b;
   --text-muted: #7c8798;
+  /* The cookie-consent banner (a Next.js chunk rendered at body level) reads
+     --ink/--muted, which are otherwise only defined inside .home. Define them
+     globally so the banner is legible on every surface, in both schemes. */
+  --ink: #0f172a;
+  --ink-muted: rgba(15, 23, 42, .70);
+  --ink-soft: rgba(15, 23, 42, .52);
+  --muted: #475569;
 
   /* Brand (ruby) — the app's own red, used by dashboard chrome + app surfaces.
      Defined here (not hardcoded per rule) so every surface follows the theme. */
@@ -98,6 +105,10 @@
   --text-primary: #f3f5fa;
   --text-secondary: #b9c0d0;
   --text-muted: #8b93a7;
+  --ink: #f3f5fa;
+  --ink-muted: rgba(243, 245, 250, .72);
+  --ink-soft: rgba(243, 245, 250, .52);
+  --muted: #b9c0d0;
   --shadow-sm: 0 4px 18px rgba(0, 0, 0, .45);
   --shadow-md: 0 10px 34px rgba(0, 0, 0, .50);
   --shadow-lg: 0 20px 60px rgba(0, 0, 0, .60);
@@ -151,6 +162,10 @@
     --text-primary: #f3f5fa;
     --text-secondary: #b9c0d0;
     --text-muted: #8b93a7;
+    --ink: #f3f5fa;
+    --ink-muted: rgba(243, 245, 250, .72);
+    --ink-soft: rgba(243, 245, 250, .52);
+    --muted: #b9c0d0;
     --shadow-sm: 0 4px 18px rgba(0, 0, 0, .45);
     --shadow-md: 0 10px 34px rgba(0, 0, 0, .50);
     --shadow-lg: 0 20px 60px rgba(0, 0, 0, .60);

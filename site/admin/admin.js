@@ -469,16 +469,13 @@
         r.steps.map(s => "<li>" + esc(s) + "</li>").join("") + "</ol></details>").join("") + "</div>";
   };
 
-  // O15 admin onboarding tour trigger.
+  // O15 admin onboarding runbooks.
   tabs.onboarding = async (root) => {
     root.innerHTML = '<div class="adm-card"><div class="k">Admin onboarding</div>' +
-      '<p class="adm-note">New to the console? Take the 60-second tour, then keep the runbooks handy.</p>' +
-      '<button class="adm-btn primary" id="admTourStart">Start tour</button></div>' +
+      '<p class="adm-note">New to the console? Keep the runbooks handy for the day-to-day playbook.</p></div>' +
       '<div class="adm-runbooks">' + RUNBOOKS.map(r =>
         '<details class="adm-runbook"><summary>' + esc(r.title) + "</summary><ol>" +
         r.steps.map(s => "<li>" + esc(s) + "</li>").join("") + "</ol></details>").join("") + "</div>";
-    const b = $("#admTourStart", root);
-    if (b) b.onclick = () => { if (window.TOUR && TOUR.admin) TOUR.admin(true); };
   };
 
   tabs.flags = async (root) => {
@@ -587,8 +584,6 @@
     document.querySelectorAll("#admTabs button").forEach(b => b.onclick = () => go(b.dataset.tab));
     $("#admDrawer").onclick = e => { if (e.target.id === "admDrawer") $("#admDrawer").classList.remove("in"); };
     await go("overview");
-    // O15: offer the console tour to a first-time admin (platform only).
-    if (!TENANT && window.TOUR && TOUR.admin && !TOUR.seen("admin")) setTimeout(() => TOUR.admin(), 900);
   }
   boot();
 })();

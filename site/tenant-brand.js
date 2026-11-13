@@ -2,14 +2,22 @@
 //
 // A store is a verbatim clone of the platform site: the SAME HTML/CSS/JS is
 // served for /store/<slug>/*, and this script re-skins it in the browser from
-// the tenant's own row in `businesses` (name, logo, colours). Nothing is
-// hardcoded here — every value comes from business_public / business_branding.
+// the tenant's own brand row. The build bakes every active store's brand into
+// window.SMSPIN_TENANT_BRANDS (see scripts/vercel-build.mjs) and resolves the
+// slug + palette synchronously in <head>, so the first paint is already the
+// tenant's — there is no round-trip that would flash the platform brand first.
+// The RPC path below is only a fallback for a slug the bake did not know about.
 //
 // The marketing page is a hydrated Next.js app: React reconciles the server DOM
 // after load and re-asserts its own brand tokens and hrefs. So the re-skin runs
 // on a short interval for the first few seconds (and on every history push),
 // and clicks on platform routes are intercepted so the visitor can never be
 // bounced out of the storefront.
+//
+// Nothing here touches the React Server Component flight payload (the
+// self.__next_f.push() <script> text). Rewriting that text desyncs hydration and
+// React blanks the page (error #423). Only visible text, head metadata and the
+// static application/ld+json blocks are rewritten.
 (function () {
   var THEMES = {
     crimson: ["#E11D2E", "#F26B7A"], ocean: ["#0EA5E9", "#38BDF8"],
@@ -19,6 +27,9 @@
   };
   var DEFAULT_NAME = "SMSPin";
   var PLATFORM_RED = "#e11d2e";
+  // Any absolute reference to the platform host, in either the old domain or
+  // the current product host, that must never appear on a tenant's page.
+  var HOST_RE = /https?:\/\/(?:www\.)?smspin\.(?:io|vercel\.app)/g;
 
   function slug() {
     if (window.SMSPIN_TENANT_SLUG) return window.SMSPIN_TENANT_SLUG;
@@ -49,11 +60,6 @@
     var c = hexToRgb(hex); if (!c) return null;
     var b = baseRgb || [255, 255, 255];
     return "rgb(" + c.map(function (v, i) { return Math.round(v + (b[i] - v) * pct); }).join(",") + ")";
-  }
-  function mixTriple(hex, pct, baseRgb) {
-    var c = hexToRgb(hex); if (!c) return [0, 0, 0];
-    var b = baseRgb || [255, 255, 255];
-    return c.map(function (v, i) { return Math.round(v + (b[i] - v) * pct); });
   }
 
   // The mirrored Next.js CSS hardcodes the platform's red in ~50 places (both
@@ -104,6 +110,7 @@
   var PAL = null;   // { primary, secondary }
   var NAME = null;
   var LOGO = null;
+  var DOMAIN = null;
 
   function applyPalette() {
     if (!PAL) return;
@@ -162,13 +169,27 @@
     });
   }
 
+  // Rewrite the platform name and host out of every visible text node. Scripts
+  // are skipped: mutating the flight payload would break hydration (error #423).
+  var TEXT_HOST_RE = /https?:\/\/(?:www\.)?smspin\.(?:io|vercel\.app)/g;
   function renameText() {
     if (!NAME || NAME === DEFAULT_NAME) return;
-    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        var p = n.parentElement;
+        if (p && /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(p.tagName)) return NodeFilter.FILTER_REJECT;
+        var v = n.nodeValue;
+        if (!v) return NodeFilter.FILTER_REJECT;
+        return (v.indexOf(DEFAULT_NAME) !== -1 || TEXT_HOST_RE.test(v)) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      },
+    });
     var nodes = [], n;
-    while ((n = walker.nextNode())) { if (n.nodeValue && n.nodeValue.indexOf(DEFAULT_NAME) !== -1) nodes.push(n); }
+    while ((n = walker.nextNode())) nodes.push(n);
     nodes.forEach(function (t) {
-      t.nodeValue = t.nodeValue.replace(/SMSPin\.io/g, NAME).replace(new RegExp(DEFAULT_NAME, "g"), NAME);
+      t.nodeValue = t.nodeValue
+        .replace(/SMSPin\.io/g, NAME)
+        .replace(new RegExp(DEFAULT_NAME, "g"), NAME)
+        .replace(TEXT_HOST_RE, DOMAIN ? "https://" + DOMAIN : "");
     });
     if (document.title.indexOf(DEFAULT_NAME) !== -1) document.title = document.title.split(DEFAULT_NAME).join(NAME);
     document.querySelectorAll('meta[content*="' + DEFAULT_NAME + '"]').forEach(function (m) {
@@ -179,10 +200,45 @@
     });
   }
 
+  // Strip every reference to the platform host so a tenant page never exposes
+  // the host it is cloned from. A tenant with its own domain keeps absolute URLs
+  // (repointed at that domain); one without gets relative URLs. Head metadata
+  // and the static application/ld+json blocks are handled here too; the flight
+  // payload is deliberately left alone.
+  function hostless(v) {
+    if (!v) return v;
+    return v.replace(HOST_RE, DOMAIN ? "https://" + DOMAIN : "");
+  }
+  function scrubHost() {
+    if (DOMAIN) {
+      document.querySelectorAll('link[rel="canonical"]').forEach(function (l) {
+        var h = l.getAttribute("href");
+        if (h && HOST_RE.test(h)) { HOST_RE.lastIndex = 0; l.setAttribute("href", "https://" + DOMAIN + h.replace(HOST_RE, "")); }
+      });
+    }
+    document.querySelectorAll("meta[content]").forEach(function (m) {
+      var c = m.getAttribute("content");
+      if (c && (HOST_RE.test(c) || c.indexOf("smspin.io") !== -1)) {
+        HOST_RE.lastIndex = 0;
+        m.setAttribute("content", hostless(c).replace(/smspin\.io/g, DOMAIN || ""));
+      }
+    });
+    document.querySelectorAll('link[href]').forEach(function (l) {
+      var h = l.getAttribute("href");
+      if (h && HOST_RE.test(h)) { HOST_RE.lastIndex = 0; l.setAttribute("href", hostless(h)); }
+    });
+    // Static JSON-LD (not the flight payload) carries absolute host URLs too.
+    document.querySelectorAll('script[type="application/ld+json"]').forEach(function (s) {
+      var t = s.textContent;
+      if (t && /smspin\.(io|vercel\.app)|SMSPin/.test(t)) {
+        s.textContent = hostless(t).replace(/smspin\.io/g, DOMAIN || "").replace(/SMSPin/g, NAME || DEFAULT_NAME);
+      }
+    });
+  }
+
   var ASSET_RE = /\.(css|js|png|jpe?g|svg|ico|webp|woff2?|ttf|json|txt|xml|map|webmanifest)$/i;
   function rewriteLinks() {
-    var b = base();
-    if (!b) return;
+    if (!base()) return;
     document.querySelectorAll("a[href]").forEach(function (a) {
       var h = a.getAttribute("href");
       var mapped = storeHref(h);
@@ -225,18 +281,37 @@
   }
 
   function apply() {
-    applyPalette(); applyLogo(); applyWordmark(); renameText(); rewriteLinks(); applyCssReskin();
+    applyPalette(); applyLogo(); applyWordmark(); renameText(); scrubHost(); rewriteLinks(); applyCssReskin();
+    // The head bootstrap hides the platform logo until the re-skin has run;
+    // reveal it now that the tenant's own mark and wordmark are in place.
+    if (NAME && document.documentElement.hasAttribute("data-tenant-brand")) {
+      document.documentElement.removeAttribute("data-tenant-brand");
+    }
   }
 
   function boot() {
     var s = slug();
     if (!s) return;
+    // Preferred path: brand baked into the page by the build — synchronous, so
+    // there is no window in which the platform brand is visible.
+    var baked = (window.SMSPIN_TENANT_BRANDS || {})[s];
+    if (baked && baked.name) {
+      NAME = baked.name;
+      DOMAIN = baked.domain || null;
+      var theme = THEMES[baked.theme] || THEMES.crimson;
+      PAL = { primary: baked.primary || theme[0], secondary: baked.secondary || theme[1] };
+      LOGO = baked.logo || null;
+      apply();
+      return;
+    }
+    // Fallback: a slug the bake did not know about (store created after build).
     rpc("business_public", { p_slug: s }).then(function (pub) {
       if (!pub || !pub.name) return;
       NAME = pub.name;
       var theme = THEMES[pub.theme] || THEMES.crimson;
       rpc("business_branding", { p_slug: s }).then(function (b) {
         b = b || {};
+        DOMAIN = b.domain || null;
         PAL = { primary: b.primary_color || theme[0], secondary: b.secondary_color || theme[1] };
         LOGO = b.logo_url || null;
         apply();

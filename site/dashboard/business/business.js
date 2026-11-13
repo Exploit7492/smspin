@@ -330,7 +330,6 @@
     loadKeys();
     loadChecklist();
     loadAppBuilds(s.slug);
-    if (window.TOUR && !TOUR.seen("business")) setTimeout(() => TOUR.business(), 1200);
     const open = $("#bizOpenStore"); if (open) open.href = "/store/" + s.slug;
     const open2 = $("#bizOpenStore2"); if (open2) open2.href = "/store/" + s.slug;
     drawDonut(s.by_status || []);

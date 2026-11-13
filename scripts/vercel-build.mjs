@@ -74,9 +74,45 @@ async function fetchTenantDomains() {
     return j && typeof j === "object" ? j : {};
   } catch { return {}; }
 }
+
+// Every active store's brand, keyed by slug. Baked into the page so the tenant
+// re-skin (site/tenant-brand.js) resolves the name, palette and logo
+// synchronously — with no RPC round-trip, the platform brand is never painted
+// first. A failure is non-fatal (tenant-brand.js falls back to the RPC).
+async function fetchTenantBrands() {
+  try {
+    const r = await fetch(`${SUPA_URL}/rest/v1/rpc/tenant_brands`, {
+      method: "POST",
+      headers: { apikey: ANON, Authorization: `Bearer ${ANON}`, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!r.ok) return {};
+    const j = await r.json();
+    return j && typeof j === "object" ? j : {};
+  } catch { return {}; }
+}
+const BRANDS = await fetchTenantBrands();
 const BOOT = tenantBoot(await fetchTenantDomains());
+const BRANDS_SRC = `<script>window.SMSPIN_TENANT_BRANDS=${JSON.stringify(BRANDS)};</script>`;
 const BRAND_SRC = `<script src="/tenant-brand.js" defer></script>`;
 const CONSENT_SRC = `<script src="/consent-log.js" defer></script>`;
+
+// Runs at the end of <head> — the <title>/<meta> are parsed by then but the
+// body has not, so the tenant's name and palette are in place before the first
+// paint. The logo mark is hidden until site/tenant-brand.js has swapped it for
+// the tenant's own (that script clears the data-tenant-brand flag). A timeout
+// reveals it anyway if the re-skin never runs.
+const BRAND_BOOT = `<script>(function(){try{
+var s=window.SMSPIN_TENANT_SLUG;if(!s)return;
+var b=(window.SMSPIN_TENANT_BRANDS||{})[s];if(!b||!b.name)return;
+var r=document.documentElement;r.setAttribute("data-tenant-brand","");
+if(b.primary)r.style.setProperty("--brand",b.primary);
+if(b.secondary)r.style.setProperty("--brand-2",b.secondary);
+if(document.title&&document.title.indexOf("SMSPin")!==-1)document.title=document.title.split("SMSPin").join(b.name);
+var m=document.querySelectorAll('meta[content*="SMSPin"]');for(var i=0;i<m.length;i++){m[i].setAttribute("content",m[i].getAttribute("content").split("SMSPin").join(b.name));}
+var st=document.createElement("style");st.id="tenant-boot-hide";st.textContent="html[data-tenant-brand] .logo{visibility:hidden}";document.head.appendChild(st);
+setTimeout(function(){if(r.hasAttribute("data-tenant-brand"))r.removeAttribute("data-tenant-brand");},3000);
+}catch(e){}})();</script>`;
 
 // The mirrored marketing pages carry the old platform domain in their canonical
 // link, OpenGraph tags and JSON-LD (@id/url/logo). Repoint every one of them at
@@ -151,6 +187,14 @@ function injectTenantBootstrap(html, rel) {
   if (!isStoreAuth && !out.includes("SMSPIN_TENANT_BASE")) {
     const h = out.match(/<head[^>]*>/i);
     if (h) out = out.slice(0, h.index + h[0].length) + BOOT + out.slice(h.index + h[0].length);
+  }
+  // Public marketing pages (incl. the tenant storefront clone) get the baked
+  // brand map and the pre-paint brand boot at the end of <head>.
+  if (!isPrivate && !isStoreAuth) {
+    const i = out.search(/<\/head>/i);
+    if (i !== -1 && !out.includes("SMSPIN_TENANT_BRANDS")) {
+      out = out.slice(0, i) + BRANDS_SRC + BRAND_BOOT + out.slice(i);
+    }
   }
   return out === html ? null : out;
 }

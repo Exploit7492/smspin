@@ -429,12 +429,6 @@
       try { localStorage.setItem(WN_LS, latest.version); } catch (e) {}
       panel.hidden = true;
     };
-    const tour = $("#ovWnTour");
-    if (tour) tour.onclick = () => {
-      try { localStorage.setItem(WN_LS, latest.version); } catch (e) {}
-      panel.hidden = true;
-      if (window.TOUR) TOUR.dashboard(true);
-    };
   }
 
   // ---------------------------------------------------------------- E6 notifications
@@ -2407,7 +2401,6 @@
     if (out) out.addEventListener("click", async (e) => { e.preventDefault(); await SMSPIN.auth.signOut(); location.href = inBase("/login/"); });
     await settlePayment();
     await maybeWelcome();
-    maybeStartTour();
     wireRouter();
   });
 
@@ -2499,13 +2492,10 @@
   }
 
 
-  // O2: one-time welcome modal for first-login users, offering the tour.
+  // O2: one-time welcome modal for first-login users.
   async function maybeWelcome() {
     if (page !== "overview" || !window.SMSPINUI) return;
-    // The first-run welcome + auto tour are main-app onboarding. On a tenant
-    // dashboard they would cover the cloned UI on first load, so skip them
-    // there; tenants can still open the tour from the Help button.
-    if (TENANT) return;
+    if (TENANT) return;   // main-app onboarding; tenants get the cloned UI only
     let seen = null;
     try { seen = localStorage.getItem("smspin_welcomed"); } catch (e) {}
     if (seen === "1") return;
@@ -2519,25 +2509,15 @@
       html:
         '<p class="mdl-msg">' + (firstRun
           ? "You're three steps from your first code: fund your wallet, buy a number, and read the SMS here."
-          : "Your dashboard is ready. Take a quick tour any time from the Help button.") + "</p>" +
+          : "Your dashboard is ready.") + "</p>" +
         '<ol class="dev-steps" style="margin:10px 0 0"><li><b>Fund your wallet</b> — one top-up covers many numbers.</li>' +
         '<li><b>Buy a number</b> — pick a service and country.</li>' +
         '<li><b>Read the code</b> — it lands in your inbox in seconds.</li></ol>',
       actions: firstRun
-        ? [{ id: "tour", label: "Take the tour", variant: "secondary" },
-           { id: "buy", label: "Buy my first number", variant: "primary" }]
+        ? [{ id: "buy", label: "Buy my first number", variant: "primary" }]
         : [{ id: "ok", label: "Get started", variant: "primary" }],
     });
-    if (res === "tour" && window.TOUR) window.TOUR.dashboard(true);
-    else if (res === "buy") location.href = inBase("/dashboard/buy/");
-  }
-
-  // O1: start the first-run dashboard tour once, on the overview page.
-  function maybeStartTour() {
-    if (page !== "overview" || !window.TOUR) return;
-    if (TENANT) return;                 // don't cover the cloned UI on first load
-    if (window.TOUR.seen("dashboard")) return;
-    setTimeout(() => window.TOUR.dashboard(), 900);
+    if (res === "buy") location.href = inBase("/dashboard/buy/");
   }
 
   // E1: live order updates over Server-Sent Events. Codes appear the moment
