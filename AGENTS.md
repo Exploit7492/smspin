@@ -244,6 +244,23 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
 - `payments.user_id` / `orders.user_id` / `transactions.user_id` are nullable so tenant rows
   can carry `tenant_account_id` instead.
 
+## Payment channels (KoraPay)
+- The merchant account only has **`card`** and **`bank_transfer`** enabled for NGN. Probed
+  against the live test key: `ussd` and `mobile_money` are rejected for NGN. Do not advertise
+  any other rail.
+- `backend/server.py` holds the allowlist (`KORA_CHANNELS` / `KORA_CHANNEL_IDS`) and enforces
+  it in `/api/payments/initialize`: an unknown `channel` returns `400 {error:"unsupported
+  payment method"}` rather than silently falling back. The selected channel is passed to
+  KoraPay (`channels:[...]`) and persisted on `payments.channel`.
+- `GET /api/payment-methods` returns the real channels + `fee_percent` (2.5%) for the UI; the
+  Add funds page (`site/dashboard/topup/`) renders its method list from it and shows a live fee
+  from `/api/funding/quote`.
+- `payment_rails()` (DB) mirrors this: korapay `kinds` = `card, bank_transfer` (migration
+  `supabase/migrations/20261111290000_payment_rails_korapay.sql`).
+- The funding fee (flat 2.5%) is stamped onto the pending payment by `set_payment_fee` before
+  checkout; `credit_wallet_from_payment` nets it so the wallet only receives the real value.
+  Tests: `tests/test_phase7_payments.py`.
+
 ## Service icons everywhere
 - `svcIcon(o, cls)` in `dashboard/dash.js` renders a service icon: image URL -> `<img>`, else
   emoji, else first letter of the service name. Used on the side-panel recent orders +
