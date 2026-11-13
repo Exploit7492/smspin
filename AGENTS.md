@@ -566,3 +566,33 @@ must be **absent** from `ROUTES` so a click triggers a full load and the script 
 Navigation to such a page is still intercepted by `wireRouter()`, so `swapRoute()` also
 falls back to a full load when `RENDER[page]` is missing.
 
+
+## Upstream SMS providers: SMSPool (default) + SMSPin (fallback)
+`backend/smspin_api.py` is now a **facade**, not a single-provider client.
+`SmspinClient(primary_key, fallback_key, service_names)` wraps:
+- `smspool_api.SmspoolClient` — **default** provider, key `Smepool_token`
+  (base `https://api.smspool.net`, POST form-encoded, key in the body).
+- `smspin_api.SmspinIOClient` — **fallback**, key `Smspin_apikey`
+  (base `https://smspin.io/api/v1`, Cloudflare wants a browser User-Agent).
+Both raise `smspin_api.SmspinError` (= `smspool_api.SmspinError`), so call sites
+keep catching one type. `server.py` builds the facade from `SMSPOOL_KEY` +
+`SMSPIN_KEY` and calls `load_service_names()` at startup.
+
+**Fallback rule** (`SmspinClient._try`): read methods (`live_price`, `operators`,
+`rent_prices`, …) fall back when the default *errors or returns an empty result*
+(no price / no rentals); write methods (`create_order`, `create_rental`,
+`cancel_*`) fall back **only on error**, so an order the default accepted is
+never double-booked.
+
+**SMSPool gotchas:**
+- Services are keyed by **name/ID, not our short code**. `service_names` is a
+  `{code: name}` map from the `services` table; `_norm()` matches on the token
+  before the first `/` (e.g. `Google / YouTube / Gmail` → `google`).
+- Stock is a **real count** at `POST /sms/stock` → `{"success":1,"amount":N}`,
+  not a boolean. It feeds `live_price()["available"]` → `number_catalog.stock`.
+- No operator breakdown; the pool is exposed as one tier labelled `SMSPool`.
+- Rentals are **country pools, not per-service**; `rental/retrieve_all` returns
+  `pricing` keyed by whole days. Some countries rent only as a `_V` (virtual)
+  variant (e.g. `AU_V`); `_country_matches()` accepts `XX` or `XX_V`.
+- Errors come back in-band as `{"success":0,"message","type"}`; `_check()`
+  turns them into `SmspinError`.
