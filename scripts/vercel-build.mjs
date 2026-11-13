@@ -78,6 +78,15 @@ const BOOT = tenantBoot(await fetchTenantDomains());
 const BRAND_SRC = `<script src="/tenant-brand.js" defer></script>`;
 const CONSENT_SRC = `<script src="/consent-log.js" defer></script>`;
 
+// The mirrored marketing pages carry the old platform domain in their canonical
+// link, OpenGraph tags and JSON-LD (@id/url/logo). Repoint every one of them at
+// the deployed product URL so search engines and link previews resolve to the
+// live host instead of a domain this build no longer serves.
+const OLD_DOMAIN = /https?:\/\/(?:www\.)?smspin\.io/g;
+function retargetDomain(html) {
+  return SITE_URL.includes("smspin.io") ? html : html.replace(OLD_DOMAIN, SITE_URL);
+}
+
 // Minimum sell price. The mirrored marketing pages baked in sub-$1 sample
 // prices under the old $1 floor; every buyer-facing price is now a whole number
 // of dollars floored at MIN_PRICE. Ported verbatim from the backend's
@@ -113,7 +122,7 @@ const SKIP_TENANT = new Set(["store/login.html", "store/register.html", "store/a
 function injectTenantBootstrap(html, rel) {
   const isPrivate = rel.startsWith("dashboard/") || rel.startsWith("admin/");
   const isStoreAuth = SKIP_TENANT.has(rel);
-  let out = html;
+  let out = retargetDomain(html);
   // The backend floored prices only on public marketing pages (dashboard/admin
   // get their figures from RPCs at runtime).
   if (!isPrivate && !isStoreAuth) {
