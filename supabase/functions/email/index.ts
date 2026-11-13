@@ -45,6 +45,12 @@ const PLATFORM: Ident = {
 // so the backend worker and this serverless worker produce identical mail.
 function compose(event: string, brand: string, ident: Ident, p: Record<string, unknown>): EmailContent {
   const currency = (p.currency as string) || "NGN";
+  // A tenant's dashboard lives under its store path, so transactional CTAs keep
+  // the reader inside the brand they signed up with.
+  const dash = (path = "") =>
+    ident.tenant_slug
+      ? `${SITE_URL}/store/${ident.tenant_slug}/dashboard/${path}`
+      : `${SITE_URL}/dashboard/${path}`;
   const row = (icon: string, label: string, value: unknown): EmailRow =>
     ({ icon, label, value: String(value ?? "—") });
   switch (event) {
@@ -58,7 +64,7 @@ function compose(event: string, brand: string, ident: Ident, p: Record<string, u
           `Your ${brand} account is ready. Fund your wallet and get a virtual number in seconds.`,
           "If you did not create this account you can ignore this email.",
         ],
-        ctaUrl: `${SITE_URL}/dashboard/`, ctaLabel: "Open your dashboard",
+        ctaUrl: dash(), ctaLabel: "Open your dashboard",
       };
     case "receipt":
       return {
@@ -72,7 +78,7 @@ function compose(event: string, brand: string, ident: Ident, p: Record<string, u
           row("🏦", "Method", p.method || "—"),
           row("🔖", "Reference", p.ref || "—"),
         ],
-        ctaUrl: `${SITE_URL}/dashboard/wallet/`, ctaLabel: "View wallet",
+        ctaUrl: dash("wallet/"), ctaLabel: "View wallet",
       };
     case "refund":
       return {
@@ -89,7 +95,7 @@ function compose(event: string, brand: string, ident: Ident, p: Record<string, u
           row("🧾", "Order", `#${p.order_id}`),
           row("📝", "Reason", p.reason || "order could not be completed"),
         ],
-        ctaUrl: `${SITE_URL}/dashboard/wallet/`, ctaLabel: "View wallet",
+        ctaUrl: dash("wallet/"), ctaLabel: "View wallet",
       };
     case "apk":
       return {
