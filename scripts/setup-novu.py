@@ -10,8 +10,11 @@ changing the template:
     Smspin_novu="$Smspin_novu" Smspin_supabase_Postgresql="$Smspin_supabase_Postgresql" \
         python3 scripts/setup-novu.py
 
-The template reads branding from ``tenant.data`` (see email_sender() in the DB)
-and the message content from ``payload`` (see novu.send_event()).
+The email HTML is rendered per-tenant by the dispatchers (edge `email` function
+and backend/novu.py) from the store's own branding row, and handed to Novu as
+``payload.html``. Novu therefore only transports the message: it never has to
+evaluate a branding variable, and the layout/logo/colours follow the sending
+store exactly.
 """
 import os
 import sys
@@ -21,22 +24,10 @@ import novu  # noqa: E402
 
 WORKFLOW_ID = novu.TRANSACTIONAL_WORKFLOW
 
-# Handlebars template: tenant.data carries the brand, payload carries the copy.
-BODY = """<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #eceff3;border-radius:12px;overflow:hidden">
-  <div style="background:{{tenant.data.primary_color}};padding:20px 24px">
-    {% if tenant.data.logo_url %}<img src="{{tenant.data.logo_url}}" alt="{{tenant.data.brand_name}}" height="28" style="height:28px">
-    {% else %}<span style="color:#ffffff;font-size:20px;font-weight:700;letter-spacing:.3px">{{tenant.data.brand_name}}</span>{% endif %}
-  </div>
-  <div style="padding:24px;color:#1f2933;font-size:15px;line-height:1.55">
-    <h2 style="margin:0 0 14px;font-size:20px">{{payload.heading}}</h2>
-    {% for p in payload.paragraphs %}<p style="margin:0 0 12px">{{p}}</p>{% endfor %}
-    {% if payload.ctaUrl %}<p style="margin:22px 0 6px"><a href="{{payload.ctaUrl}}" style="background:{{tenant.data.primary_color}};color:#ffffff;padding:11px 20px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block">{{payload.ctaLabel}}</a></p>{% endif %}
-  </div>
-  <div style="border-top:1px solid #eceff3;padding:16px 24px;color:#7b8794;font-size:12px">
-    {{tenant.data.footer}}<br>
-    Need help? <a href="mailto:{{tenant.data.support_email}}" style="color:{{tenant.data.primary_color}}">{{tenant.data.support_email}}</a>
-  </div>
-</div>"""
+# The workflow is a thin transport: subject and a pre-rendered HTML body come
+# from the trigger payload. Keeping it dumb means a store's brand can never be
+# dropped by the template engine (Novu rejects `tenant.data.*` in the body).
+BODY = "{{payload.html}}"
 
 WORKFLOW = {
     "workflowId": WORKFLOW_ID,
@@ -55,19 +46,22 @@ WORKFLOW = {
 
 
 def upsert_workflow():
+    created = False
     try:
         novu._request("/v2/workflows", "POST", WORKFLOW)
         print("workflow created:", WORKFLOW_ID)
-        return
+        created = True
     except Exception as e:
-        # Already exists (or the plan cap is hit): try to update in place.
-        if "maximum number of workflows" in str(e) or "Payment Required" in str(e):
-            print("workflow cap reached; attempting update of", WORKFLOW_ID)
-    try:
-        novu._request("/v2/workflows/" + WORKFLOW_ID, "PUT", WORKFLOW)
-        print("workflow updated:", WORKFLOW_ID)
-    except Exception as e:
-        print("workflow FAILED:", WORKFLOW_ID, str(e)[:200])
+        # Already exists (or the plan cap is hit): update in place.
+        if "maximum number of workflows" not in str(e) and "Payment Required" not in str(e):
+            print("workflow create note:", str(e)[:160])
+    if not created:
+        try:
+            novu._request("/v2/workflows/" + WORKFLOW_ID, "PUT", WORKFLOW)
+            print("workflow updated:", WORKFLOW_ID)
+        except Exception as e:
+            print("workflow FAILED:", WORKFLOW_ID, str(e)[:200])
+            return
 
 
 def upsert_tenants():

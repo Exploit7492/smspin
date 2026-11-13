@@ -19,8 +19,12 @@
     { "source": "/store/:slug/login", "destination": "/store/login.html" },
     { "source": "/store/:slug/register", "destination": "/store/register.html" },
     { "source": "/store/:slug/account", "destination": "/store/account.html" },
+    { "source": "/store/:slug", "destination": "/index.html" },
     { "source": "/store/:slug/", "destination": "/index.html" },
-    { "source": "/store/:slug", "destination": "/index.html" }
+    { "source": "/store/:slug/:page", "destination": "/:page/index.html" },
+    { "source": "/store/:slug/:page/", "destination": "/:page/index.html" },
+    { "source": "/store/:slug/:dir/:page", "destination": "/:dir/:page/index.html" },
+    { "source": "/store/:slug/:dir/:page/", "destination": "/:dir/:page/index.html" }
   ],
   "headers": [
     {

@@ -2,10 +2,16 @@
 // Production build for the SMSPin static site on Vercel.
 //
 // The site is a pre-rendered Next.js export (thousands of static pages) served
-// as-is. This step only injects runtime configuration that must come from the
-// deployment environment, so no dummy or sandbox values ever ship:
+// as-is. This step injects the runtime configuration and the multi-tenant
+// bootstrap that a static host cannot add per request, so no dummy or sandbox
+// values ever ship:
 //   * site/dashboard/config.js  -> the Supabase URL + public anon key the
 //                                  browser talks to (all surfaces load it).
+//   * tenant slug bootstrap + re-skin/consent scripts on public pages, so the
+//     shared dashboard/admin code and tenant-brand.js know which store they
+//     render (the Python backend stamped this per request; a static host cannot).
+//   * the $2 minimum sell price, so the mirrored pages never quote the old
+//     sub-$1 sample figures (ported from the backend's _apply_min_price_floor).
 //   * site/robots.txt + sitemap.xml -> real SEO files (the old Python backend
 //                                  generated these per request).
 // It fails the build if required configuration is missing or if any sandbox
@@ -16,7 +22,9 @@ import { join, relative } from "node:path";
 const SITE = "site";
 const SUPA_URL = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/$/, "");
 const ANON = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-const SITE_URL = (process.env.SITE_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL && `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` || "https://smspin.io").replace(/\/$/, "");
+const SITE_URL = (process.env.SITE_URL ||
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL && `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`) ||
+  "https://smspin.vercel.app").replace(/\/$/, "");
 
 function fail(msg) { console.error("build: " + msg); process.exit(1); }
 
@@ -31,14 +39,86 @@ writeFileSync(join(SITE, "dashboard", "config.js"),
 //    sandbox URLs that must never reach production.
 const pages = [];
 const offenders = [];
+const injected = [];
 const BAD = [/:12000\b/, /work-1-[a-z0-9]+\.prod-runtime\.all-hands\.dev/, /work-2-[a-z0-9]+\.prod-runtime\.all-hands\.dev/, /onrender\.com/];
 const SKIP = [/(^|\/)\.git\//, /node_modules/, /\.map$/];
+
+// Tenant bootstrap. The Python backend used to stamp the store slug into every
+// page it served (window.SMSPIN_TENANT_SLUG/BASE) so the shared dashboard/admin
+// code and tenant-brand.js knew which store they were rendering. A static host
+// cannot do that per request, so the bootstrap below derives the slug from the
+// URL path (/store/<slug>/...) in the browser, before any app script runs.
+//
+// Faithful to the backend's split: the slug bootstrap goes on every page (it is
+// a no-op off /store/<slug>/), while the re-skin script and consent log go only
+// on the public marketing pages — the dashboard/admin re-brand themselves from
+// site_config and must not have their links rewritten underneath them.
+const BOOT = `<script>(function(){try{var m=location.pathname.match(/^\\/store\\/([^\\/?#.]+)(?:\\/|$)/);if(!m)return;var s=decodeURIComponent(m[1]);if(s==="login"||s==="register"||s==="account"||s==="index")return;if(!window.SMSPIN_TENANT_SLUG){window.SMSPIN_TENANT_SLUG=s;window.SMSPIN_TENANT_BASE="/store/"+s;}}catch(e){}})();</script>`;
+const BRAND_SRC = `<script src="/tenant-brand.js" defer></script>`;
+const CONSENT_SRC = `<script src="/consent-log.js" defer></script>`;
+
+// Minimum sell price. The mirrored marketing pages baked in sub-$1 sample
+// prices under the old $1 floor; every buyer-facing price is now a whole number
+// of dollars floored at MIN_PRICE. Ported verbatim from the backend's
+// _apply_min_price_floor so the static build and the Python server agree.
+const MIN_PRICE = 2;
+const PRICE_DEC = /\$(?:<!-- -->)?(\d+)\.(\d{2})(?!\d)/g;
+const PRICE_RSC = /(\$\$[\\",]{0,6})(\d+\.\d{1,2})/g;
+const PRICE_RSC_STR = /(\$["\\]{1,2}[\\, ]{0,6}[\\"]{0,2})(\d+\.\d{1,2})/g;
+const PRICE_BARE = /(?<![$\w."'])\$1(?!\d)(?!,\d)(?![.]\d)/g;
+const PRICE_JSON = /("(?:price|lowPrice|highPrice)":\s*"?)(\d+)\.(\d{1,2})/g;
+const PRICE_FIELD = /((?:minPrice|maxPrice|lowPrice|highPrice|price)["\\:]{0,16})(\d+(?:\.\d{1,2})?)/g;
+
+function floorNum(raw) {
+  return parseFloat(raw) < MIN_PRICE ? `${MIN_PRICE}.00` : raw;
+}
+function applyMinPriceFloor(html) {
+  html = html.replace(PRICE_DEC, (m, a, b) => (parseFloat(`${a}.${b}`) < MIN_PRICE ? `$${MIN_PRICE}.00` : m));
+  html = html.replace(PRICE_RSC, (m, p, n) => p + floorNum(n));
+  html = html.replace(PRICE_RSC_STR, (m, p, n) => p + floorNum(n));
+  html = html.replace(PRICE_BARE, `$${MIN_PRICE}`);
+  html = html.replace(PRICE_JSON, (m, p, a, b) => p + floorNum(`${a}.${b}`));
+  html = html.replace(PRICE_FIELD, (m, p, n) => p + floorNum(n));
+  // A range whose both ends floored to the minimum reads better as one figure.
+  const f = `\\$${MIN_PRICE}(?:\\.00)?`;
+  html = html.replace(new RegExp(`${f}\\s*[-\\u2013\\u2014]\\s*${f}`, "g"), `$${MIN_PRICE}.00`);
+  return html;
+}
+
+// Dedicated storefront auth screens resolve the slug (and brand) themselves via
+// /store/auth.js, so they get neither the bootstrap nor the re-skin script.
+const SKIP_TENANT = new Set(["store/login.html", "store/register.html", "store/account.html", "store/index.html"]);
+
+function injectTenantBootstrap(html, rel) {
+  const isPrivate = rel.startsWith("dashboard/") || rel.startsWith("admin/");
+  const isStoreAuth = SKIP_TENANT.has(rel);
+  let out = html;
+  // The backend floored prices only on public marketing pages (dashboard/admin
+  // get their figures from RPCs at runtime).
+  if (!isPrivate && !isStoreAuth) {
+    out = applyMinPriceFloor(out);
+    const extra = (out.includes("/tenant-brand.js") ? "" : BRAND_SRC) +
+                  (out.includes("/consent-log.js") ? "" : CONSENT_SRC);
+    if (extra) {
+      const i = out.search(/<\/head>/i);
+      out = i !== -1 ? out.slice(0, i) + extra + out.slice(i)
+                     : out.replace(/<\/body>/i, extra + "</body>");
+    }
+  }
+  if (!isStoreAuth && !out.includes("SMSPIN_TENANT_BASE")) {
+    const h = out.match(/<head[^>]*>/i);
+    if (h) out = out.slice(0, h.index + h[0].length) + BOOT + out.slice(h.index + h[0].length);
+  }
+  return out === html ? null : out;
+}
+
 function walk(dir) {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
     if (SKIP.some((re) => re.test(p))) continue;
     const st = statSync(p);
     if (st.isDirectory()) { walk(p); continue; }
+    const rel = relative(SITE, p).replace(/\\/g, "/");
     if (name === "index.html") {
       const url = "/" + relative(SITE, dir).replace(/\\/g, "/");
       pages.push(url === "/." ? "/" : url.replace(/\/\.$/, "/"));
@@ -46,7 +126,11 @@ function walk(dir) {
     // Only scan text assets for leaked sandbox URLs.
     if (/\.(html|js|json|css)$/.test(name) && st.size < 4_000_000) {
       const text = readFileSync(p, "utf8");
-      if (BAD.some((re) => re.test(text))) offenders.push(relative(SITE, p));
+      if (BAD.some((re) => re.test(text))) offenders.push(rel);
+      if (name.endsWith(".html")) {
+        const next = injectTenantBootstrap(text, rel);
+        if (next !== null) { writeFileSync(p, next); injected.push(rel); }
+      }
     }
   }
 }
@@ -62,4 +146,4 @@ const urls = pages.map((u) => `  <url><loc>${SITE_URL}${u}</loc></url>`).join("\
 writeFileSync(join(SITE, "sitemap.xml"),
   `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`);
 
-console.log(`build: wrote config.js, robots.txt, sitemap.xml (${pages.length} pages, ${offenders.length} sandbox refs).`);
+console.log(`build: wrote config.js, robots.txt, sitemap.xml (${pages.length} pages, ${injected.length} tenant-injected, ${offenders.length} sandbox refs).`);

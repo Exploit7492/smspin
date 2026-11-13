@@ -2,9 +2,10 @@
 
 One Novu environment serves the whole platform: the platform itself plus every
 white-label store. Tenancy is expressed with Novu *tenants* (one per store) and
-*subscribers* (one per account, addressed as ``<tenant>:<account>``); the email
-workflow renders the sender's own brand from ``tenant.data`` so every store uses
-the same infrastructure but its own name, colours and reply-to.
+*subscribers* (one per account, addressed as ``<tenant>:<account>``); the mail
+body is rendered per-sender from the store's own branding (``email_template.py``)
+and handed to Novu as ``payload.html``, so every store shares one infrastructure
+but carries its own name, logo, colours and reply-to.
 
 Only the API key is secret (``Smspin_novu``); everything else is branding data
 that the caller passes in. When the key is absent every call is a no-op that
@@ -14,6 +15,8 @@ import json
 import os
 import urllib.error
 import urllib.request
+
+import email_template
 
 NOVU_BASE = os.environ.get("NOVU_BASE", "https://api.novu.co").rstrip("/")
 # Novu's edge (Cloudflare) rejects the default Python UA with error 1010, so
@@ -149,16 +152,10 @@ def send(workflow, to, payload=None, tenant=None, transaction_id=None):
 
 
 # ---------------------------------------------------------------- composition
-# The shared workflow renders subject/heading/paragraphs/CTA from the payload,
-# so the backend only has to describe each event. Keeping the copy here means a
-# wording change ships with the code, while the *look* stays tenant-branded.
-def _payload(subject, heading, paragraphs, cta_url=None, cta_label=None, **extra):
-    p = {"subject": subject, "heading": heading, "paragraphs": [x for x in paragraphs if x]}
-    if cta_url:
-        p["ctaUrl"] = cta_url
-        p["ctaLabel"] = cta_label or "Open"
-    p.update(extra)
-    return p
+# The backend composes each event's copy here and renders the full branded HTML
+# (email_template.render); the shared Novu workflow only transports it. Keeping
+# the copy in code means a wording change ships with the deployment, while the
+# *look* comes from the sending store's branding row.
 
 
 def send_event(event, to, tenant, base_url=None, **kw):
@@ -174,54 +171,66 @@ def send_event(event, to, tenant, base_url=None, **kw):
     brand = (tenant or {}).get("brand_name") or "SMSPin"
     currency = kw.get("currency") or "NGN"
     tx = tenant or {}
+    tx = dict(tx)
+    tx.setdefault("site_url", base)
+
+    def row(icon, label, value):
+        return {"icon": icon, "label": label, "value": str("" if value is None else value)}
 
     if event == "welcome":
         subject = "Welcome to %s" % brand
-        payload = _payload(subject, "Welcome, %s!" % (kw.get("name") or "there"),
-                           ["Your %s account is ready. Fund your wallet and get a virtual number in seconds." % brand,
-                            "If you did not create this account you can ignore this email."],
-                           base + "/dashboard/", "Open your dashboard")
+        content = {"subject": subject, "heading": "Welcome, %s!" % (kw.get("name") or "there"),
+                   "icon": "\U0001F44B", "preheader": "Your %s account is ready." % brand,
+                   "paragraphs": ["Your %s account is ready. Fund your wallet and get a virtual number in seconds." % brand,
+                                  "If you did not create this account you can ignore this email."],
+                   "ctaUrl": base + "/dashboard/", "ctaLabel": "Open your dashboard"}
     elif event == "receipt":
         subject = "Your %s receipt — %s %s" % (brand, currency, kw.get("amount"))
-        payload = _payload(subject, "Payment received",
-                           ["We credited your wallet.",
-                            "Amount: %s %s" % (currency, kw.get("amount")),
-                            "Method: %s" % (kw.get("method") or "—"),
-                            "Reference: %s" % (kw.get("ref") or "—")],
-                           base + "/dashboard/wallet/", "View wallet")
+        content = {"subject": subject, "heading": "Payment received", "icon": "\U0001F9FE",
+                   "preheader": "We credited your %s wallet with %s %s." % (brand, currency, kw.get("amount")),
+                   "paragraphs": ["We credited your wallet. Your balance is available for new orders right away."],
+                   "rows": [row("\U0001F4B3", "Amount", "%s %s" % (currency, kw.get("amount"))),
+                            row("\U0001F3E6", "Method", kw.get("method") or "—"),
+                            row("\U0001F516", "Reference", kw.get("ref") or "—")],
+                   "ctaUrl": base + "/dashboard/wallet/", "ctaLabel": "View wallet"}
     elif event == "refund":
         subject = "Your %s refund" % brand
-        payload = _payload(subject, "Refund processed",
-                           ["We refunded %s %s to your wallet for order #%s." % (
-                               currency, kw.get("amount"), kw.get("order_id")),
-                            "Reason: %s" % (kw.get("reason") or "order could not be completed"),
-                            "The amount is available now and can be used for another number or "
-                            "withdrawn per the refund policy."],
-                           base + "/dashboard/wallet/", "View wallet")
+        content = {"subject": subject, "heading": "Refund processed", "icon": "\u21A9\uFE0F",
+                   "preheader": "We refunded %s %s to your %s wallet." % (currency, kw.get("amount"), brand),
+                   "paragraphs": ["We refunded %s %s to your wallet for order #%s." % (currency, kw.get("amount"), kw.get("order_id")),
+                                  "The amount is available now and can be used for another number or "
+                                  "withdrawn per the refund policy."],
+                   "rows": [row("\U0001F4B5", "Amount", "%s %s" % (currency, kw.get("amount"))),
+                            row("\U0001F9FE", "Order", "#%s" % kw.get("order_id")),
+                            row("\U0001F4DD", "Reason", kw.get("reason") or "order could not be completed")],
+                   "ctaUrl": base + "/dashboard/wallet/", "ctaLabel": "View wallet"}
     elif event == "apk":
         subject = "Your %s app is ready" % brand
-        payload = _payload(subject, "%s for Android" % (kw.get("app_name") or brand),
-                           ["Your branded app build (v%s) is ready to download and install on any "
-                            "Android device." % kw.get("version", "1.0.0"),
-                            "This link is time-limited. Contact %s if it has expired." % tx.get("support_email", "")],
-                           kw.get("download_url"), "Download the app",
-                           appName=kw.get("app_name") or brand, version=kw.get("version", "1.0.0"))
+        content = {"subject": subject, "heading": "%s for Android" % (kw.get("app_name") or brand),
+                   "icon": "\U0001F4F1",
+                   "preheader": "Your branded %s app build is ready to download." % brand,
+                   "paragraphs": ["Your branded app build (v%s) is ready to download and install on any "
+                                  "Android device." % kw.get("version", "1.0.0"),
+                                  "This link is time-limited. Contact %s if it has expired." % tx.get("support_email", "")],
+                   "rows": [row("\U0001F3F7\uFE0F", "App", kw.get("app_name") or brand),
+                            row("\U0001F522", "Version", kw.get("version", "1.0.0"))],
+                   "ctaUrl": kw.get("download_url"), "ctaLabel": "Download the app"}
     elif event == "security":
         subject = "%s security notice" % brand
-        payload = _payload(subject, kw.get("title") or "Security notice",
-                           [kw.get("body") or "", ("When: %s" % kw["when"]) if kw.get("when") else None,
-                            "If this was not you, contact %s immediately." % tx.get("support_email", "")])
+        content = {"subject": subject, "heading": kw.get("title") or "Security notice", "icon": "\U0001F510",
+                   "preheader": "A security event happened on your %s account." % brand,
+                   "paragraphs": [kw.get("body") or "",
+                                  "If this was not you, contact %s immediately." % tx.get("support_email", "")],
+                   "rows": [row("\U0001F552", "When", kw["when"])] if kw.get("when") else []}
     else:  # notice
-        subject = kw.get("subject") or ("%s notice" % brand)
-        payload = _payload(subject, kw.get("title") or subject,
-                           [kw.get("body") or ""], kw.get("cta_url"), kw.get("cta_label"))
+        subject = kw.get("subject") or ("%s update" % brand)
+        content = {"subject": subject, "heading": kw.get("title") or subject, "icon": "\u2709\uFE0F",
+                   "paragraphs": [kw.get("body") or ""],
+                   "ctaUrl": kw.get("cta_url"), "ctaLabel": kw.get("cta_label")}
 
-    novu_tenant = {"identifier": tx.get("tenant_id") or "smspin-platform",
-                   "data": {"brand_name": brand,
-                            "primary_color": tx.get("primary_color") or "#E11D2E",
-                            "secondary_color": tx.get("secondary_color") or "#F26B7A",
-                            "support_email": tx.get("support_email") or "",
-                            "logo_url": tx.get("logo_url"),
-                            "footer": tx.get("footer") or
-                                      ("You are receiving this because you have an account with %s." % brand)}}
-    return trigger(event, to, payload, novu_tenant)
+    # Render the full branded HTML here; Novu only transports it.
+    content["html"] = email_template.render(tx, content)
+    content["brand_name"] = brand
+    content["support_email"] = tx.get("support_email") or ""
+    novu_tenant = {"identifier": tx.get("tenant_id") or "smspin-platform"}
+    return trigger(event, to, content, novu_tenant)

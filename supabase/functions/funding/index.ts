@@ -4,6 +4,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const SITE_URL = (Deno.env.get("SMSPIN_SITE_URL") || "https://smspin.io").replace(/\/$/, "");
 const KORA_BASE = "https://api.korapay.com/merchant/api/v1";
 const KORA_MODE = Deno.env.get("KORA_MODE") || "test";
 const KORA_SECRET = KORA_MODE === "live"
@@ -64,10 +65,9 @@ Deno.serve(async (req) => {
     if (cerr || !pay) return json({ error: "could not create payment" }, 400);
     const reference = pay.reference as string;
 
-    const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "localhost:12000";
-    const proto = (req.headers.get("x-forwarded-proto") || "https").split(",")[0];
-    const redirect_url = `${proto}://${host}/dashboard/wallet/?ref=${reference}`;
-    const notification_url = `${proto}://${host}/api/korapay/webhook`;
+    const host = SITE_URL;
+    const redirect_url = `${host}/dashboard/wallet/?ref=${reference}`;
+    const notification_url = `${host}/api/korapay/webhook`;
 
     const { status, data } = await korapay("/charges/initialize", "POST", {
       amount: Math.round(amount), currency: "NGN", reference,
