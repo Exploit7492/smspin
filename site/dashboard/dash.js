@@ -37,30 +37,42 @@
     });
     const side = document.querySelector(".side-brand > span:last-child");
     if (side) side.textContent = short;
-    const top = document.querySelector(".dash-topbrand .tb-name");
-    if (top) top.textContent = name;
+    const dl = document.querySelector(".dash-appbar .dash-logo .dl-name");
+    if (dl) dl.innerHTML = /Pin$/.test(short) ? esc(short.slice(0, -3)) + "<i>Pin</i>" : esc(short);
     const el = document.querySelector('meta[name="application-name"]');
     if (el) el.setAttribute("content", name);
-    mountTopBrand();
+    mountAppBar();
   }
-  // Fixed top-left brand bar: app logo + tenant name (matches the side panel logo).
-  function mountTopBrand() {
-    if (document.querySelector(".dash-topbrand")) return;
-    const name = SITE.brand_name || "SMSPin";
-    const bar = document.createElement("a");
-    bar.className = "dash-topbrand";
-    bar.href = "/dashboard/";
-    bar.setAttribute("aria-label", name + " home");
-    bar.innerHTML =
-      '<span class="tb-mark" aria-hidden="true">' +
-        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
-          '<path d="M4 5C4 3.9 4.9 3 6 3H18C19.1 3 20 3.9 20 5V14C20 15.1 19.1 16 18 16H13L9.5 19.5C9 20 8 19.6 8 18.9V16H6C4.9 16 4 15.1 4 14V5Z" fill="#FFFFFF"/>' +
-          '<rect x="7.5" y="8.5" width="2.5" height="3.5" rx="0.8" fill="currentColor"/>' +
-          '<rect x="10.8" y="8.5" width="2.5" height="3.5" rx="0.8" fill="currentColor"/>' +
-          '<rect x="14.1" y="8.5" width="2.5" height="3.5" rx="0.8" fill="currentColor"/>' +
-        "</svg></span>" +
-      '<span class="tb-name">' + esc(name) + "</span>";
-    document.body.appendChild(bar);
+  // Fixed app top bar: glass, brand logo, and the wallet balance pill.
+  function mountAppBar() {
+    let bar = document.querySelector(".dash-appbar");
+    if (!bar) {
+      bar = document.createElement("header");
+      bar.className = "dash-appbar";
+      bar.innerHTML =
+        '<button class="dash-toggle" id="dashToggle" aria-label="Open menu" aria-expanded="false">\u2630</button>' +
+        '<a class="dash-logo" href="/dashboard/" aria-label="SMSPin home">' +
+          '<span class="dl-mark" aria-hidden="true">' +
+            '<svg width="18" height="18" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">' +
+              '<path d="M4 3h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-6l-5 4v-4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/>' +
+              '<circle cx="8" cy="10.5" r="1.3" fill="#e11d2e"/><circle cx="12" cy="10.5" r="1.3" fill="#e11d2e"/><circle cx="16" cy="10.5" r="1.3" fill="#e11d2e"/>' +
+            "</svg></span>" +
+          '<span class="dl-name">SMS<i>Pin</i></span></a>';
+      document.body.insertBefore(bar, document.body.firstChild);
+    }
+    if (!$(".dash-balpill", bar)) {
+      const pill = document.createElement("div");
+      pill.className = "dash-balpill";
+      pill.setAttribute("role", "group");
+      pill.setAttribute("aria-label", "Wallet balance");
+      pill.innerHTML =
+        '<a class="bp-btn bp-minus" href="/dashboard/wallet/" aria-label="Wallet — withdraw or spend">' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12h14"/></svg></a>' +
+        '<a class="bp-val" id="balPillVal" href="/dashboard/topup/">—</a>' +
+        '<a class="bp-btn bp-plus" href="/dashboard/topup/" aria-label="Add funds">' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></a>';
+      bar.appendChild(pill);
+    }
   }
 
   // Scale each stat-card value to the largest size that fits its (square) box,
@@ -2002,11 +2014,17 @@
   }
 
   // ===== Top Up (Billing · Top up) =====
+  const TU_ICON = {
+    crypto: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 5v10l-8 5-8-5V7z"/><path d="M12 8v8M9.5 10h4a1.5 1.5 0 0 1 0 3h-3a1.5 1.5 0 0 0 0 3H14"/></svg>',
+    crypto2: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 9.5 12 14l3-4.5M9 14.5h6"/></svg>',
+    binance: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l3 3-3 3-3-3zM12 15l3 3-3 3-3-3zM3 12l3-3 3 3-3 3zM15 12l3-3 3 3-3 3z"/></svg>',
+    local: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/></svg>',
+  };
   const TU_METHODS = [
-    { id: "crypto", label: "Crypto", note: "USDT · BTC · ETH", note2: "Crypto payments are credited after 1 confirmation. Fast top-ups with no lengthy signup." },
-    { id: "crypto2", label: "Crypto 2", note: "USDT · USDC · 60+ coins", note2: "60+ coins via our second crypto gateway, credited after 1 confirmation." },
+    { id: "crypto", label: "Crypto", note: "Usually confirms in minutes", note2: "Crypto payments are credited after 1 confirmation. Fast top-ups with no lengthy signup." },
+    { id: "crypto2", label: "Crypto 2", note: "60+ coins supported", note2: "60+ coins via our second crypto gateway, credited after 1 confirmation." },
     { id: "binance", label: "Binance Pay", note: "BNB · USDT · BUSD", note2: "Pay from Binance Pay; credited instantly after the transfer confirms." },
-    { id: "local", label: "Cards & Local", note: "Visa · Alipay · WeChat", note2: "Card and local wallet payments. Your balance updates the moment it clears." },
+    { id: "local", label: "Card", note: "Instant", note2: "Card and local wallet payments. Your balance updates the moment it clears." },
   ];
   const TU_AMOUNTS = [
     { usd: 5, bonus: 0, pct: 0 },
@@ -2019,22 +2037,24 @@
     { usd: 1000, bonus: 140, pct: 14 },
     { usd: 5000, bonus: 750, pct: 15 },
   ];
+  const TU_PRESETS = [5, 10, 25, 50];
+  const fmtUsd = n => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   async function renderTopUp() {
     try { WALLET = await SMSPIN.rpc("wallet_summary"); } catch (e) {}
     const cur = (WALLET && WALLET.currency) || "NGN";
-    const bal = (WALLET && WALLET.balance) || 0;
     const usd = GEO && GEO.currency === "USD" ? 1 : await usdRate();
-    const balEl = document.getElementById("tuBalance");
-    if (balEl) balEl.textContent = money(bal, cur);
 
-    let method = "crypto", amount = 25, custom = false;
+    let method = "crypto", amount = 10;
 
     const methods = document.getElementById("tuMethods");
     if (methods) {
       methods.innerHTML = TU_METHODS.map(m =>
         '<button type="button" class="tu-m' + (m.id === method ? " on" : "") + '" data-m="' + m.id + '">' +
-        '<b>' + esc(m.label) + '</b><span>' + esc(m.note) + "</span></button>").join("");
+          '<span class="ic" aria-hidden="true">' + TU_ICON[m.id] + "</span>" +
+          '<span class="tx"><b>' + esc(m.label) + "</b><small>" + esc(m.note) + "</small></span>" +
+          '<span class="rd" aria-hidden="true"></span>' +
+        "</button>").join("");
       $$(".tu-m", methods).forEach(b => b.addEventListener("click", () => {
         method = b.dataset.m;
         $$(".tu-m", methods).forEach(x => x.classList.toggle("on", x === b));
@@ -2045,69 +2065,65 @@
       }));
     }
 
-    const amountsEl = document.getElementById("tuAmounts");
-    function paintAmounts() {
-      if (!amountsEl) return;
-      amountsEl.innerHTML = TU_AMOUNTS.map(a =>
-        '<button type="button" class="tu-amt' + (!custom && a.usd === amount ? " on" : "") + '" data-usd="' + a.usd + '">' +
-        (a.tag ? '<span class="tu-tag">' + a.tag + "</span>" : "") +
-        '<b>$' + a.usd.toLocaleString() + "</b>" +
-        (a.bonus ? '<span class="tu-bonus">+$' + a.bonus.toLocaleString() + " bonus</span>" : "") +
-        (a.pct ? '<span class="tu-pct">· ' + a.pct + "%</span>" : "") +
-        "</button>").join("");
-      $$(".tu-amt", amountsEl).forEach(b => b.addEventListener("click", () => {
-        custom = false;
+    const amtInp = document.getElementById("tuAmt");
+    if (amtInp) {
+      amtInp.value = String(amount);
+      amtInp.addEventListener("input", () => {
+        amtInp.value = amtInp.value.replace(/[^0-9.]/g, "");
+        amount = Number(amtInp.value || 0);
+        paintPresets(); summary();
+      });
+    }
+
+    const presetsEl = document.getElementById("tuPresets");
+    function paintPresets() {
+      if (!presetsEl) return;
+      presetsEl.innerHTML = TU_PRESETS.map(v => {
+        const a = TU_AMOUNTS.find(x => x.usd === v) || { bonus: 0 };
+        return '<button type="button" class="tu-pre' + (a.usd === amount ? " on" : "") + '" data-usd="' + v + '">' +
+          "<b>$" + v.toLocaleString() + "</b>" +
+          (a.bonus ? "<span>+$" + a.bonus.toLocaleString() + "</span>" : "") + "</button>";
+      }).join("");
+      $$(".tu-pre", presetsEl).forEach(b => b.addEventListener("click", () => {
         amount = Number(b.dataset.usd);
-        const amtInp = document.getElementById("tuAmt");
-        if (amtInp) amtInp.value = "";
-        paintAmounts(); summary();
+        if (amtInp) amtInp.value = String(amount);
+        paintPresets(); summary();
       }));
     }
-    paintAmounts();
+    paintPresets();
 
-    const toggle = document.getElementById("tuCustomToggle");
-    const customBox = document.getElementById("tuCustom");
-    const amtInp = document.getElementById("tuAmt");
-    if (toggle) toggle.addEventListener("click", () => {
-      custom = !custom;
-      if (customBox) customBox.hidden = !custom;
-      if (custom && amtInp) { amtInp.value = String(amount); amtInp.focus(); }
-      paintAmounts(); summary();
-    });
-    if (amtInp) amtInp.addEventListener("input", () => {
-      custom = true; amount = Number(amtInp.value || 0); paintAmounts(); summary();
-    });
-
-    function bonusFor(usd) {
+    function bonusFor(usdAmt) {
       let best = { bonus: 0, pct: 0 };
-      for (const a of TU_AMOUNTS) if (usd >= a.usd) best = { bonus: a.bonus, pct: a.pct };
+      for (const a of TU_AMOUNTS) if (usdAmt >= a.usd) best = { bonus: a.bonus, pct: a.pct };
       return best;
     }
     function summary() {
-      const b = custom ? bonusFor(amount) : (TU_AMOUNTS.find(a => a.usd === amount) || { bonus: 0, pct: 0 });
-      const bonus = custom ? amount * (b.pct / 100) : b.bonus;
+      const exact = TU_AMOUNTS.find(a => a.usd === amount);
+      const b = exact || bonusFor(amount);
+      const bonus = exact ? b.bonus : amount * (b.pct / 100);
       const total = amount + bonus;
       const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-      set("tuSumAmount", "$" + amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-      set("tuSumBonus", "+$" + bonus.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-      set("tuSumTotal", "$" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-      set("tuSumTotal2", "$" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+      set("tuSumAmount", fmtUsd(amount));
+      set("tuSumBonus", "+" + fmtUsd(bonus));
+      set("tuSumTotal", fmtUsd(total));
+      set("tuSumTotal2", fmtUsd(total));
+      const row = document.getElementById("tuSumBonusRow");
+      if (row) row.hidden = !(bonus > 0);
       const lbl = document.getElementById("tuSumBonusLabel");
       if (lbl) lbl.textContent = "Bonus" + (b.pct ? " (" + b.pct + "%)" : "");
-      const btn = document.getElementById("tuBtn");
       const m = TU_METHODS.find(x => x.id === method) || TU_METHODS[0];
-      if (btn) {
-        btn.textContent = "Pay with " + (m.id === "local" ? "card" : m.id === "binance" ? "Binance Pay" : "crypto") +
-          " · $" + amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        btn.disabled = !(amount > 0);
-      }
+      set("tuSumMethod", m.label);
+      const btn = document.getElementById("tuBtn");
+      if (btn) btn.disabled = !(amount > 0);
     }
     summary();
 
     const btn = document.getElementById("tuBtn");
     if (btn) btn.addEventListener("click", async () => {
       if (!(amount > 0)) { toast("Enter an amount", "err"); return; }
-      btn.disabled = true; const label = btn.textContent; btn.textContent = "Redirecting to checkout…";
+      btn.disabled = true;
+      const html = btn.innerHTML;
+      btn.textContent = "Redirecting to checkout…";
       try {
         const sess = SMSPIN.getSession();
         const res = await fetch("/api/payments/initialize", {
@@ -2119,7 +2135,7 @@
         const d = await res.json();
         if (!res.ok || !d.checkout_url) throw new Error((d && d.error) || "Could not start payment");
         location.href = d.checkout_url;
-      } catch (e) { toast(e.message, "err"); btn.disabled = false; btn.textContent = label; }
+      } catch (e) { toast(e.message, "err"); btn.disabled = false; btn.innerHTML = html; }
     });
 
     async function paintPayments() {
@@ -2416,21 +2432,10 @@
     if (el) { el.classList.add("out"); setTimeout(() => el.remove(), 220); }
   }
 
-  // Mobile app chrome: a floating top-right balance pill ("$0.00 +"), a bottom
-  // tab bar (Home / History / raised Buy / Top Up) and a floating support chat.
+  // Mobile app chrome: the bottom tab bar (Home / History / raised Buy / Top Up).
+  // The wallet balance pill lives in the app top bar (see mountAppBar).
   function buildMobileChrome() {
     if ($("#dashBottomNav")) return;
-    const pill = document.createElement("div");
-    pill.className = "dash-balpill";
-    pill.setAttribute("role", "group");
-    pill.setAttribute("aria-label", "Wallet balance");
-    pill.innerHTML =
-      '<a class="bp-btn bp-minus" href="/dashboard/wallet/" aria-label="Wallet — withdraw or spend">' +
-        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12h14"/></svg></a>' +
-      '<a class="bp-val" id="balPillVal" href="/dashboard/topup/">—</a>' +
-      '<a class="bp-btn bp-plus" href="/dashboard/topup/" aria-label="Add funds">' +
-        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></a>';
-    document.body.appendChild(pill);
 
     const nav = document.createElement("nav");
     nav.className = "dash-bottomnav"; nav.id = "dashBottomNav";
