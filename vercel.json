@@ -24,7 +24,9 @@
     { "source": "/store/:slug/:page", "destination": "/:page/index.html" },
     { "source": "/store/:slug/:page/", "destination": "/:page/index.html" },
     { "source": "/store/:slug/:dir/:page", "destination": "/:dir/:page/index.html" },
-    { "source": "/store/:slug/:dir/:page/", "destination": "/:dir/:page/index.html" }
+    { "source": "/store/:slug/:dir/:page/", "destination": "/:dir/:page/index.html" },
+    { "source": "/store/:slug/:dir/:sub/:page", "destination": "/:dir/:sub/:page/index.html" },
+    { "source": "/store/:slug/:dir/:sub/:page/", "destination": "/:dir/:sub/:page/index.html" }
   ],
   "headers": [
     {
