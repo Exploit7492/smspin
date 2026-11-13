@@ -743,3 +743,24 @@ to their store. One set of files serves everyone; a UI change lands on all store
 - **Tests need a fresh backend.** `python3 backend/server.py` caches bytecode; a
   long-running instance keeps serving old code and can 500 on routes the current
   source handles. Restart it before running `pytest tests/` (124 passed, 3 skipped).
+
+### Hydration safety (do not break the RSC flight payload)
+
+The mirrored pages are a Next.js App Router export: each HTML file embeds the
+React Server Component "flight" payload in inline `self.__next_f.push(...)`
+scripts, and React compares that serialized payload against the SSR markup
+during hydration. Any build-time rewrite that changes text **inside** those
+scripts (but not in the markup) desyncs the two and React throws minified
+error **#423**, which unmounts the whole tree and leaves a blank page whose only
+visible pixel is the `--page-bg` colour (looks like a black/blank screen).
+
+- `scripts/vercel-build.mjs` therefore splits the HTML on `<script>…</script>`
+  before rewriting: `retargetDomain` only touches non-script markup and the
+  static `application/ld+json` blocks, never the flight payload.
+- `applyMinPriceFloor` intentionally rewrites prices in *both* the markup and
+  the payload, so those stay in sync — that is why it is safe.
+- A benign, pre-existing `React error #425` (text content mismatch) is thrown on
+  every page and is recovered from; it is unrelated and does not blank the page.
+- Verify a build with headless Chromium (not just `curl`): check `document.title`,
+  `document.body.innerText`, and for `pageerror` #423. `curl` returns the full
+  HTML even when hydration fails, so a 200 + 100 KB response proves nothing.
