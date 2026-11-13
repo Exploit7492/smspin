@@ -121,25 +121,29 @@
     root.style.setProperty("--accent", primary);
     root.style.setProperty("--accent-dark", secondary);
     root.style.setProperty("--indigo", primary);
-    var style = document.getElementById("tenant-theme");
-    if (!style) { style = document.createElement("style"); style.id = "tenant-theme"; document.head.appendChild(style); }
-    var paletteVars =
-      "--red:" + primary + ";--red-deep:" + secondary + ";" +
-      "--red-darkest:" + (mix(primary, .35, [0, 0, 0]) || primary) + ";" +
-      "--red-soft:" + (rgba(primary, .10) || "transparent") + ";" +
-      "--red-tint:" + (rgba(primary, .14) || "transparent") + ";" +
-      "--red-line:" + (rgba(primary, .20) || "transparent") + ";";
-    var paletteBg =
-      "background:radial-gradient(900px 600px at 85% -10%," + (rgba(primary, .16) || "transparent") + ",transparent 60%)," +
+    // The mirrored marketing CSS hardcodes the platform palette in scoped
+    // selectors (theme.css repaints `.home` sky-blue in light mode; the Next
+    // chunk sets the ruby `--red`), so a stylesheet override of equal
+    // specificity is a coin toss. Inline custom properties on `.home` win the
+    // cascade outright, and the background needs `!important` to beat the
+    // `!important` already on `.home`.
+    var vars = {
+      "--red": primary,
+      "--red-deep": secondary,
+      "--red-darkest": mix(primary, .35, [0, 0, 0]) || primary,
+      "--red-soft": rgba(primary, .10) || "transparent",
+      "--red-tint": rgba(primary, .14) || "transparent",
+      "--red-line": rgba(primary, .20) || "transparent",
+    };
+    var bg =
+      "radial-gradient(900px 600px at 85% -10%," + (rgba(primary, .16) || "transparent") + ",transparent 60%)," +
       "radial-gradient(700px 500px at -10% 40%," + (rgba(secondary, .12) || "transparent") + ",transparent 60%)," +
-      "radial-gradient(1000px 700px at 50% 110%," + (rgba(primary, .12) || "transparent") + ",transparent 60%),var(--page-bg) !important;" +
-      "background-attachment:fixed";
-    // Repeat under the dark-mode selectors so theme.css's higher-specificity
-    // `.home` overrides (which default back to the platform red) don't win.
-    style.textContent =
-      ".home{" + paletteVars + paletteBg + "}" +
-      ':root[data-theme="dark"] .home{' + paletteVars + paletteBg + "}" +
-      ':root:not([data-theme="light"]) .home{' + paletteVars + paletteBg + "}";
+      "radial-gradient(1000px 700px at 50% 110%," + (rgba(primary, .12) || "transparent") + ",transparent 60%),var(--page-bg)";
+    document.querySelectorAll(".home").forEach(function (el) {
+      Object.keys(vars).forEach(function (k) { el.style.setProperty(k, vars[k]); });
+      el.style.setProperty("background", bg, "important");
+      el.style.setProperty("background-attachment", "fixed", "important");
+    });
     // The nav wordmark SVG hardcodes the platform red inline; repaint its
     // mark background and any inline fill so the logo adopts the store colour.
     document.querySelectorAll(".logo [aria-hidden='true']").forEach(function (mark) {

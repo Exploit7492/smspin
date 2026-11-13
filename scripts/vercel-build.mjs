@@ -93,9 +93,12 @@ async function fetchTenantBrands() {
 }
 const BRANDS = await fetchTenantBrands();
 const BOOT = tenantBoot(await fetchTenantDomains());
+// Version the injected assets by commit so a new deploy never serves a stale
+// cached copy (vercel.json caches .js for a week).
+const BUILD = (process.env.VERCEL_GIT_COMMIT_SHA || String(Date.now())).slice(0, 8);
 const BRANDS_SRC = `<script>window.SMSPIN_TENANT_BRANDS=${JSON.stringify(BRANDS)};</script>`;
-const BRAND_SRC = `<script src="/tenant-brand.js" defer></script>`;
-const CONSENT_SRC = `<script src="/consent-log.js" defer></script>`;
+const BRAND_SRC = `<script src="/tenant-brand.js?v=${BUILD}" defer></script>`;
+const CONSENT_SRC = `<script src="/consent-log.js?v=${BUILD}" defer></script>`;
 
 // Runs at the end of <head> — the <title>/<meta> are parsed by then but the
 // body has not, so the tenant's name and palette are in place before the first
