@@ -499,6 +499,23 @@ redirects or aliases:
   form (`app/blog/[slug]/`, `app/temp-number/[slug]/`, etc.).
 - To re-mirror: fetch `https://smspin.io<path>` → `site/<path>/index.html` (files with a dot
   in the last segment → `site/<path>`), then rename any `%5B`/`%5D` dirs to decoded form.
+- **Refreshing `_next` assets after an upstream rebuild** (2026-11-11): Next.js re-hashes
+  every chunk filename on each build and stops serving the old names, so the mirror's
+  references silently 404 and the pages lose their JS. To refresh:
+  1. Crawl one live page per route template (~41 templates; blog/temp-number/free-numbers/
+     rent/sms-verification/receive-sms/buy plus the static pages) and collect every
+     `/_next/static/...` ref. ~64 distinct refs is the complete set — a 337-page sample
+     found none extra.
+  2. Download each ref under its own name; `urllib`/`curl` keep the `%5B` in the path, so
+     move files from `%5B...%5D` dirs into the decoded `[...]` dirs afterwards.
+  3. Map old→new by **route slot** (strip the trailing hash: `app/<route>/page-<hash>.js`,
+     `app/layout-<hash>.js`, `chunks/<n>-<hash>.js`, `webpack-<hash>.js`). Content hashing
+     also works but several page chunks genuinely change, so slot-matching is the reliable
+     key. Prefer a target whose HTTP status is 200; live sometimes serves a stale
+     Cloudflare-cached page whose refs 404 (verify with a cache-busted fetch).
+  4. Replace refs across all HTML, delete now-unreferenced old-name files, then confirm
+     every remaining ref returns 200 from the dev server and is byte-identical to live.
+  Note the mirror collapses duplicate route-variant chunks to live's single variant.
 
 ## Gotchas
 - **DB connections**: always use `with db() as conn:` (the `@contextmanager` in
