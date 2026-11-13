@@ -62,6 +62,7 @@
 <script src="/dashboard/config.js"></script>
 <script src="/dashboard/api.js"></script>
 <script src="/store/auth.js"></script>
+<script src="/pay.js?v=1"></script>
 <script>
 (function () {
   var S = TENANT_AUTH.slug();
@@ -157,14 +158,15 @@
     if (amt < 100) { TENANT_AUTH.show(msg, 'Enter at least ₦100', 'err'); return; }
     var btn = this; btn.disabled = true;
     try {
-      var res = await fetch("/api/payments/initialize", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount: amt, channel: method, tenant_token: SMSPIN.tenant.token(S) })
+      var ref = await SMSPIN_PAY.checkout({
+        amount: amt, channel: method, tenantToken: SMSPIN.tenant.token(S),
+        onSuccess: function () {
+          TENANT_AUTH.show(msg, 'Payment received — crediting your wallet…', 'ok');
+          setTimeout(function () { location.reload(); }, 1800);
+        },
+        onClose: function () { btn.disabled = false; }
       });
-      var d = await res.json();
-      if (!res.ok || !d.checkout_url) throw new Error((d && d.error) || "Could not start payment");
-      TENANT_AUTH.show(msg, 'Redirecting to secure checkout…', 'ok');
-      location.href = d.checkout_url;
+      if (ref) { try { await fetch("/api/payments/verify/" + encodeURIComponent(ref)); } catch (e) {} }
     } catch (e) { TENANT_AUTH.show(msg, e.message, 'err'); btn.disabled = false; }
   });
 

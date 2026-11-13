@@ -5,6 +5,34 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const UI = window.SMSPINUI || { alert: async () => {}, confirm: async () => "ok", reveal: async () => {}, modal: async () => null, select: async () => null, toast: () => {} };
 
+  // Tenants serve this exact file. In tenant mode every in-app link and route
+  // is prefixed with the store base (/store/<slug>), and the router strips it
+  // back off before matching, so the page markup and render code stay verbatim.
+  const TBASE = (window.SMSPIN_TENANT_BASE || "").replace(/\/$/, "");
+  const TENANT = !!TBASE;
+  const inBase = p => (TENANT && typeof p === "string" && p.charAt(0) === "/" ? TBASE + p : p);
+  const stripBase = p => (TENANT && p.indexOf(TBASE + "/") === 0 ? p.slice(TBASE.length) : p);
+  // Rewrite hardcoded "/dashboard/..." / "/login" links in the DOM to the store
+  // base, including nodes injected later by the SPA router.
+  function prefixLinks(root) {
+    if (!TENANT) return;
+    (root || document).querySelectorAll('a[href^="/dashboard/"], a[href="/dashboard"], a[href="/login"], a[href="/login/"]').forEach(a => {
+      const h = a.getAttribute("href");
+      if (h && h.indexOf(TBASE + "/") !== 0) a.setAttribute("href", TBASE + h);
+    });
+  }
+  // Async renderers (sidebar, incoming messages, notifications) inject links
+  // after the one-shot prefixLinks pass, so keep rewriting on DOM mutations.
+  function observeTenantLinks() {
+    if (!TENANT || !window.MutationObserver) return;
+    new MutationObserver(muts => {
+      for (const m of muts) for (const n of m.addedNodes) {
+        if (n.nodeType === 1) prefixLinks(n.matches && n.matches("a") ? n.parentNode : n);
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
+
   const CURRENCY_SYMBOL = { NGN: "\u20a6", USD: "$", GBP: "\u00a3", EUR: "\u20ac", INR: "\u20b9",
     JPY: "\u00a5", BRL: "R$", ZAR: "R", KES: "KSh", GHS: "GH\u20b5", CAD: "C$", AUD: "A$" };
   function money(n, cur) {
@@ -41,7 +69,30 @@
     if (dl) dl.innerHTML = /Pin$/.test(short) ? esc(short.slice(0, -3)) + "<i>Pin</i>" : esc(short);
     const el = document.querySelector('meta[name="application-name"]');
     if (el) el.setAttribute("content", name);
+    applyBrandColors();
     mountAppBar();
+  }
+  // Tenant stores carry their own palette + logo (tenant_site_config); the
+  // platform leaves these unset, so nothing changes there. Setting --brand and
+  // --brand-2 re-skins every themed surface (buttons, gradients, glows).
+  function applyBrandColors() {
+    const root = document.documentElement.style;
+    if (SITE.primary_color) root.setProperty("--brand", SITE.primary_color);
+    if (SITE.secondary_color) root.setProperty("--brand-2", SITE.secondary_color);
+    if (SITE.primary_color) {
+      // The stock wordmark SVG hardcodes the platform red for its accent dots;
+      // repaint them so a tenant logo/wordmark matches the store palette.
+      document.querySelectorAll(".dash-appbar .dl-mark svg circle, .dash-topbrand svg circle").forEach(c => {
+        c.setAttribute("fill", SITE.primary_color);
+      });
+    }
+    if (SITE.logo_url) {
+      document.querySelectorAll(".dash-appbar .dl-mark, .side-brand .dl-mark, .dash-topbrand .dl-mark").forEach(mark => {
+        mark.style.background = "transparent";
+        mark.style.boxShadow = "none";
+        mark.innerHTML = '<img src="' + esc(SITE.logo_url) + '" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:inherit">';
+      });
+    }
   }
   // Fixed app top bar: glass, brand logo, and the wallet balance pill.
   function mountAppBar() {
@@ -65,12 +116,7 @@
       pill.className = "dash-balpill";
       pill.setAttribute("role", "group");
       pill.setAttribute("aria-label", "Wallet balance");
-      pill.innerHTML =
-        '<a class="bp-btn bp-minus" href="/dashboard/wallet/" aria-label="Wallet — withdraw or spend">' +
-          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12h14"/></svg></a>' +
-        '<a class="bp-val" id="balPillVal" href="/dashboard/topup/">—</a>' +
-        '<a class="bp-btn bp-plus" href="/dashboard/topup/" aria-label="Add funds">' +
-          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></a>';
+      pill.innerHTML = '<a class="bp-val" id="balPillVal" href="/dashboard/topup/">—</a>';
       bar.appendChild(pill);
     }
   }
@@ -179,7 +225,7 @@
 
   async function guard() {
     if (!window.SMSPIN) return false;
-    if (!SMSPIN.auth.isAuthed()) { location.href = "/login/"; return false; }
+    if (!SMSPIN.auth.isAuthed()) { location.href = inBase("/login/"); return false; }
     const u = SMSPIN.auth.user();
     if (u && u.email) {
       const local = u.email.split("@")[0];
@@ -220,7 +266,7 @@
       const d = await SMSPIN.rpc("my_orders", { p_limit: 4 });
       if (!d || !d.length) { host.innerHTML = '<p class="muted side-empty">No orders yet</p>'; return; }
       host.innerHTML = d.map(o =>
-        '<a class="side-order" href="/dashboard/orders/">' +
+        '<a class="side-order" href="' + inBase("/dashboard/orders/") + '">' +
         svcIcon(o) +
         '<span class="so-svc">' + esc(o.service || "Order") + "</span>" +
         badge(o.status).replace('class="badge', 'class="badge so-badge') +
@@ -236,7 +282,7 @@
       const live = (d || []).filter(o => o.status === "waiting" || o.status === "received").slice(0, 3);
       if (!live.length) { host.innerHTML = '<p class="muted side-empty">No active numbers</p>'; return; }
       host.innerHTML = live.map(o =>
-        '<a class="side-order" href="/dashboard/numbers/">' +
+        '<a class="side-order" href="' + inBase("/dashboard/numbers/") + '">' +
         svcIcon(o) +
         '<span class="so-svc">' + esc((o.flag || "") + " " + (o.service || "Number")) + "</span>" +
         badge(o.status).replace('class="badge', 'class="badge so-badge') +
@@ -269,12 +315,13 @@
     if (!links) return;
     $$(".cards .card").forEach((card, i) => {
       if (!links[i]) return;
+      const dest = inBase(links[i]);
       card.classList.add("card-link");
       card.setAttribute("role", "link");
       card.tabIndex = 0;
-      card.addEventListener("click", () => { location.href = links[i]; });
+      card.addEventListener("click", () => { location.href = dest; });
       card.addEventListener("keydown", e => {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); location.href = links[i]; }
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); location.href = dest; }
       });
     });
   }
@@ -335,7 +382,7 @@
           }).join("")
         : '<p class="muted ov-svc-empty">No services available right now.</p>';
       $$("[data-svc]", qa).forEach(b => b.addEventListener("click", () =>
-        location.href = "/dashboard/buy/?service=" + encodeURIComponent(b.dataset.svc)));
+        location.href = inBase("/dashboard/buy/?service=" + encodeURIComponent(b.dataset.svc))));
     };
     paintServices();
     // Prices come from the shared catalog snapshot; if it is still warming,
@@ -353,7 +400,7 @@
         ? msgs.map(smsRow).join("")
         : emptyState({ icon: "\u2709", title: "No messages yet",
             body: "Codes land here the moment they arrive. Buy a number and keep this page open.",
-            cta: "Buy a number", href: "/dashboard/buy/" });
+            cta: "Buy a number", href: inBase("/dashboard/buy/") });
     }
 
     // E6: notification centre.
@@ -420,7 +467,7 @@
     if (cnt) cnt.textContent = (d || []).length + " number" + ((d || []).length === 1 ? "" : "s");
     if (!d || !d.length) { host.innerHTML = emptyState({ icon: "\u260E", title: "No numbers yet",
       body: "A number is reserved the second you buy it. Pick a service and country to begin.",
-      cta: "Buy your first number", href: "/dashboard/buy/" }); return; }
+      cta: "Buy your first number", href: inBase("/dashboard/buy/") }); return; }
     host.innerHTML = d.map(numCard).join("");
     wireFlip(host);
   }
@@ -453,7 +500,7 @@
     if (b) b.textContent = (d || []).length + " total";
     if (!d || !d.length) { host.innerHTML = emptyState({ icon: "\u25A4", title: "No orders yet",
       body: "Your purchases show up here with the number, status and price.",
-      cta: "Start an order", href: "/dashboard/buy/" }); return; }
+      cta: "Start an order", href: inBase("/dashboard/buy/") }); return; }
     host.innerHTML = d.map(orderCard).join("");
     wireFlip(host);
   }
@@ -1656,7 +1703,7 @@
           : await SMSPIN.buyOrder({ country: state.country, service: code });
         const r = res || {};
         toast("Number " + (r.phone_number || "") + " reserved", "ok");
-        location.href = "/dashboard/sms/?order=" + encodeURIComponent(r.order_id || "");
+        location.href = inBase("/dashboard/sms/?order=" + encodeURIComponent(r.order_id || ""));
       } catch (e) { toast(e.message, "err"); restore(); updatePrice(); }
     });
 
@@ -1868,7 +1915,7 @@
     if (!orders || !orders.length) {
       if (host) host.innerHTML = emptyState({ icon: "\u260E", title: "No active number",
         body: "Buy a number and incoming SMS codes appear on this page automatically.",
-        cta: "Buy a number", href: "/dashboard/buy/" });
+        cta: "Buy a number", href: inBase("/dashboard/buy/") });
       return;
     }
     const order = orders[0];
@@ -2062,18 +2109,16 @@
       if (!(amount >= 100)) { toast("Enter at least \u20a6100", "err"); return; }
       btn.disabled = true;
       const html = btn.innerHTML;
-      btn.textContent = "Redirecting to checkout\u2026";
+      btn.textContent = "Opening secure checkout\u2026";
       try {
         const sess = SMSPIN.getSession();
-        const res = await fetch("/api/payments/initialize", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: "Bearer " + (sess && sess.access_token || "") },
-          body: JSON.stringify({ amount: Math.round(amount), channel: method, currency: cur,
-            country: (GEO && GEO.country) || undefined }),
+        const ref = await SMSPIN_PAY.checkout({
+          amount: amount, channel: method,
+          bearer: (sess && sess.access_token) || "",
+          onSuccess: () => { toast("Payment received \u2014 crediting your wallet\u2026", "ok"); setTimeout(() => location.reload(), 1800); },
+          onClose: () => { btn.disabled = false; btn.innerHTML = html; },
         });
-        const d = await res.json();
-        if (!res.ok || !d.checkout_url) throw new Error((d && d.error) || "Could not start payment");
-        location.href = d.checkout_url;
+        if (ref) { try { await fetch("/api/payments/verify/" + encodeURIComponent(ref)); } catch (e) {} }
       } catch (e) { toast(e.message, "err"); btn.disabled = false; btn.innerHTML = html; }
     });
 
@@ -2340,6 +2385,8 @@
     await loadSite();
     // One-time startup: panel, links and sidebar data are wired once; every
     // subsequent navigation only re-renders <main> from the client-side router.
+    prefixLinks(document);
+    observeTenantLinks();
     buildMobileChrome();
     wireSidePanel();
     fillSideBalance();
@@ -2351,12 +2398,13 @@
     // on arrival (prompt: "everything populated fully before the user arrival").
     preloadCatalog();
     await renderPage();
+    prefixLinks(document);
     fitStatValues();
     let fitT;
     window.addEventListener("resize", () => { clearTimeout(fitT); fitT = setTimeout(fitStatValues, 150); });
     wireLiveEvents();
-    const out = document.querySelector('a[href="/login"]');
-    if (out) out.addEventListener("click", async (e) => { e.preventDefault(); await SMSPIN.auth.signOut(); location.href = "/login/"; });
+    const out = document.querySelector('a[href$="/login"], a[href="/login"], a[href="/login/"]');
+    if (out) out.addEventListener("click", async (e) => { e.preventDefault(); await SMSPIN.auth.signOut(); location.href = inBase("/login/"); });
     await settlePayment();
     await maybeWelcome();
     maybeStartTour();
@@ -2377,12 +2425,12 @@
     "/dashboard/support/": "support", "/dashboard/topup/": "topup",
     "/dashboard/history/": "history",
   };
-  const pageFor = path => ROUTES[path.replace(/\/index\.html$/, "/")] || null;
+  const pageFor = path => ROUTES[stripBase(path).replace(/\/index\.html$/, "/")] || null;
 
   function applyActiveNav() {
-    const cur = location.pathname.replace(/\/index\.html$/, "/");
+    const cur = stripBase(location.pathname).replace(/\/index\.html$/, "/");
     $$(".dash-side a[href^='/dashboard/'], .dash-bottomnav a.bn[href^='/dashboard/']").forEach(a => {
-      const href = a.getAttribute("href");
+      const href = stripBase(a.getAttribute("href"));
       a.classList.toggle("active", href === cur || (cur === "/dashboard/" && href === "/dashboard/"));
     });
   }
@@ -2418,6 +2466,7 @@
     page = newPage;
     document.body.dataset.page = np || page;
     document.title = doc.title || document.title;
+    prefixLinks(curMain);
     if (page === "overview") { try { localStorage.setItem("smspin_welcomed", "1"); } catch (e) {} }
     window.scrollTo(0, 0);
     await renderPage();
@@ -2453,6 +2502,10 @@
   // O2: one-time welcome modal for first-login users, offering the tour.
   async function maybeWelcome() {
     if (page !== "overview" || !window.SMSPINUI) return;
+    // The first-run welcome + auto tour are main-app onboarding. On a tenant
+    // dashboard they would cover the cloned UI on first load, so skip them
+    // there; tenants can still open the tour from the Help button.
+    if (TENANT) return;
     let seen = null;
     try { seen = localStorage.getItem("smspin_welcomed"); } catch (e) {}
     if (seen === "1") return;
@@ -2476,12 +2529,13 @@
         : [{ id: "ok", label: "Get started", variant: "primary" }],
     });
     if (res === "tour" && window.TOUR) window.TOUR.dashboard(true);
-    else if (res === "buy") location.href = "/dashboard/buy/";
+    else if (res === "buy") location.href = inBase("/dashboard/buy/");
   }
 
   // O1: start the first-run dashboard tour once, on the overview page.
   function maybeStartTour() {
     if (page !== "overview" || !window.TOUR) return;
+    if (TENANT) return;                 // don't cover the cloned UI on first load
     if (window.TOUR.seen("dashboard")) return;
     setTimeout(() => window.TOUR.dashboard(), 900);
   }

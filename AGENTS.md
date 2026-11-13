@@ -244,6 +244,24 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
 - `payments.user_id` / `orders.user_id` / `transactions.user_id` are nullable so tenant rows
   can carry `tenant_account_id` instead.
 
+## Multi-tenant identity, nesting and round-robin (Task 4)
+- **Unique-email identity**: `tenant_accounts` is unique on `(lower(email), coalesce(tenant_slug,''))`
+  (`tenant_accounts_email_slug_key`), so one email holds one independent account per store, plus
+  the platform (`tenant_slug IS NULL`). `tenant_identities_for_email(email)` lists every store an
+  email belongs to; `tenant_login_auto(email, password)` signs in to the identity used most
+  recently (`last_login_at desc, id`) — round-robin continuity, so `SMSPIN.tenant.login()` with no
+  slug resolves the tenant itself.
+- **Nesting**: `businesses.parent_id` + `businesses.root_id` (trigger `business_set_root`
+  recomputes `root_id` up the chain, depth-capped at 32). `businesses_user_root_key` keeps ONE
+  root store per user (`where parent_id is null`); children are unlimited. `create_child_business`
+  spins a nested store under the caller's root; `my_businesses()` returns root + children.
+- **Root scoping**: every "the user's store" lookup (`my_business`, `my_business_stats`,
+  `business_set_branding`, `request_payout`, `purchase_business`, `request_app_build`,
+  `reserve_number`, `reserve_rental`, `api_catalog`, …) is scoped `parent_id is null`, so a nested
+  child is never mistaken for the account's own storefront. The old `businesses.user_id` unique
+  constraint was dropped in favour of the partial root index.
+- Migration: `supabase/migrations/20261111330000_multi_tenant_identity.sql`.
+
 ## Payment channels (KoraPay)
 - The merchant account only has **`card`** and **`bank_transfer`** enabled for NGN. Probed
   against the live test key: `ussd` and `mobile_money` are rejected for NGN. Do not advertise
@@ -260,6 +278,24 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
 - The funding fee (flat 2.5%) is stamped onto the pending payment by `set_payment_fee` before
   checkout; `credit_wallet_from_payment` nets it so the wallet only receives the real value.
   Tests: `tests/test_phase7_payments.py`.
+
+## In-page KoraPay checkout (no redirect)
+- Checkout runs as an **overlay on the current page**, never a redirect. `site/pay.js` exposes
+  `SMSPIN_PAY.checkout({amount, channel, bearer|tenantToken, onSuccess, onClose})`:
+  it POSTs `/api/payments/initialize` with `inline:true`, then drives KoraPay's own modal SDK
+  (`https://korablobstorage.blob.core.windows.net/modal-bucket/korapay-collections.min.js`).
+- The SDK assigns `window.Korapay` as a **ready object** (`window.Korapay.initialize(...)`), NOT
+  a constructor — `new Korapay()` throws. `pay.js` accepts either shape.
+- Backend `inline` mode: reserves the payment reference + fee, sets `payments.channel`, and
+  returns `{inline:true, reference, public_key, amount, customer, notification_url}` instead of
+  pre-creating a hosted charge. The SDK creates the charge against that same reference and the
+  existing `/api/korapay/webhook` credits the wallet on `charge.success`.
+- Both surfaces use it: platform Add funds (`dashboard/topup/`, via `dash.js`) and the tenant
+  store account page (`store/account.html`). `pay.js` is included on both pages.
+- If the SDK/CDN is unavailable `pay.js` falls back to the hosted `checkout_url` so payment
+  still works. The hosted URL itself sets `x-frame-options: SAMEORIGIN`, so an iframe is not an
+  option — the modal SDK is the supported no-redirect path.
+
 
 ## Service icons everywhere
 - `svcIcon(o, cls)` in `dashboard/dash.js` renders a service icon: image URL -> `<img>`, else
@@ -630,3 +666,44 @@ never double-booked.
   variant (e.g. `AU_V`); `_country_matches()` accepts `XX` or `XX_V`.
 - Errors come back in-band as `{"success":0,"message","type"}`; `_check()`
   turns them into `SmspinError`.
+
+## Tenant dashboard + owner console are verbatim clones (2026-11-11)
+Store owners get the **same** dashboard and admin console as the platform, scoped
+to their store. One set of files serves everyone; a UI change lands on all stores.
+
+**Routing (`backend/server.py` `_resolve_virtual_path`)**
+- `/store/<slug>/dashboard/<page>` → `self._tenant_slug = <slug>`, rewrite path to
+  `/dashboard/<page>`; `/store/<slug>/admin/` → `/admin/`. Assets (`dash.js`,
+  `api.js`, CSS) are served as-is, so relative URLs inside them resolve against the
+  store base automatically.
+- `send_head()` serves a directory's `index.html` **with or without** a trailing
+  slash (the store pages use `/dashboard/`), and injects
+  `window.SMSPIN_TENANT_SLUG` + `window.SMSPIN_TENANT_BASE` into every HTML page.
+
+**Frontend (`site/dashboard/api.js`, `dash.js`)**
+- `api.js` reads the injected slug (`TSLUG`/`TBASE`) and, when present, routes every
+  plain RPC through a `TENANT_RPC` map to its `tenant_*` twin, injecting the store
+  session token. The shared widget code is unchanged. `SMSPIN.tenant.*` (login,
+  token, user, logout, isAuthed) is the store identity, keyed per slug.
+- `dash.js` has `inBase(p)` = `TBASE + p`; all nav hrefs and `location.href` go
+  through it. First-run welcome modal and auto-tour are suppressed when `TENANT`
+  (they would cover the cloned UI). The dashboard **Business** page stays the store
+  owner's white-label config.
+
+**Owner console (`site/admin/admin.js`)**
+- Sends `x-tenant-token` instead of `Authorization: Bearer` when `TENANT`; the
+  backend (`api_tenant_admin_get/post`) serves store-scoped figures under the same
+  `/api/admin/*` paths, so the tab code is verbatim. Platform-only tabs (fraud,
+  runbooks, growth, status) are removed and "Tenants" becomes "Payouts"; the
+  console tour is skipped.
+- No tenant token → `/api/admin/*` is platform-gated (403). A bogus tenant token on
+  the platform path is also 403.
+
+**SQL (`supabase/migrations/20261111310000_tenant_admin.sql`)**
+- `tenant_admin_overview/orders/catalog/payments/customers/margin(p_token, …)` mirror
+  the `admin_*` shapes but filter by `business_id`. Catalog prices go through
+  `sell_price_ngn(price, markup)`. Webhook DLQ count reads `tenant_webhook_events`
+  (not `webhook_deliveries`, which has no `business_id`).
+
+**Demo:** `python scripts/seed-demo-tenant.py` seeds store `zenith-verify`; sign in at
+`/store/zenith-verify/login/` with `demo@smspin.local` / `StoreDemo123!`.

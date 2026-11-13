@@ -35,6 +35,13 @@
     <div class="ta-foot">New here? <a id="taReg" href="#">Create an account</a></div>
     <div class="ta-cross">Each store runs its own account system — the same email can sign in on every store independently.</div>
   </div>
+
+  <div class="ta-card ta-demo" id="taDemo" hidden>
+    <h2>Demo access</h2>
+    <p>Cross-check this store's dashboard with the seeded owner account.<br>
+      <code>demo@smspin.local</code> · <code>SmspinDemo123!</code></p>
+    <button type="button" id="taDemoFill">Fill demo credentials</button>
+  </div>
 </main>
 <script src="/dashboard/config.js"></script>
 <script src="/dashboard/api.js"></script>
@@ -47,10 +54,33 @@
   document.getElementById('taHome').href = base + "/";
   document.getElementById('taBack').href = base + "/";
   document.getElementById('taReg').href = base + "/register/";
+  // Store accounts have no self-service reset; guide the user instead of
+  // sending them to the platform page, which cannot reset a store password.
+  if (S) {
+    var forgot = document.getElementById('taForgot');
+    forgot.removeAttribute('href');
+    forgot.style.cursor = 'pointer';
+    forgot.addEventListener('click', function () {
+      TENANT_AUTH.show(msg, 'Store passwords are reset by the store owner — contact ' + base.replace('/store/', '') + ' support.', 'err');
+    });
+  }
   TENANT_AUTH.boot(function () {
-    if (S && SMSPIN.tenant.isAuthed(S)) location.href = "/store/" + S + "/account/";
+    if (S && SMSPIN.tenant.isAuthed(S)) location.href = "/store/" + S + "/dashboard/";
     else if (!S && SMSPIN.auth.isAuthed()) location.href = "/dashboard/";
   });
+  // Reveal the seeded demo account only on non-production hosts.
+  (function () {
+    var host = location.hostname;
+    var isDev = host === 'localhost' || host === '127.0.0.1' || /(^|\.)all-hands\.dev$/.test(host) || host === '';
+    if (!isDev) return;
+    var panel = document.getElementById('taDemo');
+    panel.hidden = false;
+    document.getElementById('taDemoFill').addEventListener('click', function () {
+      document.getElementById('email').value = 'demo@smspin.local';
+      document.getElementById('password').value = 'SmspinDemo123!';
+      TENANT_AUTH.show(msg, 'Demo credentials filled — press Sign in.', 'ok');
+    });
+  })();
   document.getElementById('f').addEventListener('submit', async function (e) {
     e.preventDefault();
     var email = document.getElementById('email').value.trim();
@@ -60,7 +90,7 @@
       if (S) {
         await SMSPIN.tenant.login(email, password, S);
         TENANT_AUTH.show(msg, 'Signed in. Redirecting…', 'ok');
-        location.href = "/store/" + S + "/account/";
+        location.href = "/store/" + S + "/dashboard/";
       } else {
         await SMSPIN.auth.signIn(email, password);
         TENANT_AUTH.show(msg, 'Signed in. Redirecting…', 'ok');

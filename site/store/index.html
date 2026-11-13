@@ -449,8 +449,8 @@
 
     // If this visitor already has an account on THIS store, show it.
     if (window.SMSPIN && SMSPIN.tenant && SMSPIN.tenant.isAuthed(slug())) {
-      $("#stStart").textContent = "My account";
-      $("#stStart").href = "/store/" + s + "/account/";
+      $("#stStart").textContent = "My dashboard";
+      $("#stStart").href = "/store/" + s + "/dashboard/";
       $("#stSignin").textContent = "Sign out";
       $("#stSignin").href = "#";
       $("#stSignin").addEventListener("click", async e => {
@@ -459,6 +459,9 @@
         location.reload();
       });
     }
+    // Account/Developer links in the footer go to the store's own dashboard.
+    $$('a[href^="/dashboard"]').forEach(a => a.href = "/store/" + s + a.getAttribute("href"));
+    $$('a[href="/login"]').forEach(a => a.href = "/store/" + s + "/login/");
 
     $("#stSkel").hidden = true;
     $("#catalog").hidden = false;

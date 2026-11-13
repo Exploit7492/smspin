@@ -8,6 +8,7 @@ Stdlib only. Secrets come from the environment (never hardcoded):
 """
 import os
 import re
+import io
 import sys
 import math
 import json
@@ -39,6 +40,52 @@ SITE_URL = os.environ.get("SMSPIN_SITE_URL", "https://smspin.io").rstrip("/")
 # surfaces and API endpoints, which must not be indexed.
 _PRIVATE_PREFIXES = ("/dashboard", "/admin", "/api", "/store", "/login",
                      "/register", "/reset-password", "/verify")
+
+# Same-origin marketing links rewritten to stay inside a store. Kept as a single
+# pass so the tenant page is the platform page with its links pointed at the
+# storefront rather than the platform's own marketing pages.
+_TENANT_LINK_RE = re.compile(rb'(href=")(/(?!store/|_next/|api/)[^"]*)(")')
+
+# Asset extensions are served from the platform root; everything else that is
+# same-origin is a mirrored marketing/auth page and stays inside the store.
+_ASSET_EXT = (b".css", b".js", b".png", b".jpg", b".jpeg", b".svg", b".ico",
+              b".webp", b".woff", b".woff2", b".ttf", b".json", b".txt",
+              b".xml", b".map", b".webmanifest")
+
+
+def _prefix_tenant_links(html, slug):
+    """Prefix same-origin hrefs on a verbatim tenant page with the store base.
+
+    The whole public site is mirrored under ``/store/<slug>/``, so every
+    same-origin page link is rewritten to stay inside the store. Assets are
+    left alone (they live at the platform root and are shared), and the store's
+    own auth screens replace the platform's ``/login`` and ``/register``.
+    """
+    base = ("/store/" + slug).encode()
+    def repl(m):
+        href = m.group(2)
+        if href.startswith((b"//", b"#", b"?")):
+            return m.group(0)
+        # Split off any #fragment so it is preserved verbatim; only the path is
+        # re-pointed at the store.
+        frag = b""
+        if b"#" in href:
+            href, _, f = href.partition(b"#")
+            frag = b"#" + f
+            if not href:
+                return m.group(0)
+        if href.lower().endswith(_ASSET_EXT):
+            return m.group(0)
+        if href in (b"/login", b"/login/"):
+            tail = b"/login/"
+        elif href in (b"/register", b"/register/"):
+            tail = b"/register/"
+        elif href == b"/":
+            tail = b"/"
+        else:
+            tail = href if href.endswith(b"/") else href + b"/"
+        return m.group(1) + base + tail + frag + m.group(3)
+    return _TENANT_LINK_RE.sub(repl, html)
 
 
 def _sitemap_urls():
@@ -1632,16 +1679,72 @@ class Handler(SimpleHTTPRequestHandler):
         # `/about` to `/about/`. Marketing links in the mirrored pages point at
         # the bare paths, so a redirect there is pure noise.
         path = self.translate_path(self.path)
-        if os.path.isdir(path) and not urlparse(self.path).path.endswith("/"):
+        if os.path.isdir(path):
             for index in ("index.html", "index.htm"):
                 candidate = os.path.join(path, index)
                 if os.path.isfile(candidate):
-                    return self._serve_static_file(candidate)
+                    return self._serve_page(candidate)
         elif os.path.isfile(path):
             # G3: route every static file through one path so it gets an ETag
             # and a sane Cache-Control (immutable for content-hashed assets).
-            return self._serve_static_file(path)
+            return self._serve_page(path)
         return super().send_head()
+
+    def _serve_page(self, candidate):
+        """Serve a static file, injecting tenant context into HTML pages.
+
+        Tenant dashboards reuse the main dashboard/admin HTML verbatim; the
+        only difference is the slug stamped into ``window.SMSPIN_TENANT_SLUG``,
+        which the shared JS reads to route auth and RPC through the store.
+        """
+        slug = getattr(self, "_tenant_slug", None)
+        if slug and candidate.endswith(".html"):
+            try:
+                with open(candidate, "rb") as fh:
+                    html = fh.read()
+            except OSError:
+                return None
+            tag = ('<script>window.SMSPIN_TENANT_SLUG=' + json.dumps(slug) +
+                   ';window.SMSPIN_TENANT_BASE="/store/' + slug + '";</script>')
+            # Tenant pages are verbatim clones of the platform files. On the
+            # public marketing page we also prefix same-origin links so they
+            # stay inside the store, and load the re-skin script that applies
+            # the tenant's name/logo/colours from `businesses`.
+            is_public = not candidate[len(SITE_DIR):].startswith(("/dashboard", "/admin"))
+            if is_public:
+                tag += ('<script>window.SMSPIN_TENANT_VERBATIM=1;</script>'
+                        '<script src="/tenant-brand.js" defer></script>')
+                html = _prefix_tenant_links(html, slug)
+                # Public platform pages get the consent log and the price floor
+                # from _inject_review_jsonld; store pages bypass that shortcut,
+                # so apply both here to stay a true verbatim clone.
+                idx = html.lower().find(b"</head>")
+                if idx != -1:
+                    html = (html[:idx] + b'<script src="/consent-log.js" defer></script>'
+                            + html[idx:])
+                html = _apply_min_price_floor(html)
+            idx = html.lower().find(b"</head>")
+            html = (html[:idx] + tag.encode() + html[idx:]) if idx != -1 else (tag.encode() + html)
+            return self._serve_bytes(html, candidate, "text/html; charset=utf-8")
+        return self._serve_static_file(candidate)
+
+    def _serve_bytes(self, body, name, ctype):
+        import hashlib
+        etag = '"' + hashlib.sha1(body).hexdigest()[:16] + '"'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache, must-revalidate")
+            self.end_headers()
+            return None
+        self.send_response(200)
+        self.send_header("Content-type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
+        self.end_headers()
+        return io.BytesIO(body)
+
 
     def _inject_review_jsonld(self, path):
         """G3/G2: return page HTML with the consent-log script (every public page)
@@ -1740,6 +1843,7 @@ class Handler(SimpleHTTPRequestHandler):
         sends HEAD gets the same status as a browser GET.
         """
         path = urlparse(self.path).path
+        self._tenant_slug = None
         # C2: a request on a tenant's custom domain serves that store's pages.
         host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(":")[0].lower()
         if host and "all-hands.dev" not in host and host not in ("localhost", "127.0.0.1"):
@@ -1760,14 +1864,35 @@ class Handler(SimpleHTTPRequestHandler):
         if path.startswith("/store/") and not os.path.isfile(os.path.join(SITE_DIR, path.lstrip("/"))):
             parts = [p for p in path.split("/") if p]   # ["store", "<slug>", ...]
             sub = parts[2] if len(parts) > 2 else ""
-            if sub == "login":
+            # Tenants are verbatim clones: the SAME dashboard/admin files serve
+            # every store, so a UI change to the main app lands on all of them.
+            if sub in ("dashboard", "admin"):
+                self._tenant_slug = parts[1]
+                rest = "/".join(parts[3:])
+                qs = urlparse(self.path).query
+                tail = ("/" + rest) if rest else "/"
+                self.path = ("/" + sub + tail) + (("?" + qs) if qs else "")
+                path = urlparse(self.path).path
+            elif sub == "login":
                 self.path = "/store/login.html"
             elif sub == "register":
                 self.path = "/store/register.html"
             elif sub == "account":
                 self.path = "/store/account.html"
             else:
-                self.path = "/store/index.html"
+                # The store root is a verbatim clone of the platform landing
+                # page: the SAME site/index.html is served, re-skinned with the
+                # tenant's branding and with its links pointed into the store.
+                # Deep marketing pages are cloned the same way, so the whole
+                # public site is reachable under /store/<slug>/.
+                self._tenant_slug = parts[1]
+                tail = "/".join(parts[2:])
+                candidate = (os.path.join(SITE_DIR, tail, "index.html") if tail
+                             else os.path.join(SITE_DIR, "index.html"))
+                if tail and os.path.isfile(candidate):
+                    self.path = "/" + tail + "/"
+                else:
+                    self.path = "/index.html"
         return urlparse(self.path).path
 
     def do_HEAD(self):
@@ -2018,6 +2143,8 @@ class Handler(SimpleHTTPRequestHandler):
             # J6: public status page feed.
             return self._send(200, _svc("status_report", {}))
         if path.startswith("/api/admin/"):
+            if self.headers.get("x-tenant-token"):
+                return self.api_tenant_admin_get(path)
             return self.api_admin_get(path)
         if path == "/api/policies":
             # Public: current policy versions + the caller's acceptance state.
@@ -2059,10 +2186,13 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send(200, {"verified": True, "status": "success", "credit": res})
             return self._send(200, {"verified": False, "status": data.get("status", "unknown")})
         # G2: inject Review/AggregateRating JSON-LD into eligible marketing pages.
-        injected = self._inject_review_jsonld(path)
-        if injected is not None:
-            return self._send(200, injected, "text/html; charset=utf-8",
-                              extra={"Cache-Control": "public, max-age=300, must-revalidate"})
+        # Skipped for store requests: those pages are re-skinned with the tenant
+        # context in _serve_page, which this shortcut would bypass.
+        if not getattr(self, "_tenant_slug", None):
+            injected = self._inject_review_jsonld(path)
+            if injected is not None:
+                return self._send(200, injected, "text/html; charset=utf-8",
+                                  extra={"Cache-Control": "public, max-age=300, must-revalidate"})
         return super().do_GET()
 
     def do_POST(self):
@@ -2112,6 +2242,8 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 return self.api_submit_review()
             if path.startswith("/api/admin/"):
+                if self.headers.get("x-tenant-token"):
+                    return self.api_tenant_admin_post(path)
                 return self.api_admin_post(path)
             if path.startswith("/api/v1/"):
                 return self.api_v1(path)
@@ -2372,6 +2504,64 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/admin/tours":
             return self._send(200, {"funnel": _svc("tour_funnel", {"p_days": int(one("days", "30"))})})
         return self._send(404, {"error": "not found"})
+
+    # ---------- tenant owner admin (same console, scoped to the store) ----------
+    def _tenant_admin(self):
+        """Resolve the caller to a tenant session, or None. The owner's token is
+        the same store token used everywhere else, sent as x-tenant-token."""
+        tok = self.headers.get("x-tenant-token")
+        if not tok:
+            return None
+        st, me = supabase_rpc("tenant_me", {"p_token": tok})
+        if st != 200 or not me:
+            return None
+        return tok
+
+    def api_tenant_admin_get(self, path):
+        tok = self._tenant_admin()
+        if not tok:
+            return self._send(403, {"error": "admin only"})
+        q = self._q()
+        one = lambda k, d=None: (q.get(k, [d])[0] if q.get(k) else d)
+        if path == "/api/admin/overview":
+            return self._send(200, _svc("tenant_admin_overview", {"p_token": tok}))
+        if path == "/api/admin/users":
+            return self._send(200, _svc("tenant_admin_customers",
+                {"p_token": tok, "p_q": one("q"), "p_limit": int(one("limit", "100"))}))
+        if path == "/api/admin/orders":
+            return self._send(200, _svc("tenant_admin_orders",
+                {"p_token": tok, "p_status": one("status"), "p_q": one("q"), "p_limit": int(one("limit", "100"))}))
+        if path == "/api/admin/payments":
+            return self._send(200, _svc("tenant_admin_payments",
+                {"p_token": tok, "p_status": one("status"), "p_limit": int(one("limit", "100"))}))
+        if path == "/api/admin/catalog":
+            return self._send(200, _svc("tenant_admin_catalog",
+                {"p_token": tok, "p_q": one("q"), "p_limit": int(one("limit", "100"))}))
+        if path == "/api/admin/margin":
+            return self._send(200, _svc("tenant_admin_margin",
+                {"p_token": tok, "p_days": int(one("days", "30"))}))
+        if path == "/api/admin/flags":
+            return self._send(200, [])
+        if path == "/api/admin/settings":
+            return self._send(200, {"markup_percent": None})
+        if path == "/api/admin/tenants":
+            return self._send(200, _svc("tenant_earnings", {"p_token": tok}).get("payouts", []))
+        # Anything the owner console does not scope to the store stays empty
+        # rather than leaking platform-wide data.
+        return self._send(200, [])
+
+    def api_tenant_admin_post(self, path):
+        tok = self._tenant_admin()
+        if not tok:
+            return self._send(403, {"error": "admin only"})
+        body = self._read_json()
+        if path == "/api/admin/pricing/markup":
+            res = _svc("tenant_set_markup", {"p_token": tok, "p_percent": body.get("percent")})
+            return self._send(200, res)
+        if path == "/api/admin/tenants/payouts":
+            res = _svc("tenant_earnings", {"p_token": tok})
+            return self._send(200, res.get("payouts", []))
+        return self._send(200, {"ok": True})
 
     def api_admin_post(self, path):
         """F1-F5 + B7/J6 write endpoints (admin only)."""
@@ -3089,6 +3279,8 @@ class Handler(SimpleHTTPRequestHandler):
         if channel not in KORA_CHANNEL_IDS:
             return self._send(400, {"error": "unsupported payment method",
                                     "allowed": sorted(KORA_CHANNEL_IDS)})
+        # Inline overlay checkout (no redirect) is opt-in per request.
+        inline = bool(body.get("inline"))
 
         # Tenant (white-label store) payments carry an opaque tenant session token
         # instead of a Supabase bearer token, so the SAME email can fund each tenant.
@@ -3124,6 +3316,16 @@ class Handler(SimpleHTTPRequestHandler):
             proto = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
             redirect_url = f"{proto}://{host}/store/{slug}/?ref={reference}"
             notify_url = f"{proto}://{host}/api/korapay/webhook"
+            # Inline mode: the KorapayModal SDK opens the checkout in an overlay on
+            # the current page and creates the charge itself with our reference, so
+            # no hosted charge is pre-created and no redirect ever happens.
+            if inline:
+                with db() as conn, conn.cursor() as cur:
+                    cur.execute("update payments set channel=%s where reference=%s", (channel, reference))
+                return self._send(200, {"reference": reference, "public_key": KORA_PUBLIC,
+                                        "mode": KORA_MODE, "inline": True, "amount": int(round(float(amount))),
+                                        "customer": {"name": name, "email": email},
+                                        "notification_url": notify_url, "narration": "SMSPin wallet top-up"})
             st, init = korapay_init(reference, amount, email, name, redirect_url, notify_url,
                                     channels=[channel])
             if st != 200 or not init.get("status"):
@@ -3169,6 +3371,14 @@ class Handler(SimpleHTTPRequestHandler):
         proto = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
         redirect_url = f"{proto}://{host}/dashboard/wallet/?ref={reference}"
         notify_url = f"{proto}://{host}/api/korapay/webhook"
+
+        if inline:
+            with db() as conn, conn.cursor() as cur:
+                cur.execute("update payments set channel=%s where reference=%s", (channel, reference))
+            return self._send(200, {"reference": reference, "public_key": KORA_PUBLIC,
+                                    "mode": KORA_MODE, "inline": True, "amount": int(round(float(amount))),
+                                    "customer": {"name": name, "email": email},
+                                    "notification_url": notify_url, "narration": "SMSPin wallet top-up"})
 
         st, init = korapay_init(reference, amount, email, name, redirect_url, notify_url,
                                 channels=[channel])

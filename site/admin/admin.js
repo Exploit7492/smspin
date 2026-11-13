@@ -6,6 +6,14 @@
   const UI = window.SMSPINUI || { alert: async () => {}, confirm: async () => "ok" };
   const S = window.SMSPIN;
 
+  // Tenant owners get the SAME console, scoped to their store. The server
+  // stamps the slug into the page; when present we authenticate with the store
+  // session token and the backend serves store-scoped figures under the same
+  // /api/admin/* paths, so the tab code below is unchanged.
+  const TSLUG = (window.SMSPIN_TENANT_SLUG || "").trim();
+  const TENANT = !!TSLUG;
+  const TBASE = (window.SMSPIN_TENANT_BASE || (TSLUG ? "/store/" + TSLUG : "")).replace(/\/$/, "");
+
   const TOAST = $("#admToast");
   let toastT;
   function toast(msg) { TOAST.textContent = msg; TOAST.classList.add("in");
@@ -14,11 +22,10 @@
   function token() { const s = S.getSession(); return s && s.access_token ? s.access_token : ""; }
 
   async function api(path, opts = {}) {
-    const res = await fetch(path, {
-      ...opts,
-      headers: { "Authorization": "Bearer " + token(), "Content-Type": "application/json",
-                 ...(opts.headers || {}) },
-    });
+    const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+    if (TENANT) headers["x-tenant-token"] = S.tenant.token(TSLUG) || "";
+    else headers["Authorization"] = "Bearer " + token();
+    const res = await fetch(path, { ...opts, headers });
     const text = await res.text();
     let data = null; try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
     if (res.status === 403) { const e = new Error("admin only"); e.code = 403; throw e; }
@@ -537,7 +544,8 @@
 
   // ---------------------------------------------------------------- boot
   async function boot() {
-    if (!S || !S.auth.isAuthed()) { location.href = "/login/"; return; }
+    const authed = TENANT ? (S && S.tenant && S.tenant.isAuthed(TSLUG)) : (S && S.auth.isAuthed());
+    if (!authed) { location.href = TENANT ? TBASE + "/login/" : "/login/"; return; }
     try {
       await get("/api/admin/overview");   // 403 gate
     } catch (e) {
@@ -547,8 +555,28 @@
       return;
     }
     $("#admApp").hidden = false;
-    const u = S.auth.user();
+    const u = TENANT ? S.tenant.user(TSLUG) : S.auth.user();
     $("#admWho").textContent = (u && u.email) || "";
+    if (TENANT) {
+      // Same console, store branding and a link back to the store dashboard.
+      let storeName = (u && u.tenant_slug) || TSLUG;
+      try { const cfg = await S.rpc("site_config"); if (cfg && cfg.brand_name) storeName = cfg.brand_name; } catch (e) {}
+      const brand = $("#admBrand"); if (brand) brand.textContent = storeName;
+      const badge = $("#admBadge"); if (badge) badge.textContent = "Owner";
+      const dash = $("#admDashLink"); if (dash) dash.href = TBASE + "/dashboard/";
+      document.title = "Store console \u2014 " + storeName;
+    }
+    // The owner console is the same UI, minus the platform-only tabs (fraud
+    // queue, runbooks, growth experiments, status page). "Tenants" becomes the
+    // owner's own payout ledger.
+    if (TENANT) {
+      ["fraud", "runbooks", "growth", "status"].forEach(t => {
+        const b = document.querySelector('#admTabs button[data-tab="' + t + '"]');
+        if (b) b.remove();
+      });
+      const tn = document.querySelector('#admTabs button[data-tab="tenants"]');
+      if (tn) tn.textContent = "Payouts";
+    }
     const go = async (name) => {
       document.querySelectorAll("#admTabs button").forEach(b =>
         b.classList.toggle("active", b.dataset.tab === name));
@@ -559,8 +587,8 @@
     document.querySelectorAll("#admTabs button").forEach(b => b.onclick = () => go(b.dataset.tab));
     $("#admDrawer").onclick = e => { if (e.target.id === "admDrawer") $("#admDrawer").classList.remove("in"); };
     await go("overview");
-    // O15: offer the console tour to a first-time admin.
-    if (window.TOUR && TOUR.admin && !TOUR.seen("admin")) setTimeout(() => TOUR.admin(), 900);
+    // O15: offer the console tour to a first-time admin (platform only).
+    if (!TENANT && window.TOUR && TOUR.admin && !TOUR.seen("admin")) setTimeout(() => TOUR.admin(), 900);
   }
   boot();
 })();

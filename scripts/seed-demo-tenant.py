@@ -11,7 +11,7 @@ import psycopg2
 DSN = os.environ["Smspin_supabase_Postgresql"]
 SLUG = "zenith-verify"
 EMAIL = "demo@smspin.local"
-PASSWORD = "StoreDemo123!"
+PASSWORD = "SmspinDemo123!"
 BIZ = 2
 
 conn = psycopg2.connect(DSN, connect_timeout=15)
@@ -41,8 +41,8 @@ print("wallet funded")
 cur.execute("""update businesses set
                  tagline = coalesce(tagline, 'Verify anything, anywhere'),
                  support_email = coalesce(support_email, 'help@zenithverify.io'),
-                 primary_color = coalesce(primary_color, '#E11D2E'),
-                 secondary_color = coalesce(secondary_color, '#7C3AED'),
+                 primary_color = coalesce(primary_color, '#7C3AED'),
+                 secondary_color = coalesce(secondary_color, '#A78BFA'),
                  status = 'active', app_status = 'provisioned'
                where id = %s""", (BIZ,))
 print("business profile updated")

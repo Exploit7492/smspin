@@ -5,6 +5,13 @@
   const URL = (cfg.url || "").replace(/\/$/, "");
   const KEY = cfg.anonKey || "";
 
+  // Tenants are verbatim clones of the main app: the SAME dashboard/admin
+  // files run for every store, and the server stamps the slug into the page.
+  // In tenant mode auth and RPC are backed by the store's own account/session
+  // instead of Supabase, so the rest of the UI is untouched.
+  const TSLUG = (window.SMSPIN_TENANT_SLUG || "").trim();
+  const TBASE = (window.SMSPIN_TENANT_BASE || (TSLUG ? "/store/" + TSLUG : "")).replace(/\/$/, "");
+
   const TOKEN_KEY = "smspin_session";
 
   function getSession() {
@@ -44,51 +51,102 @@
   }
 
   const auth = {
+    // In tenant mode the store account IS the identity: sign-in/out go through
+    // the tenant session and `user()` is shaped like a Supabase user so the
+    // shared dashboard's greeting/avatar code keeps working untouched.
+    _tenantUser() {
+      const s = tenant._read(TSLUG);
+      if (!s) return null;
+      const email = s.email || "";
+      const local = email.split("@")[0];
+      return { id: s.account_id, email,
+               user_metadata: { full_name: s.full_name || local } };
+    },
     async signIn(email, password) {
+      if (TSLUG) {
+        const s = await tenant.login(email, password, TSLUG);
+        return { access_token: s.token, user: auth._tenantUser() };
+      }
       const s = await raw("/auth/v1/token?grant_type=password",
         { method: "POST", body: JSON.stringify({ email, password }) }, KEY);
       setSession(s);
       return s;
     },
     async signUp(email, password, fullName) {
+      if (TSLUG) {
+        await tenant.register({ email, password, fullName, slug: TSLUG });
+        return auth.signIn(email, password);
+      }
       const s = await raw("/auth/v1/signup",
         { method: "POST", body: JSON.stringify({ email, password, data: { full_name: fullName } }) }, KEY);
       if (s && s.access_token) setSession(s);
       return s;
     },
     async resetPassword(email) {
+      if (TSLUG) throw new Error("Contact this store's support to reset your password.");
       return raw("/auth/v1/recover",
         { method: "POST", body: JSON.stringify({ email }) }, KEY);
     },
     async updatePassword(newPassword) {
+      if (TSLUG) throw new Error("Password changes are not available on this store yet.");
       return raw("/auth/v1/user",
         { method: "PUT", body: JSON.stringify({ password: newPassword }) }, accessToken());
     },
     async signOut() {
+      if (TSLUG) { await tenant.logout(TSLUG); return; }
       try { await raw("/auth/v1/logout", { method: "POST" }, accessToken()); } catch (e) {}
       setSession(null);
     },
     user() {
+      if (TSLUG) return auth._tenantUser();
       const s = getSession();
       return s && s.user ? s.user : null;
     },
     isAuthed() {
-      return !!getSession();
+      return TSLUG ? tenant.isAuthed(TSLUG) : !!getSession();
     },
     requireAuth() {
-      if (!this.isAuthed()) { location.href = "/login/"; return false; }
+      if (!this.isAuthed()) { location.href = TBASE ? TBASE + "/login/" : "/login/"; return false; }
       return true;
     },
+  };
+
+  // Dashboard RPCs whose tenant twin takes the session token as its first arg
+  // and returns the identical shape. The shared UI calls the plain name; in
+  // tenant mode we route it to the twin and inject the token, so no widget
+  // code needs to know which surface it is running on.
+  const TENANT_RPC = {
+    dashboard_overview: ["tenant_dashboard_overview", "p_token"],
+    wallet_summary: ["tenant_wallet_summary", "p_token"],
+    my_orders: ["tenant_my_orders", "p_token"],
+    my_transactions: ["tenant_my_transactions", "p_token"],
+    my_payments: ["tenant_my_payments", "p_token"],
+    my_refund_notices: ["tenant_my_refund_notices", "p_token"],
+    my_wallet_balances: ["tenant_wallet_balances", "p_token"],
+    my_notifications: ["tenant_my_notifications", "p_token"],
+    my_profile: ["tenant_profile", "p_token"],
+    my_api_keys: ["tenant_my_api_keys", "p_token"],
+    site_config: ["tenant_site_config", "p_slug"],
+    browse_catalog: ["tenant_browse_catalog", "p_slug"],
   };
 
   // All RPC goes through our own backend (/api/rpc), which forwards the
   // caller's JWT to Supabase. Same origin → no CORS, one cache policy, and
   // RLS/`auth.uid()` still apply because we pass the token through.
   async function rpc(fn, args = {}) {
+    let name = fn, payload = args;
+    if (TSLUG) {
+      const map = TENANT_RPC[fn];
+      if (map) {
+        name = map[0];
+        payload = Object.assign({}, args);
+        payload[map[1]] = map[1] === "p_slug" ? TSLUG : tenant.token(TSLUG);
+      }
+    }
     const res = await fetch("/api/rpc", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken() },
-      body: JSON.stringify({ fn, args }),
+      body: JSON.stringify({ fn: name, args: payload }),
     });
     const text = await res.text();
     let data = null;
@@ -100,9 +158,19 @@
     return data;
   }
 
+
   // Server-side edge functions. Business logic (funding, purchases) runs
   // server-side so the browser only sees a friendly action name.
   async function functions(name, payload = {}) {
+    // Tenant funding is settled by the same backend webhook/verify path as the
+    // main app; route the "verify" action there so the return-from-checkout
+    // step credits the store wallet instead of calling Supabase directly.
+    if (TSLUG && name === "funding" && payload.action === "verify" && payload.reference) {
+      const res = await fetch("/api/payments/verify/" + encodeURIComponent(payload.reference));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data && data.error) || res.statusText);
+      return data;
+    }
     const res = await fetch(URL + "/functions/v1/" + name, {
       method: "POST",
       headers: {
@@ -161,9 +229,28 @@
       return r;
     },
     async login(email, password, slug) {
-      const s = await rpc("tenant_login", { p_email: email, p_password: password, p_slug: slug || null });
-      if (s && s.token) this._write(slug, s);
+      // Without an explicit store, resolve the tenant from the email's most
+      // recently used identity (round-robin continuity) so one email can sign
+      // in across every store it belongs to.
+      const s = slug
+        ? await rpc("tenant_login", { p_email: email, p_password: password, p_slug: slug })
+        : await rpc("tenant_login_auto", { p_email: email, p_password: password });
+      const useSlug = (s && s.tenant_slug) || slug;
+      if (s && s.token) this._write(useSlug, s);
       return s;
+    },
+    async identities(email) {
+      try { return await rpc("tenant_identities_for_email", { p_email: email }); }
+      catch (e) { return []; }
+    },
+    async myStores() {
+      try { return await rpc("my_businesses"); } catch (e) { return []; }
+    },
+    async createChildStore(name, parentSlug, theme, markup) {
+      return rpc("create_child_business", {
+        p_name: name, p_parent_slug: parentSlug || null,
+        p_theme: theme || null, p_markup: markup == null ? null : markup,
+      });
     },
     async me(slug) {
       const t = this.token(slug);
@@ -215,12 +302,13 @@
   // Real number orders run through our backend (same origin): it reserves the
   // wallet balance, calls the upstream SMS provider, and confirms or refunds.
   async function buyOrder({ country, service, operator, tenantToken }) {
+    const tok = tenantToken || (TSLUG ? tenant.token(TSLUG) : null);
     const headers = { "Content-Type": "application/json" };
-    if (tenantToken) headers["x-tenant-token"] = tenantToken;
+    if (tok) headers["x-tenant-token"] = tok;
     else headers["Authorization"] = "Bearer " + accessToken();
     const res = await fetch("/api/orders/buy", {
       method: "POST", headers,
-      body: JSON.stringify({ country, service, operator, tenant_token: tenantToken }),
+      body: JSON.stringify({ country, service, operator, tenant_token: tok }),
     });
     const text = await res.text();
     let data = null;
@@ -279,7 +367,8 @@
     return res.json().catch(() => null);
   }
 
-  window.SMSPIN = { auth, tenant, rpc, functions, feeQuote, buyOrder, rentPrices, rentCountries, rentOrder, cancelOrder, orderStatus, getSession, setSession, config: cfg, store: () => {
+  window.SMSPIN = { auth, tenant, rpc, functions, feeQuote, buyOrder, rentPrices, rentCountries, rentOrder, cancelOrder, orderStatus, getSession, setSession, config: cfg,
+    tenantSlug: TSLUG, tenantBase: TBASE, isTenant: !!TSLUG, store: () => {
     try { return localStorage.getItem("smspin_store") || ""; } catch (e) { return ""; }
   } };
 })();

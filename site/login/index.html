@@ -93,6 +93,20 @@
 
   .note{margin:14px 0 0; text-align:center; font-size:12px; color:var(--body)}
 
+  .demo{
+    display:none; margin:18px 0 0; padding:14px 16px; border-radius:12px;
+    background:rgba(244,63,79,.07); border:1px dashed var(--input-border);
+  }
+  .demo.show{display:block}
+  .demo h2{margin:0 0 4px; font-size:13px; letter-spacing:.04em; text-transform:uppercase; color:var(--link)}
+  .demo p{margin:0 0 10px; font-size:13px; color:var(--body); line-height:1.45}
+  .demo code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; color:var(--heading)}
+  .demo button{
+    width:100%; height:40px; border-radius:9px; cursor:pointer; font:inherit; font-size:14px; font-weight:600;
+    background:transparent; border:1px solid var(--input-border); color:var(--heading);
+  }
+  .demo button:hover{border-color:var(--coral); color:var(--link)}
+
   .chat{
     position:fixed; right:12px; bottom:calc(60px + env(safe-area-inset-bottom));
     width:56px; height:56px; border-radius:50%; border:0; cursor:pointer;
@@ -148,6 +162,13 @@
     <div class="foot">Don’t have an account? <a href="/register/">Sign up</a></div>
   </div>
 
+  <div class="demo" id="demoPanel" hidden>
+    <h2>Demo access</h2>
+    <p>Cross-check the full dashboard with a seeded account.<br>
+      <code>demo@smspin.local</code> · <code>SmspinDemo123!</code></p>
+    <button type="button" id="demoFill">Fill demo credentials</button>
+  </div>
+
   <p class="note">Your session is encrypted end to end. We never store your password.</p>
 </div>
 
@@ -173,6 +194,22 @@
   });
   var msg = document.getElementById('msg');
   function show(t, cls){ msg.textContent = t; msg.className = 'msg show ' + cls; }
+
+  // Surface the seeded demo account only on non-production hosts, so a
+  // cross-checker can sign in without hunting through the seed scripts.
+  var host = location.hostname;
+  var isDev = host === 'localhost' || host === '127.0.0.1' || /(^|\.)all-hands\.dev$/.test(host) || host === '';
+  var panel = document.getElementById('demoPanel');
+  if (isDev) {
+    panel.hidden = false;
+    panel.classList.add('show');
+    document.getElementById('demoFill').addEventListener('click', function(){
+      document.getElementById('email').value = 'demo@smspin.local';
+      pw.value = 'SmspinDemo123!';
+      pw.focus();
+      show('Demo credentials filled — press Sign in.', 'ok');
+    });
+  }
   var form = document.getElementById('f');
   form.addEventListener('submit', async function(e){
     e.preventDefault();
