@@ -44,6 +44,18 @@
   --text-primary: #0f172a;
   --text-secondary: #46536b;
   --text-muted: #7c8798;
+
+  /* Brand (ruby) — the app's own red, used by dashboard chrome + app surfaces.
+     Defined here (not hardcoded per rule) so every surface follows the theme. */
+  --brand: #E11D2E;
+  --brand-2: #F26B7A;
+  --brand-3: #ff8a95;
+  --brand-soft: rgba(225, 29, 46, .12);
+  --brand-line: rgba(225, 29, 46, .22);
+  --ok: var(--emerald);
+  --grid-line: rgba(225, 29, 46, .07);
+  /* Display face for hero headings — the site's own Instrument Serif. */
+  --font-display: var(--font-instrument-serif), "Instrument Serif", Georgia, serif;
 }
 
 /* ---------- Dark (polished dark + ruby glass) ---------- */
@@ -90,6 +102,14 @@
   --shadow-md: 0 10px 34px rgba(0, 0, 0, .50);
   --shadow-lg: 0 20px 60px rgba(0, 0, 0, .60);
   --shadow-indigo: 0 6px 22px rgba(255, 59, 92, .30);
+  --brand: #ff3b5c;
+  --brand-2: #ff7089;
+  --brand-3: #ff8a95;
+  --brand-soft: rgba(255, 59, 92, .16);
+  --brand-line: rgba(255, 59, 92, .30);
+  --ok: var(--emerald);
+  --grid-line: rgba(255, 90, 100, .07);
+  --font-display: var(--font-instrument-serif), "Instrument Serif", Georgia, serif;
   color-scheme: dark;
 }
 
@@ -135,6 +155,14 @@
     --shadow-md: 0 10px 34px rgba(0, 0, 0, .50);
     --shadow-lg: 0 20px 60px rgba(0, 0, 0, .60);
     --shadow-indigo: 0 6px 22px rgba(255, 59, 92, .30);
+    --brand: #ff3b5c;
+    --brand-2: #ff7089;
+    --brand-3: #ff8a95;
+    --brand-soft: rgba(255, 59, 92, .16);
+    --brand-line: rgba(255, 59, 92, .30);
+    --ok: var(--emerald);
+    --grid-line: rgba(255, 90, 100, .07);
+    --font-display: var(--font-instrument-serif), "Instrument Serif", Georgia, serif;
     color-scheme: dark;
   }
 }
@@ -150,6 +178,20 @@ body {
   background-attachment: fixed;
   color: var(--text-primary);
   transition: background-color .35s var(--ease-out, ease), color .35s var(--ease-out, ease);
+}
+
+/* Dashboard app: a faint grid over the ambient glow, and notch-safe insets.
+   z-index:-1 keeps the grid behind all content without creating a stacking
+   context on .dash (which would trap the fixed side panel under the scrim). */
+body[data-page] { padding-top: env(safe-area-inset-top, 0px); }
+body[data-page]::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: -1;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 40px 40px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 12%, #000 22%, transparent 74%);
+  mask-image: radial-gradient(ellipse at 50% 12%, #000 22%, transparent 74%);
 }
 
 /* ---------- Glass surfaces ---------- */

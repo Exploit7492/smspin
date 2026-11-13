@@ -64,9 +64,10 @@
   }
 
   // Scale each stat-card value to the largest size that fits its (square) box,
-  // so short numbers read big while long money strings never overflow.
+  // so short numbers read big while long money strings never overflow. The
+  // balance card sizes its own value with clamp(), so it is left alone.
   function fitStatValues() {
-    document.querySelectorAll(".cards .card").forEach(card => {
+    document.querySelectorAll(".cards .card:not(.ov-balance)").forEach(card => {
       const v = card.querySelector(".v");
       if (!v) return;
       const cs = getComputedStyle(card);
@@ -246,7 +247,7 @@
   }
 
   const CARD_LINKS = {
-    overview: ["/dashboard/wallet/", "/dashboard/numbers/", "/dashboard/orders/", "/dashboard/sms/"],
+    overview: ["/dashboard/wallet/", "/dashboard/numbers/", "/dashboard/orders/", "/dashboard/sms/", "/dashboard/wallet/"],
     wallet: ["/dashboard/wallet/", "/dashboard/transactions/", "/dashboard/transactions/", "/dashboard/transactions/"],
     referrals: ["/dashboard/referrals/", "/dashboard/wallet/", "/dashboard/wallet/", "/dashboard/referrals/"],
     profile: ["/dashboard/settings/", "/dashboard/wallet/", "/dashboard/settings/", "/dashboard/referrals/"],
@@ -270,33 +271,66 @@
   async function renderOverview() {
     const d = await SMSPIN.rpc("dashboard_overview");
     const cur = d.currency;
-    const cards = $$(".cards .card");
-    if (cards[0]) $(".v", cards[0]).textContent = money(d.balance, cur);
-    if (cards[1]) $(".v", cards[1]).textContent = d.active_numbers;
-    if (cards[2]) $(".v", cards[2]).textContent = d.total_orders;
-    if (cards[3]) $(".v", cards[3]).textContent = d.sms_received;
+    const setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    // Re-personalise the greeting: the SPA router swaps in the static markup.
+    const u = SMSPIN.auth.user();
+    if (u && u.email) {
+      const local = u.email.split("@")[0];
+      const first = local.split(/[._\-+]+/).filter(Boolean)[0] || local;
+      setTxt("ovWelcome", "Welcome back, " + first.charAt(0).toUpperCase() + first.slice(1));
+    }
+    const balEl = document.getElementById("ovBalance");
+    if (balEl) balEl.textContent = money(d.balance, cur);
+    setTxt("ovActiveNums", d.active_numbers);
+    setTxt("ovTotalOrders", d.total_orders);
+    setTxt("ovSmsReceived", d.sms_received);
+    setTxt("ovActiveHint", d.active_numbers ? d.active_numbers + " in your account" : "No numbers yet");
+    setTxt("ovOrdersHint", d.total_orders ? "All-time purchases" : "No orders yet");
+    setTxt("ovSmsHint", d.sms_received ? "Codes delivered" : "No codes yet");
+
+    // Success rate = delivered codes / orders, drawn as a ring.
+    const total = Number(d.total_orders) || 0;
+    const got = Number(d.sms_received) || 0;
+    const pct = total > 0 ? Math.round(Math.min(100, (got / total) * 100)) : 0;
+    setTxt("ovSuccess", total > 0 ? pct + "%" : "—");
+    setTxt("ovSuccessSub", got + " of " + total);
+    const ring = document.getElementById("ovRing");
+    if (ring) ring.setAttribute("stroke-dasharray", (total > 0 ? (pct / 100) * 120 : 0).toFixed(1) + " 120");
+
     const tb = $("table.tbl tbody");
     if (tb) tb.innerHTML = (d.recent_orders || []).map(o =>
       "<tr>" + td("Service", '<span class="svc-cell">' + svcIcon(o) + esc(o.service || "") + "</span>") +
       td("Number", '<span class="mono">' + esc(o.phone_number) + "</span>") +
       td("Status", badge(o.status)) + td("Price", money(o.price, cur)) + td("Date", fmtDate(o.created_at)) + "</tr>").join("");
 
-    // Quick actions — dynamic speed dial of the services this user buys most,
-    // falling back to globally popular services (WhatsApp, X, Facebook, ...).
+    // Popular services — the services this user buys most, falling back to the
+    // globally popular set (WhatsApp, Google, Facebook, Telegram, ...).
     const qa = $("#ovQuickActions");
-    if (qa) {
+    const paintServices = () => {
+      if (!qa) return;
       const items = d.quick_actions || [];
       qa.innerHTML = items.length
         ? items.map(s => {
             const icon = s.icon && /^(https?:|data:|\/)/.test(s.icon)
-              ? '<img src="' + esc(s.icon) + '" alt="' + esc(s.name) + '" loading="lazy" onerror="this.remove()">'
-              : '<span class="qa-emoji">' + esc(s.icon || (s.name || "?").charAt(0)) + "</span>";
-            return '<button class="qa-tile" type="button" data-svc="' + esc(s.code) + '" title="Buy ' + esc(s.name) + '">' +
-              '<span class="qa-ico">' + icon + "</span></button>";
+              ? '<img src="' + esc(s.icon) + '" alt="" loading="lazy" onerror="this.remove()">'
+              : esc((s.name || "?").charAt(0));
+            const fp = serviceFromPrice(s.code);
+            const right = fp
+              ? "<em>from<strong>$" + price(fp) + "</strong></em>"
+              : (s.orders ? "<em><strong>" + esc(s.orders) + "</strong>orders</em>" : "");
+            return '<button class="ov-svc" type="button" data-svc="' + esc(s.code) + '" title="Buy ' + esc(s.name) + '">' +
+              '<span class="lg" aria-hidden="true">' + icon + "</span>" +
+              '<b>' + esc(s.name) + "</b>" + right + "</button>";
           }).join("")
-        : '<p class="muted">No services available right now.</p>';
+        : '<p class="muted ov-svc-empty">No services available right now.</p>';
       $$("[data-svc]", qa).forEach(b => b.addEventListener("click", () =>
         location.href = "/dashboard/buy/?service=" + encodeURIComponent(b.dataset.svc)));
+    };
+    paintServices();
+    // Prices come from the shared catalog snapshot; if it is still warming,
+    // repaint once it lands so rows show a real "from" price instead of counts.
+    if (qa && d.quick_actions && d.quick_actions.length && !serviceFromPrice(d.quick_actions[0].code)) {
+      Promise.resolve(preloadCatalog()).then(paintServices).catch(() => {});
     }
 
     // Incoming messages board — latest SMS landing on the user's numbers.
@@ -1277,27 +1311,48 @@
     } catch (e) { /* quota — snapshot is best effort */ }
   }
 
+  // Cheapest catalog price (USD) for a service, from the cached snapshot the
+  // overview and buy page share. Display-only; the server re-checks at buy.
+  function serviceFromPrice(code) {
+    try {
+      const snap = readCatalogSnapshot(window.SMSPIN.store && SMSPIN.store());
+      let min = 0;
+      (snap && snap.cat || []).forEach(r => {
+        if (r.service !== code) return;
+        const p = Number(r.price_usd || 0);
+        if (p > 0 && (!min || p < min)) min = p;
+      });
+      return min;
+    } catch (e) { return 0; }
+  }
+
   // Warm the catalog snapshot as soon as the dashboard boots, so the buy page
   // is fully populated the moment the user opens it — no per-visit network
   // call, no empty shell. Runs in the background and never blocks the page.
-  async function preloadCatalog() {
-    const store = window.SMSPIN.store && SMSPIN.store();
-    if (readCatalogSnapshot(store)) return;
-    try {
-      let cat = [], taxonomy = null;
-      if (store) {
-        const b = await SMSPIN.rpc("business_public", { p_slug: store });
-        cat = (b && b.catalog || []).map(c => ({
-          country: c.country, country_name: c.country_name, flag: c.flag,
-          service: c.service, service_name: c.service_name, service_icon: c.service_icon || c.icon,
-          price: c.price_ngn, price_usd: c.price_usd, stock: c.stock,
-        }));
-      } else {
-        cat = await SMSPIN.rpc("browse_catalog", {});
-        try { taxonomy = await SMSPIN.rpc("catalog_taxonomy", {}); } catch (e) {}
-      }
-      if (cat && cat.length) writeCatalogSnapshot(store, cat, taxonomy);
-    } catch (e) { /* best effort — buy page retries on arrival */ }
+  // Memoised so the overview can await the same in-flight fetch for prices.
+  let _catalogWarm = null;
+  function preloadCatalog() {
+    if (_catalogWarm) return _catalogWarm;
+    _catalogWarm = (async () => {
+      const store = window.SMSPIN.store && SMSPIN.store();
+      if (readCatalogSnapshot(store)) return;
+      try {
+        let cat = [], taxonomy = null;
+        if (store) {
+          const b = await SMSPIN.rpc("business_public", { p_slug: store });
+          cat = (b && b.catalog || []).map(c => ({
+            country: c.country, country_name: c.country_name, flag: c.flag,
+            service: c.service, service_name: c.service_name, service_icon: c.service_icon || c.icon,
+            price: c.price_ngn, price_usd: c.price_usd, stock: c.stock,
+          }));
+        } else {
+          cat = await SMSPIN.rpc("browse_catalog", {});
+          try { taxonomy = await SMSPIN.rpc("catalog_taxonomy", {}); } catch (e) {}
+        }
+        if (cat && cat.length) writeCatalogSnapshot(store, cat, taxonomy);
+      } catch (e) { /* best effort — buy page retries on arrival */ }
+    })();
+    return _catalogWarm;
   }
 
   async function renderBuy() {
@@ -2388,7 +2443,7 @@
         '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4v4h4"/><path d="M12 8v4.5l3 1.8"/></svg></span>' +
         '<span class="bn-lbl">History</span></a>' +
       '<a class="bn bn-buy" href="/dashboard/buy/">' +
-        '<span class="bn-buy-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5h3l1.5 4-2 1.4a12 12 0 0 0 5.6 5.6l1.4-2 4 1.5v3a2 2 0 0 1-2.2 2A16 16 0 0 1 4.5 5.7 2 2 0 0 1 6.5 3.5Z"/></svg></span>' +
+        '<span class="bn-buy-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 8h15l-1.2 11a2 2 0 0 1-2 1.8H7.7a2 2 0 0 1-2-1.8Z"/><path d="M8.5 8V6.5a3.5 3.5 0 0 1 7 0V8"/></svg></span>' +
         '<span class="bn-lbl">Buy</span></a>' +
       '<a class="bn" href="/dashboard/topup/">' +
         '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/><path d="M12 13v4M10 15h4"/></svg></span>' +

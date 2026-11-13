@@ -690,3 +690,148 @@ table.tbl td.strong { color:var(--text-primary); font-weight:600; }
   .dash-balpill { padding: 3px 4px; font-size: 12.5px; }
   .dash-balpill .bp-btn { width: 21px; height: 21px; }
 }
+
+/* =====================================================================
+   Overview (dashboard home) — hero, balance, stat grid, services, orders.
+   Mobile-first: the balance card spans the row, stats pair up 2-up, and
+   everything reflows to the desktop grid at >=900px.
+   ===================================================================== */
+.ov-hero { padding: 6px 2px 18px; }
+.ov-eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 11.5px; font-weight: 700;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--brand); }
+.ov-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok, #2dd47a);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok, #2dd47a) 60%, transparent); animation: ovPing 2s infinite; }
+@keyframes ovPing { 70% { box-shadow: 0 0 0 9px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.ov-h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(26px, 7.4vw, 36px);
+  line-height: 1.1; letter-spacing: -.01em; margin: 8px 0 0; color: var(--text-primary); }
+.ov-sub { color: var(--text-secondary); font-size: 14px; margin: 6px 0 0; max-width: 46ch; }
+.ov-actions { display: flex; gap: 10px; margin-top: 16px; }
+.ov-act { height: 48px; border-radius: 14px; flex: 0 0 auto; }
+.ov-act-buy { flex: 1; }
+/* Brand-red CTA (theme.css paints .btn-primary with the sky accent). */
+.dash-main .ov-act-buy.btn-primary,
+.tu-pay.btn-primary {
+  background: linear-gradient(135deg, var(--brand-3), var(--brand-2) 55%, var(--brand)) !important;
+  border: 1px solid transparent !important; color: #fff !important;
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--brand) 40%, transparent),
+              inset 0 1px 0 rgba(255,255,255,.30) !important;
+}
+
+.dash-main .ov-cards { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 12px !important; max-width: none; }
+.dash-main .ov-cards .ov-balance { grid-column: 1 / -1; }
+/* theme.css styles .card as a compact square tile; reset it for this grid. */
+.dash-main .ov-cards .card {
+  aspect-ratio: auto; max-width: none; justify-content: flex-start; align-items: stretch;
+  text-align: left; overflow: hidden;
+}
+.dash-main .ov-cards .card .k {
+  position: static; transform: none; align-self: flex-start; margin: 0 0 6px; padding: 0;
+  background: none; border: 0; box-shadow: none; border-radius: 0; -webkit-backdrop-filter: none; backdrop-filter: none;
+  font-size: 11px; letter-spacing: .07em; color: var(--text-muted);
+}
+.dash-main .ov-cards .card .v { font-size: clamp(26px, 7vw, 34px); margin-top: 0; white-space: normal; }
+.dash-main .ov-cards .card .d { font-size: 11.5px; white-space: normal; }
+.dash-main .ov-cards .ov-stat { justify-content: center; }
+.dash-main .ov-cards .ov-balance {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand) 18%, transparent), var(--glass-bg) 58%) !important;
+}
+.dash-main .ov-cards .ov-balance .v { font-size: clamp(30px, 10vw, 44px); }
+.ov-orb { position: absolute; right: -54px; bottom: -64px; width: 190px; height: 190px; border-radius: 50%;
+  pointer-events: none; filter: blur(3px);
+  background: radial-gradient(circle at 35% 35%, color-mix(in srgb, var(--brand-2) 60%, transparent),
+    color-mix(in srgb, var(--brand) 20%, transparent) 55%, transparent 70%); }
+.ov-balance .k { position: relative; }
+.ov-balance .v { font-size: clamp(30px, 10vw, 44px); font-variant-numeric: tabular-nums;
+  letter-spacing: -.03em; position: relative; }
+.ov-link { position: relative; display: inline-flex; align-items: center; gap: 6px; margin-top: 8px;
+  color: var(--brand); font-weight: 700; font-size: 13.5px; text-decoration: none; }
+.ov-link:hover { text-decoration: underline; }
+.ov-spark { display: block; margin-top: 8px; opacity: .9; }
+.ov-stat .v { font-variant-numeric: tabular-nums; }
+.ov-stat .d { color: var(--text-muted); }
+.ov-ring { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.ov-ring svg { flex: 0 0 auto; }
+.ov-ring-num { font-size: 24px; font-weight: 800; color: var(--text-primary); line-height: 1.05; }
+.ov-ring-sub { font-size: 11.5px; color: var(--text-muted); }
+
+/* Popular services — flat rows with a brand tile, name and from-price. */
+.ov-svc-list { display: flex; flex-direction: column; gap: 8px; }
+.ov-svc { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 13px;
+  border-radius: 14px; text-align: left; cursor: pointer; font: inherit; color: var(--text-primary);
+  background: var(--glass-bg-soft); border: 1px solid var(--glass-border);
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+.ov-svc:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--brand) 45%, var(--glass-border));
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--brand) 16%, transparent); }
+.ov-svc:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.ov-svc .lg { flex: 0 0 auto; width: 38px; height: 38px; border-radius: 11px; overflow: hidden;
+  display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; font-size: 15px;
+  background: linear-gradient(135deg, var(--brand-2), var(--brand)); }
+.ov-svc .lg img { width: 100%; height: 100%; object-fit: cover; }
+.ov-svc b { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-svc em { font-style: normal; font-size: 11.5px; color: var(--text-muted); text-align: right; line-height: 1.25; }
+.ov-svc em strong { display: block; color: var(--text-primary); font-size: 14.5px; font-weight: 700; }
+.ov-svc-empty { padding: 6px 2px; }
+
+/* Recent orders table: card-style rows on phones, a real table on desktop. */
+#ovOrdersPanel .panel-b { padding: 6px 18px 14px; }
+@media (max-width:900px){
+  #ovOrdersPanel .panel-b { padding: 6px 14px 12px; }
+  #ovOrdersPanel table.tbl tr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+    padding: 12px 2px; border-bottom: 1px solid var(--border); }
+  #ovOrdersPanel table.tbl td { display: block; padding: 0; border: 0; }
+  #ovOrdersPanel table.tbl td::before { content: none; }
+  #ovOrdersPanel table.tbl td[data-l="Service"] { flex: 1 1 100%; }
+  #ovOrdersPanel table.tbl td[data-l="Number"] { flex: 1 1 100%; }
+}
+@media (min-width:900px){
+  .dash-main .ov-cards { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+  .dash-main .ov-cards .ov-balance { grid-column: span 2; grid-row: span 2; }
+  .ov-hero { padding-top: 10px; }
+}
+@media (max-width:520px){
+  .dash-main .ov-cards { gap: 10px !important; }
+  .ov-cards .card { padding: 12px 13px; }
+  .ov-h1 { font-size: clamp(24px, 8.6vw, 30px); }
+  .ov-act { height: 46px; padding: 0 16px; font-size: 14.5px; }
+}
+@media (max-width:380px){
+  .dash-main .ov-cards { grid-template-columns: 1fr !important; }
+  .dash-main .ov-cards .ov-balance { grid-column: auto; }
+}
+@media (prefers-reduced-motion: reduce){ .ov-dot { animation: none; } }
+
+/* =====================================================================
+   Add funds (topup) — numbered steps: amount, method, summary.
+   Reuses the .tu-* hook names the JS fills, restyled as glass step cards.
+   ===================================================================== */
+.tu-eyebrow { color: var(--brand); font-weight: 700; }
+.tu-hero { padding: 6px 2px 16px; }
+.tu-h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(26px, 7.4vw, 34px);
+  line-height: 1.1; letter-spacing: -.01em; margin: 8px 0 0; color: var(--text-primary); }
+.tu-sub { color: var(--text-secondary); font-size: 14px; margin: 6px 0 0; max-width: 62ch; }
+.tu-balance { font-size: clamp(28px, 9vw, 34px); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.tu-step .panel-h h2 { display: flex; align-items: center; gap: 10px; }
+.tu-step .panel-h h2 .tu-step-n { width: 22px; height: 22px; border-radius: 50%; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; color: #fff;
+  background: linear-gradient(135deg, var(--brand-2), var(--brand)); }
+.tu-methods { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tu-m { position: relative; padding: 13px 14px 13px 42px; }
+.tu-m::before { content: ""; position: absolute; left: 14px; top: 16px; width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--text-muted); transition: border-color .15s ease; }
+.tu-m.on::before { border-color: var(--brand); }
+.tu-m.on::after { content: ""; position: absolute; left: 19px; top: 21px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--brand); }
+.tu-amt { border: 1px solid var(--glass-border); background: var(--glass-bg-soft); color: var(--text-primary); }
+.tu-amt.on { background: linear-gradient(135deg, color-mix(in srgb, var(--brand) 16%, transparent), var(--glass-bg-soft));
+  border-color: var(--brand); }
+.tu-amt.on b { color: var(--brand); }
+.tu-summary-panel .tu-sum-row { color: var(--text-secondary); }
+.tu-summary-panel .tu-sum-row b { color: var(--text-primary); }
+.tu-sum-total, .tu-sum-total2 { border-top: 1px dashed var(--glass-border); }
+.tu-pay { height: 54px; border-radius: 16px; font-size: 16px; font-weight: 800;
+  background: linear-gradient(135deg, var(--brand-3), var(--brand-2) 55%, var(--brand));
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--brand) 40%, transparent); }
+.tu-secure { display: flex; align-items: center; justify-content: center; gap: 7px; }
+@media (max-width:900px){ .tu-summary-panel { position: static; } }
+@media (max-width:420px){ .tu-amounts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
