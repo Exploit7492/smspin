@@ -82,9 +82,22 @@ const CONSENT_SRC = `<script src="/consent-log.js" defer></script>`;
 // link, OpenGraph tags and JSON-LD (@id/url/logo). Repoint every one of them at
 // the deployed product URL so search engines and link previews resolve to the
 // live host instead of a domain this build no longer serves.
+//
+// This must NOT touch the React Server Component flight payload (the
+// `self.__next_f.push(...)` <script> blocks). React compares that serialized
+// payload against the SSR markup during hydration; rewriting a URL inside it
+// desyncs the two and React throws #423, blanking the page. Only the static
+// application/ld+json blocks and the non-script markup are rewritten.
 const OLD_DOMAIN = /https?:\/\/(?:www\.)?smspin\.io/g;
 function retargetDomain(html) {
-  return SITE_URL.includes("smspin.io") ? html : html.replace(OLD_DOMAIN, SITE_URL);
+  if (SITE_URL.includes("smspin.io")) return html;
+  const parts = html.split(/(<script\b[^>]*>[\s\S]*?<\/script>)/i);
+  return parts
+    .map((part, i) => {
+      if (i % 2 === 0) return part.replace(OLD_DOMAIN, SITE_URL);
+      return /application\/ld\+json/i.test(part) ? part.replace(OLD_DOMAIN, SITE_URL) : part;
+    })
+    .join("");
 }
 
 // Minimum sell price. The mirrored marketing pages baked in sub-$1 sample
