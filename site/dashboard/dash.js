@@ -259,7 +259,7 @@
   }
 
   const CARD_LINKS = {
-    overview: ["/dashboard/wallet/", "/dashboard/numbers/", "/dashboard/orders/", "/dashboard/sms/", "/dashboard/wallet/"],
+    overview: ["/dashboard/topup/", "/dashboard/numbers/", "/dashboard/orders/", "/dashboard/sms/", "/dashboard/wallet/"],
     wallet: ["/dashboard/wallet/", "/dashboard/transactions/", "/dashboard/transactions/", "/dashboard/transactions/"],
     referrals: ["/dashboard/referrals/", "/dashboard/wallet/", "/dashboard/wallet/", "/dashboard/referrals/"],
     profile: ["/dashboard/settings/", "/dashboard/wallet/", "/dashboard/settings/", "/dashboard/referrals/"],
@@ -269,7 +269,6 @@
     if (!links) return;
     $$(".cards .card").forEach((card, i) => {
       if (!links[i]) return;
-      if (card.querySelector(".card-fab")) return; // this card opens the funding sheet
       card.classList.add("card-link");
       card.setAttribute("role", "link");
       card.tabIndex = 0;
@@ -492,13 +491,8 @@
     }));
   }
 
-  // ---- Wallet: analytics + funding flow ----
-  const PAY_METHODS = [
-    { id: "card", label: "Card", note: "Visa, Mastercard, Verve", icon: "💳" },
-    { id: "bank", label: "Bank transfer", note: "Instant NGN transfer", icon: "🏦" },
-    { id: "ussd", label: "USSD", note: "Pay from your phone", icon: "📱" },
-  ];
-  let WALLET = null, payMethod = "card";
+  // ---- Wallet: analytics ----
+  let WALLET = null;
 
   async function renderWallet() {
     const d = await SMSPIN.rpc("wallet_summary");
@@ -508,7 +502,6 @@
     drawBars("#walletSvc", d.by_category || [], cur, "name", "icon");
     drawBars("#walletCtry", d.by_country || [], cur, "country", "flag");
     drawActivity(d.activity || [], cur);
-    drawFunding(d, cur);
     // B3: multi-currency balances + instant conversion.
     await renderBalances(cur);
   }
@@ -697,58 +690,6 @@
             '<span class="act-time">' + esc(fmtTime(a.created_at)) + "</span></div></div>";
         }).join("") + "</div>";
     }).join("");
-  }
-
-  // Full funding flow: quick amounts + method + summary -> edge function -> checkout.
-  function drawFunding(d, cur) {
-    const quick = $("#fundQuick");
-    if (quick) {
-      const amounts = [1000, 2000, 5000, 10000, 20000, 50000];
-      quick.innerHTML = amounts.map(a =>
-        '<button type="button" class="fund-chip" data-amt="' + a + '">' + money(a, cur) + "</button>").join("");
-      $$(".fund-chip", quick).forEach(b => b.addEventListener("click", () => {
-        const amt = $("#amt"); if (amt) amt.value = b.dataset.amt;
-        $$(".fund-chip", quick).forEach(x => x.classList.remove("on")); b.classList.add("on");
-        updateFundSummary(cur);
-      }));
-    }
-    const methods = $("#fundMethods");
-    if (methods) {
-      methods.innerHTML = PAY_METHODS.map(m =>
-        '<button type="button" class="fund-m' + (m.id === payMethod ? " on" : "") + '" data-m="' + m.id + '">' +
-        '<span class="fm-ico">' + m.icon + '</span><span class="fm-txt"><b>' + m.label + "</b><span>" + m.note + "</span></span></button>").join("");
-      $$(".fund-m", methods).forEach(b => b.addEventListener("click", () => {
-        payMethod = b.dataset.m;
-        $$(".fund-m", methods).forEach(x => x.classList.remove("on")); b.classList.add("on");
-        updateFundSummary(cur);
-      }));
-    }
-    const amt = $("#amt");
-    if (amt) amt.addEventListener("input", () => updateFundSummary(cur));
-    updateFundSummary(cur);
-  }
-
-  let fundFee = null, fundFeeAmt = 0;
-  function updateFundSummary(cur) {
-    const sum = $("#fundSummary");
-    const btn = $("#fundBtn");
-    if (!sum) return;
-    const amt = Number((document.getElementById("amt") || {}).value || 0);
-    const m = PAY_METHODS.find(x => x.id === payMethod) || PAY_METHODS[0];
-    const fee = (fundFee && fundFeeAmt === amt) ? fundFee : null;
-    sum.innerHTML =
-      '<div class="fs-row"><span>Amount</span><b>' + money(amt, cur) + "</b></div>" +
-      '<div class="fs-row"><span>Method</span><b>' + esc(m.label) + "</b></div>" +
-      (fee
-        ? '<div class="fs-row"><span>Fee <span class="fs-pct">' + (fee.fee_percent || 0) + '%</span></span><b>-' + money(fee.fee, cur) + "</b></div>" +
-          '<div class="fs-row"><span>You pay</span><b>' + money(amt, cur) + "</b></div>" +
-          '<div class="fs-row fs-total"><span>Wallet credit</span><b>' + money(fee.net, cur) + "</b></div>"
-        : '<div class="fs-row fs-total"><span>You pay</span><b>' + money(amt, cur) + "</b></div>");
-    if (btn) { btn.textContent = amt > 0 ? "Top up " + money(amt, cur) : "Enter an amount"; btn.disabled = !(amt > 0); }
-    if (amt > 0 && SMSPIN.feeQuote && fundFeeAmt !== amt) {
-      fundFeeAmt = amt;
-      SMSPIN.feeQuote(amt, cur).then(q => { if (q && Number((document.getElementById("amt")||{}).value||0) === amt) { fundFee = q; updateFundSummary(cur); } });
-    }
   }
 
   async function renderSettings() {
@@ -2285,65 +2226,6 @@
     topup: renderTopUp, history: renderHistory,
   };
 
-  // Wallet funding goes through the server-side `funding` edge function:
-  // the browser never calls Supabase RPCs or sees KoraPay keys directly.
-  function wireTopup() {
-    const btn = document.getElementById("fundBtn");
-    const sheet = document.getElementById("fundSheet");
-    if (!btn || !sheet) return;
-
-    // Build the funding form (quick amounts, methods, live summary).
-    drawFunding(WALLET || {}, (WALLET && WALLET.currency) || "NGN");
-
-    // Slide-up "Add funds" sheet — opened from the balance-card "+" (and the card itself).
-    let lastFocus = null;
-    const open = () => {
-      lastFocus = document.activeElement;
-      sheet.classList.add("open");
-      sheet.setAttribute("aria-hidden", "false");
-      document.body.classList.add("sheet-lock");
-      const amt = document.getElementById("amt"); if (amt) amt.focus();
-    };
-    const close = () => {
-      sheet.classList.remove("open");
-      sheet.setAttribute("aria-hidden", "true");
-      document.body.classList.remove("sheet-lock");
-      if (lastFocus && lastFocus.focus) lastFocus.focus();
-    };
-    const fab = document.getElementById("ovAddFunds");
-    const card = fab && fab.closest(".card");
-    if (fab) fab.addEventListener("click", e => { e.stopPropagation(); open(); });
-    if (card) { card.classList.add("card-link"); card.setAttribute("role", "button"); card.tabIndex = 0;
-      card.addEventListener("click", open);
-      card.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } }); }
-    $$("[data-open-funds], #addFundsBtn").forEach(b => b.addEventListener("click", open));
-    sheet.addEventListener("click", e => { if (e.target === sheet) close(); });
-    $$("[data-close]", sheet).forEach(b => b.addEventListener("click", close));
-    document.addEventListener("keydown", e => { if (e.key === "Escape" && sheet.classList.contains("open")) close(); });
-
-    btn.addEventListener("click", async () => {
-      const amt = Number((document.getElementById("amt") || {}).value || 0);
-      if (!(amt > 0)) { toast("Enter an amount", "err"); return; }
-      btn.disabled = true;
-      btn.textContent = "Redirecting to checkout…";
-      try {
-        const sess = SMSPIN.getSession();
-        const res = await fetch("/api/payments/initialize", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: "Bearer " + (sess && sess.access_token || "") },
-          body: JSON.stringify({ amount: amt, country: (GEO && GEO.country) || undefined, currency: (GEO && GEO.currency) || undefined }),
-        });
-        const d = await res.json();
-        if (!res.ok || !d.checkout_url) throw new Error((d && d.error) || "Could not start payment");
-        location.href = d.checkout_url;
-      } catch (e) {
-        toast(e.message, "err");
-        btn.disabled = false;
-        updateFundSummary((WALLET && WALLET.currency) || "NGN");
-      }
-    });
-  }
-
   // On return from checkout (?ref=...), verify server-side and credit the wallet.
   async function settlePayment() {
     const ref = new URLSearchParams(location.search).get("ref");
@@ -2524,7 +2406,6 @@
     try { await fn(); } catch (e) { console.warn("render " + page + ":", e.message); }
     finally { hideLoader(); }
     wireCardLinks();
-    wireTopup();
     wireSettings();
     wireProfileSave();
   }

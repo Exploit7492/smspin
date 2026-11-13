@@ -8,8 +8,8 @@
 <link rel="stylesheet" href="/_next/static/css/da1ef2f87b5d85aa.css">
 <link rel="stylesheet" href="/_next/static/css/799dbddceaca5ff3.css">
 <link rel="stylesheet" href="/_next/static/css/99187c56f9c480d0.css">
-<link rel="stylesheet" href="/dashboard/dashboard.css?v=1794536268">
-<script>(function(){try{var d=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;var r=document.documentElement;r.setAttribute("data-theme",d?"dark":"light");r.style.backgroundColor=d?"#0a0709":"#eef1f8";}catch(e){}})();</script><link rel="stylesheet" href="/theme.css?v=1794536268"><script defer src="/theme.js"></script><link rel="stylesheet" href="/tour.css?v=1">
+<link rel="stylesheet" href="/dashboard/dashboard.css?v=1794538270">
+<script>(function(){try{var d=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;var r=document.documentElement;r.setAttribute("data-theme",d?"dark":"light");r.style.backgroundColor=d?"#0a0709":"#eef1f8";}catch(e){}})();</script><link rel="stylesheet" href="/theme.css?v=1794538270"><script defer src="/theme.js"></script><link rel="stylesheet" href="/tour.css?v=1">
 </head>
 <body data-page="overview"><header class="dash-appbar"><button class="dash-toggle" id="dashToggle" aria-label="Open menu" aria-expanded="false">☰</button><a class="dash-logo" href="/dashboard/" aria-label="SMSPin home"><span class="dl-mark" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-6l-5 4v-4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><circle cx="8" cy="10.5" r="1.3" fill="#e11d2e"/><circle cx="12" cy="10.5" r="1.3" fill="#e11d2e"/><circle cx="16" cy="10.5" r="1.3" fill="#e11d2e"/></svg></span><span class="dl-name">SMS<i>Pin</i></span></a></header>
 <div class="dash-scrim" id="dashScrim"></div>
@@ -22,15 +22,14 @@
   <h1 class="ov-h1" id="ovWelcome">Welcome back</h1>
   <p class="ov-sub">Here is what is happening with your account today.</p>
   <div class="ov-actions">
-    <button class="btn btn-ghost ov-act" type="button" data-open-funds>
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Top up</button>
+    <a class="btn btn-ghost ov-act" href="/dashboard/topup/">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Top up</a>
     <a class="btn btn-primary ov-act ov-act-buy" href="/dashboard/buy/">Buy number
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg></a>
   </div>
 </section>
 <div class="cards ov-cards">
   <div class="card ov-balance">
-    <button class="card-fab" id="ovAddFunds" type="button" aria-label="Add funds" title="Add funds"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
     <span class="ov-orb" aria-hidden="true"></span>
     <div class="k">Wallet balance</div>
     <div class="v" id="ovBalance">—</div>
@@ -74,41 +73,14 @@
     <table class="tbl"><tbody></tbody></table>
   </div>
 </div>
-<div class="sheet-overlay" id="fundSheet" aria-hidden="true">
-  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="fundSheetTitle">
-    <div class="sheet-head">
-      <div class="sh-titles">
-        <h2 id="fundSheetTitle">Add funds</h2>
-        <p>Top up your wallet balance to keep numbers active.</p>
-      </div>
-      <button class="sheet-x" type="button" data-close aria-label="Close">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
-      </button>
-    </div>
-    <div class="sheet-body">
-      <div class="fund">
-        <div class="fund-quick" id="fundQuick"></div>
-        <div class="grid2">
-          <div class="field"><label for="amt">Amount (₦)</label><input id="amt" type="number" value="5000" min="500" step="500" inputmode="numeric"></div>
-          <div class="field"><label>Payment method</label><div class="fund-methods" id="fundMethods"></div></div>
-        </div>
-        <div class="fund-summary" id="fundSummary"></div>
-        <button class="btn btn-primary btn-lg" id="fundBtn" type="button">Continue to checkout</button>
-        <p class="fund-note">You are redirected to our secure checkout. Your balance updates automatically once the payment clears.</p>
-      </div>
-    </div>
-  </div>
-</div>
-
-
 </main>
   </div>
 </div>
 <script src="/dashboard/config.js?v=1794394631"></script>
-<script src="/dashboard/api.js?v=1794536268"></script>
-<script src="/ui.js?v=1794536268"></script>
+<script src="/dashboard/api.js?v=1794538270"></script>
+<script src="/ui.js?v=1794538270"></script>
 <script src="/help.js?v=1"></script>
 <script src="/tour.js?v=1"></script>
-<script src="/dashboard/dash.js?v=1794536268"></script>
+<script src="/dashboard/dash.js?v=1794538270"></script>
 </body>
 </html>

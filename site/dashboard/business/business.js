@@ -117,7 +117,7 @@
         $("#bizStatusPanel").hidden = false;
         $("#bizStatusBody").innerHTML =
           '<div class="biz-live"><p>You need <b>' + money(r.required_ngn) + "</b> but your wallet has <b>" +
-          money(r.balance) + '</b>.</p><a class="btn btn-primary" href="/dashboard/wallet/">Top up wallet</a></div>';
+          money(r.balance) + '</b>.</p><a class="btn btn-primary" href="/dashboard/topup/">Top up wallet</a></div>';
         $("#bizStatusPanel").scrollIntoView({ behavior: "smooth" });
         return;
       }
