@@ -63,6 +63,7 @@ if cur.fetchone()[0] == 0:
 
 # Make sure the wallet is funded enough to exercise every flow.
 cur.execute("update wallets set balance = greatest(balance, 150000) where user_id=%s", (uid,))
+cur.execute("select balance, currency from wallets where user_id=%s", (uid,))
 print("wallet balance:", cur.fetchone())
 
 cur.close()

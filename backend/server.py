@@ -233,6 +233,68 @@ SERVICE_KEY = os.environ.get("Smspin_supabase_secretskey", "")
 PG_DSN = os.environ["Smspin_supabase_Postgresql"]
 SMSPIN_KEY = os.environ.get("Smspin_apikey", "")
 
+# Site-wide minimum sell price. Every buyer-facing price is a whole number of
+# US dollars floored at this value, so nothing on the site is ever cheaper.
+MIN_PRICE_USD = 2
+
+# Multiplier applied to the provider's rental API price before it becomes our
+# sell price (our markup is 2x the provider's base rental price).
+RENTAL_MARKUP = 2.0
+
+
+# Public marketing pages are a static mirror whose example prices were baked in
+# under the old $1 floor (plus sub-$1 sample figures). Rather than rewrite 12k
+# files, normalise the dollar amounts at serve time so no visible page ever
+# quotes a price below MIN_PRICE_USD. Only $-prefixed amounts and JSON-LD price
+# fields are touched; React Server Component reference ids ("$1", "$2a"...) and
+# replacement strings ("$1", "$&") are left alone by the lookarounds.
+_PRICE_DEC_RE = re.compile(rb"\$(?:<!-- -->)?(\d+)\.(\d{2})(?!\d)")
+_PRICE_BARE_RE = re.compile(rb"(?<![$\w.\"'])\$1(?!\d)(?!,\d)(?![.]\d)")
+_PRICE_JSON_RE = re.compile(rb'("(?:price|lowPrice|highPrice)":\s*"?)(\d+)\.(\d{1,2})')
+# Numeric price fields in the React Server Component payload (minPrice":0.01,
+# escaped \"lowPrice\":\"0.01\" ...) drive what the client renders after
+# hydration, so they must be floored too.
+_PRICE_FIELD_RE = re.compile(rb'((?:minPrice|maxPrice|lowPrice|highPrice|price)["\\:]{0,16})(\d+(?:\.\d{1,2})?)')
+# React Server Component text nodes: ["$$","0.57"] / "children":"$$0.08" render
+# as "$0.57" / "$0.08" after hydration, so floor the number that follows the $$.
+_PRICE_RSC_RE = re.compile(rb'(\$\$[\\",]{0,6})(\d+\.\d{1,2})')
+# RSC text arrays split the currency symbol and the amount into sibling nodes:
+# children":["From $","0.49",...]. Floor the number when it follows such a $.
+_PRICE_RSC_STR_RE = re.compile(rb'(\$["\\]{1,2}[\\, ]{0,6}[\\"]{0,2})(\d+\.\d{1,2})')
+_PRICE_MIN = MIN_PRICE_USD
+
+
+def _apply_min_price_floor(html):
+    def dec(m):
+        return (b"$%d.00" % _PRICE_MIN) if float(m.group(1) + b"." + m.group(2)) < _PRICE_MIN else m.group(0)
+
+    def bare(m):
+        return b"$%d" % _PRICE_MIN
+
+    def _num(raw):
+        return (b"%d.00" % _PRICE_MIN) if float(raw) < _PRICE_MIN else raw
+
+    def jsn(m):
+        return m.group(1) + _num(m.group(2) + b"." + m.group(3))
+
+    def field(m):
+        return m.group(1) + _num(m.group(2))
+
+    def rsc(m):
+        return m.group(1) + _num(m.group(2))
+
+    html = _PRICE_DEC_RE.sub(dec, html)
+    html = _PRICE_RSC_RE.sub(rsc, html)
+    html = _PRICE_RSC_STR_RE.sub(rsc, html)
+    html = _PRICE_BARE_RE.sub(bare, html)
+    html = _PRICE_JSON_RE.sub(jsn, html)
+    html = _PRICE_FIELD_RE.sub(field, html)
+    # A range whose both ends floored to the minimum reads better as one figure.
+    floor_s = b"$%d.00" % _PRICE_MIN
+    _m = rb"(?:%d|%d\.00)" % (_PRICE_MIN, _PRICE_MIN)
+    html = re.sub(rb"\$" + _m + rb"\s*[-\xe2\x80\x93\xe2\x80\x94]\s*\$" + _m, floor_s, html)
+    return html
+
 KORA_MODE = os.environ.get("KORA_MODE", "test")  # test | live
 KORA_SECRET = os.environ["Kora_test_secrete_key"] if KORA_MODE == "test" else os.environ["Kora_secrete_key"]
 KORA_PUBLIC = os.environ["Kora_test_public_key"] if KORA_MODE == "test" else os.environ["Kora_public_key"]
@@ -463,9 +525,14 @@ def sync_pair(country, service, force=False):
 
 
 def _rent_price(usd):
-    """Whole-dollar rental price (USD) and its NGN equivalent at the live rate."""
+    """Whole-dollar rental sell price (USD) and its NGN equivalent.
+
+    Our sell price is the provider's rental price times our rental markup,
+    rounded to a whole dollar and floored at MIN_PRICE_USD. The caller keeps the
+    provider's raw figure separately for the create_rental max_price cap.
+    """
     rate = fx_rates().get("NGN") or 1600.0
-    usd_rounded = max(1, round(float(usd or 0)))
+    usd_rounded = max(MIN_PRICE_USD, round(float(usd or 0) * RENTAL_MARKUP))
     return {"price_usd": usd_rounded, "price_ngn": round(usd_rounded * rate)}
 
 
@@ -486,9 +553,10 @@ def rent_prices_real(country, service):
             usd = c.get("fromPrice")
             if usd is None:
                 continue
+            sell = max(MIN_PRICE_USD, round(float(usd) * RENTAL_MARKUP))
             countries.append({"country": (c.get("country") or "").upper(),
-                              "from_price_usd": max(1, round(float(usd))),
-                              "from_price_ngn": round(max(1, round(float(usd))) * rate)})
+                              "from_price_usd": sell,
+                              "from_price_ngn": round(sell * rate)})
         return {"service": service, "country": None, "countries": countries, "durations": []}
     durations = []
     for d in (data.get("durations") or []):
@@ -630,10 +698,10 @@ def _sell_price_ngn(amount_ngn, markup_pct=0.0):
     """Whole-dollar sell price, as an NGN amount at the live rate.
 
     Matches the SQL sell_price_ngn: round the marked-up naira to the nearest
-    dollar, floor at $1, then convert that dollar figure back to naira.
+    dollar, floor at MIN_PRICE_USD, then convert that dollar figure back to naira.
     """
     rate = fx_rates().get("NGN") or 1600.0
-    usd = max(1, round(float(amount_ngn) * (1 + float(markup_pct or 0) / 100.0) / rate))
+    usd = max(MIN_PRICE_USD, round(float(amount_ngn) * (1 + float(markup_pct or 0) / 100.0) / rate))
     return round(usd * rate)
 
 
@@ -1575,6 +1643,7 @@ class Handler(SimpleHTTPRequestHandler):
         if ld is not None:
             inject += b'<script type="application/ld+json">' + ld + b"</script>"
         out = html[:idx] + inject + html[idx:]
+        out = _apply_min_price_floor(out)
         if len(_LD_CACHE) > 2000:
             _LD_CACHE.clear()
         _LD_CACHE[key] = out
@@ -1820,7 +1889,7 @@ class Handler(SimpleHTTPRequestHandler):
                 # (base + business markup) at the live rate.
                 base = float(row["price"])
                 price_ngn = _sell_price_ngn(base, pct)
-                price_usd = max(1, round(base * (1 + pct / 100.0) / (fx_rates().get("NGN") or 1600.0)))
+                price_usd = max(MIN_PRICE_USD, round(base * (1 + pct / 100.0) / (fx_rates().get("NGN") or 1600.0)))
             return self._send(200, {"country": cc, "service": sv,
                                     "price_ngn": price_ngn,
                                     "price_usd": price_usd,

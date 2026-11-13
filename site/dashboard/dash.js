@@ -2038,7 +2038,7 @@
       set("tuSumTotal", "$" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
       set("tuSumTotal2", "$" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
       const lbl = document.getElementById("tuSumBonusLabel");
-      if (lbl) lbl.textContent = "Bonus credits" + (b.pct ? " (" + b.pct + "%)" : "");
+      if (lbl) lbl.textContent = "Bonus" + (b.pct ? " (" + b.pct + "%)" : "");
       const btn = document.getElementById("tuBtn");
       const m = TU_METHODS.find(x => x.id === method) || TU_METHODS[0];
       if (btn) {
@@ -2392,7 +2392,7 @@
         '<span class="bn-lbl">Buy</span></a>' +
       '<a class="bn" href="/dashboard/topup/">' +
         '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/><path d="M12 13v4M10 15h4"/></svg></span>' +
-        '<span class="bn-lbl">Top Up</span></a>' +
+        '<span class="bn-lbl">Add funds</span></a>' +
       '<a class="bn" href="/dashboard/sms/">' +
         '<span class="bn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none"><path d="M4 5c0-1.1.9-2 2-2h12c1.1 0 2 .9 2 2v9c0 1.1-.9 2-2 2h-5l-3.5 3.5c-.5.5-1.5.1-1.5-.6V16H6c-1.1 0-2-.9-2-2V5z" fill="currentColor"/></svg></span>' +
         '<span class="bn-lbl">Inbox</span></a>';

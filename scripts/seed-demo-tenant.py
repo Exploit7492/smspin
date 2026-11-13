@@ -91,6 +91,27 @@ if cur.fetchone()[0] == 0:
                 (BIZ,))
     print("app build seeded")
 
+# Storefront order history so the store account page has data to show.
+cur.execute("select count(*) from orders where tenant_account_id=%s", (acc,))
+if cur.fetchone()[0] == 0:
+    cur.execute("select id from auth.users where lower(email)=lower(%s)", (EMAIL,))
+    buyer = cur.fetchone()[0]
+    store_orders = [
+        ("us", "whatsapp", "+1 415 555 0142", 2701, "received"),
+        ("gb", "telegram", "+44 7 5124 90011", 2701, "waiting"),
+        ("ng", "whatsapp", "+234 802 555 0199", 2701, "received"),
+        ("us", "google", "+1 646 555 0177", 4052, "received"),
+        ("de", "whatsapp", "+49 151 555 0122", 2701, "refunded"),
+        ("fr", "instagram", "+33 6 55 55 01 44", 2701, "completed"),
+    ]
+    for cc, sv, ph, price, st in store_orders:
+        cur.execute("""insert into orders(user_id,country_code,service_code,phone_number,price,status,
+                        business_id,tenant_account_id,created_at,expires_at)
+                       values (%s,%s,%s,%s,%s,%s,%s,%s, now() - (random()*interval '5 days'),
+                               now()+interval '20 minutes')""",
+                    (buyer, cc, sv, ph, price, st, BIZ, acc))
+    print("storefront orders seeded:", len(store_orders))
+
 cur.close()
 conn.close()
 print("DONE")
