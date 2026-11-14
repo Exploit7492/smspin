@@ -42,6 +42,11 @@ const offenders = [];
 const injected = [];
 const BAD = [/:12000\b/, /work-1-[a-z0-9]+\.prod-runtime\.all-hands\.dev/, /work-2-[a-z0-9]+\.prod-runtime\.all-hands\.dev/, /onrender\.com/];
 const SKIP = [/(^|\/)\.git\//, /node_modules/, /\.map$/];
+// Authenticated surfaces and API endpoints: blocked in robots.txt and kept out
+// of the sitemap. Mirrors the old backend's _PRIVATE_PREFIXES.
+const PRIVATE_PREFIXES = ["/dashboard", "/admin", "/api", "/store", "/login",
+  "/register", "/reset-password", "/verify"];
+const isPrivatePath = (p) => PRIVATE_PREFIXES.some((pre) => p === pre || p.startsWith(pre + "/"));
 
 // Tenant bootstrap. The Python backend used to stamp the store slug into every
 // page it served (window.SMSPIN_TENANT_SLUG/BASE) so the shared dashboard/admin
@@ -220,7 +225,8 @@ function walk(dir) {
     const rel = relative(SITE, p).replace(/\\/g, "/");
     if (name === "index.html") {
       const url = "/" + relative(SITE, dir).replace(/\\/g, "/");
-      pages.push(url === "/." ? "/" : url.replace(/\/\.$/, "/"));
+      const clean = url === "/." ? "/" : url.replace(/\/\.$/, "/");
+      if (!isPrivatePath(clean)) pages.push(clean);
     }
     // Only scan text assets for leaked sandbox URLs.
     if (/\.(html|js|json|css)$/.test(name) && st.size < 4_000_000) {
@@ -238,11 +244,82 @@ walk(SITE);
 if (offenders.length) fail("sandbox URLs found in: " + offenders.slice(0, 20).join(", "));
 
 // 3. SEO files.
-writeFileSync(join(SITE, "robots.txt"),
-  `User-agent: *\nAllow: /\nDisallow: /dashboard/\nDisallow: /admin/\nDisallow: /store/\nSitemap: ${SITE_URL}/sitemap.xml\n`);
+const robotLines = ["User-agent: *", "Allow: /"];
+for (const p of PRIVATE_PREFIXES) robotLines.push(`Disallow: ${p}`);
+robotLines.push("Disallow: /*?", "", `Sitemap: ${SITE_URL}/sitemap.xml`);
+writeFileSync(join(SITE, "robots.txt"), robotLines.join("\n") + "\n");
 
 const urls = pages.map((u) => `  <url><loc>${SITE_URL}${u}</loc></url>`).join("\n");
 writeFileSync(join(SITE, "sitemap.xml"),
   `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`);
 
 console.log(`build: wrote config.js, robots.txt, sitemap.xml (${pages.length} pages, ${injected.length} tenant-injected, ${offenders.length} sandbox refs).`);
+
+// 4. Review/AggregateRating JSON-LD on review-eligible marketing pages (G2).
+// The Python backend injected this per request from public_reviews(); a static
+// host cannot, so it is baked here from the same RPC. Best-effort: a build must
+// never fail because the reviews service is unreachable.
+const REVIEW_PAGES = ["/", "/price/", "/buy/", "/reviews/", "/sms-verification/"];
+
+async function fetchReviews() {
+  try {
+    const r = await fetch(`${SUPA_URL}/rest/v1/rpc/public_reviews`, {
+      method: "POST",
+      headers: { apikey: ANON, Authorization: `Bearer ${ANON}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ p_limit: 20 }),
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+function reviewJsonLd(path, data) {
+  const rating = data && data.rating;
+  const items = (data && data.items) || [];
+  if (!rating && !items.length) return null;
+  const node = {
+    "@context": "https://schema.org", "@type": "Product",
+    name: "SMSPin — Online SMS Verification", url: `${SITE_URL}${path}`,
+  };
+  if (rating) {
+    node.aggregateRating = {
+      "@type": "AggregateRating", ratingValue: rating.ratingValue,
+      reviewCount: rating.reviewCount, bestRating: rating.bestRating || 5,
+      worstRating: rating.worstRating || 1,
+    };
+  }
+  const reviews = items.slice(0, 10).map((r) => {
+    const rev = {
+      "@type": "Review",
+      author: { "@type": "Person", name: r.author || "Customer" },
+      reviewRating: { "@type": "Rating", ratingValue: r.rating, bestRating: 5, worstRating: 1 },
+      reviewBody: r.body || "",
+      datePublished: (r.created_at || "").slice(0, 10),
+    };
+    if (r.title) rev.name = r.title;
+    return rev;
+  });
+  if (reviews.length) node.review = reviews;
+  return JSON.stringify(node, null, 0);
+}
+
+const reviewsData = await fetchReviews();
+if (reviewsData) {
+  let ldCount = 0;
+  for (const page of REVIEW_PAGES) {
+    const file = page === "/" ? join(SITE, "index.html") : join(SITE, page.replace(/^\/|\/$/g, ""), "index.html");
+    let html;
+    try { html = readFileSync(file, "utf8"); } catch { continue; }
+    if (html.includes('"AggregateRating"')) continue;
+    const ld = reviewJsonLd(page, reviewsData);
+    if (!ld) continue;
+    const tag = `<script type="application/ld+json">${ld}</script>`;
+    const i = html.search(/<\/head>/i);
+    if (i === -1) continue;
+    writeFileSync(file, html.slice(0, i) + tag + html.slice(i));
+    ldCount++;
+  }
+  console.log(`build: injected review JSON-LD into ${ldCount} page(s).`);
+} else {
+  console.log("build: reviews service unreachable — skipping review JSON-LD (non-fatal).");
+}

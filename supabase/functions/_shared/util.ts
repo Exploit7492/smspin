@@ -54,7 +54,11 @@ export function bearer(req: Request): string {
 }
 
 export function clientIp(req: Request): string {
-  const xf = req.headers.get("x-forwarded-for") || "";
+  // Vercel (which rewrites /api/* to this function) records the true client IP
+  // in x-vercel-forwarded-for and overwrites x-forwarded-for with its own edge
+  // address. Prefer the Vercel header, fall back to XFF for direct calls.
+  const v = req.headers.get("x-vercel-forwarded-for") || "";
+  const xf = v || req.headers.get("x-forwarded-for") || "";
   return (xf.split(",")[0] || "").trim() || "0.0.0.0";
 }
 

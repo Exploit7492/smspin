@@ -106,23 +106,26 @@ async function refundOrder(orderId: number, reason: string) {
   let res: Record<string, unknown> = {};
   try { res = (await svc("refund_order", { p_order_id: orderId, p_reason: reason })) as Record<string, unknown> || {}; }
   catch { return {}; }
-  if (!res.already) {
-    const { data } = await admin().from("orders").select("user_id,tenant_account_id,price").eq("id", orderId).maybeSingle();
-    const row = data as Record<string, unknown> | null;
-    if (row) {
-      // Queue a tenant-branded refund email + in-app notification.
-      let email: string | null = null;
-      if (row.user_id) {
-        const { data: p } = await admin().from("profiles").select("email").eq("id", row.user_id).maybeSingle();
-        email = (p as Record<string, unknown> | null)?.email as string | null;
-      }
-      await svcSoft("refund_notice_create", { p_order_id: orderId, p_user: row.user_id, p_tenant: row.tenant_account_id,
-        p_email: email, p_amount: res.refunded ?? row.price, p_reason: reason });
-      if (row.user_id) await notifyUserEvent(row.user_id as string, "order.refunded",
-        { order_id: orderId, amount: num(res.refunded ?? row.price), reason, status: "refunded" });
-    }
-  }
+  if (!res.already) await notifyRefund(orderId, res.refunded, reason);
   return res;
+}
+
+// Queue a tenant-branded refund email + in-app notification for an order. Used
+// by the full-refund path above and by admin partial refunds, which call
+// refund_order_partial directly.
+async function notifyRefund(orderId: number, refunded: unknown, reason: string) {
+  const { data } = await admin().from("orders").select("user_id,tenant_account_id,price").eq("id", orderId).maybeSingle();
+  const row = data as Record<string, unknown> | null;
+  if (!row) return;
+  let email: string | null = null;
+  if (row.user_id) {
+    const { data: p } = await admin().from("profiles").select("email").eq("id", row.user_id).maybeSingle();
+    email = (p as Record<string, unknown> | null)?.email as string | null;
+  }
+  await svcSoft("refund_notice_create", { p_order_id: orderId, p_user: row.user_id, p_tenant: row.tenant_account_id,
+    p_email: email, p_amount: refunded ?? row.price, p_reason: reason });
+  if (row.user_id) await notifyUserEvent(row.user_id as string, "order.refunded",
+    { order_id: orderId, amount: num(refunded ?? row.price), reason, status: "refunded" });
 }
 
 async function notifyUserEvent(userId: string | null, event: string, payload: Body) {
@@ -328,6 +331,6 @@ async function tenantKeyInfo(req: Request): Promise<Record<string, unknown> | nu
 }
 
 export { svc, svcSoft, num, str, rateOk, geoFromIp, fxConvert, fundingQuote, korapay, creditPayment,
-  refundOrder, notifyUserEvent, buyReal, rentReal, rentPricesReal, syncPair, upstreamWebhook,
+  refundOrder, notifyRefund, notifyUserEvent, buyReal, rentReal, rentPricesReal, syncPair, upstreamWebhook,
   requireAdmin, apiKeyUser, tenantKeyInfo, validPayEmail, KORA_CHANNELS, KORA_CHANNEL_IDS, AUP_VERSION_FALLBACK,
   provider, ProviderError };

@@ -11,7 +11,7 @@ import {
 import {
   svc, svcSoft, num, str, rateOk, geoFromIp, fxConvert, fundingQuote, korapay, creditPayment,
   buyReal, rentReal, rentPricesReal, upstreamWebhook, requireAdmin, apiKeyUser, tenantKeyInfo,
-  validPayEmail, KORA_CHANNELS, KORA_CHANNEL_IDS, AUP_VERSION_FALLBACK, refundOrder, provider,
+  validPayEmail, KORA_CHANNELS, KORA_CHANNEL_IDS, AUP_VERSION_FALLBACK, refundOrder, notifyRefund, provider,
 } from "../_shared/core.ts";
 
 type Body = Record<string, unknown>;
@@ -20,6 +20,33 @@ const RL: Record<string, [number, number]> = {
   consent: [30, 60], review: [10, 60], rpc: [600, 60], default: [240, 60],
 };
 function one(url: URL, k: string, d: string | null = null) { return url.searchParams.get(k) ?? d; }
+// Per-instance process metrics. Edge isolates are short-lived, so these counters
+// reset on cold start — the durable ops snapshot lives in the `ops_metrics` RPC.
+const METRICS = (() => {
+  const started = Date.now();
+  let total = 0, errors = 0;
+  const statuses: Record<string, number> = {};
+  const paths: Record<string, number> = {};
+  const latency: number[] = [];
+  return {
+    record(path: string, status: number, seconds: number) {
+      total++; if (status >= 500) errors++;
+      statuses[String(status)] = (statuses[String(status)] || 0) + 1;
+      paths[path] = (paths[path] || 0) + 1;
+      latency.push(seconds); if (latency.length > 500) latency.shift();
+    },
+    snapshot() {
+      const lat = [...latency].sort((a, b) => a - b);
+      const pct = (p: number) => lat.length ? Number(lat[Math.min(lat.length - 1, Math.floor(lat.length * p))].toFixed(4)) : 0;
+      return {
+        uptime_s: Math.round((Date.now() - started) / 100) / 10,
+        requests_total: total, errors_5xx: errors, status_counts: { ...statuses },
+        top_paths: Object.entries(paths).sort((a, b) => b[1] - a[1]).slice(0, 15),
+        latency_p50: pct(0.5), latency_p95: pct(0.95), latency_p99: pct(0.99),
+      };
+    },
+  };
+})();
 function readJson(req: Request): Promise<Body> {
   return req.json().catch(() => ({})) as Promise<Body>;
 }
@@ -138,7 +165,8 @@ async function handleGet(req: Request, url: URL, path: string): Promise<Response
   if (path === "/api/order/detail") return orderDetail(req, url);
   if (path.startsWith("/api/app/download/")) return appDownload(path.split("/").pop() || "");
   if (path === "/api/kb" || path === "/api/articles") {
-    return json({ articles: await svc("kb_search", { p_q: str(one(url, "q")), p_category: one(url, "category") }) });
+    const arts = await svc("kb_search", { p_q: str(one(url, "q")), p_category: one(url, "category") });
+    return path === "/api/articles" ? json(arts) : json({ articles: arts });
   }
   if (path.startsWith("/api/kb/")) {
     const art = await svcSoft("kb_article", { p_slug: path.split("/").pop() });
@@ -156,6 +184,24 @@ async function handleGet(req: Request, url: URL, path: string): Promise<Response
   if (path === "/api/env") return json({ environment: KORA_MODE === "live" ? "prod" : "test", is_prod: KORA_MODE === "live", preview: KORA_MODE !== "live", korapay_mode: KORA_MODE, upstream_enabled: provider().enabled() });
   if (path === "/api/status") return json(await svcSoft("status_report"));
   if (path === "/api/status/uptime") return json(await svcSoft("status_uptime", { p_hours: num(one(url, "hours", "72"), 72) }));
+  if (path === "/api/metrics") {
+    return json({ process: METRICS.snapshot(), ops: await svcSoft("ops_metrics", { p_window_min: 15 }) });
+  }
+  if (path === "/api/alerts") {
+    const a = await requireAdmin(req);
+    if (!a) return json({ error: "admin only" }, 403);
+    return json({ events: await svcSoft("alert_events_list", { p_limit: 50 }), rules: await svcSoft("alert_rules_list", {}) });
+  }
+  if (path === "/api/scheduler") return json({ tasks: await svcSoft("scheduler_status", {}) });
+  if (path === "/api/upstream/status") {
+    return json({
+      enabled: provider().enabled(),
+      balance: await svcSoft("provider_state_get", { p_key: "balance" }),
+      catalog_sync: await svcSoft("sync_progress", {}),
+      dlq: await svcSoft("dlq_list", { p_limit: 10 }),
+      reconcile: await svcSoft("reconcile_report", { p_days: 7 }),
+    });
+  }
   if (path === "/api/pricing") {
     const { data } = await admin().from("settings").select("key,value");
     const s: Record<string, unknown> = {};
@@ -295,6 +341,7 @@ async function resolveBuyer(req: Request, body: Body): Promise<{ userId: string 
 }
 
 async function buyOrder(req: Request): Promise<Response> {
+  if (!(await rateOk(`buy:${clientIp(req)}`, RL.buy[0], RL.buy[1]))) return json({ error: "rate limit exceeded" }, 429);
   const body = await readJson(req);
   const country = str(body.country).toLowerCase(); const service = str(body.service);
   if (!country || !service) return json({ error: "country and service required" }, 400);
@@ -324,6 +371,7 @@ async function buyOrder(req: Request): Promise<Response> {
 }
 
 async function rentOrder(req: Request): Promise<Response> {
+  if (!(await rateOk(`buy:${clientIp(req)}`, RL.buy[0], RL.buy[1]))) return json({ error: "rate limit exceeded" }, 429);
   const body = await readJson(req);
   const country = str(body.country).toLowerCase(); const service = str(body.service);
   const duration = num(body.duration, 24);
@@ -450,12 +498,16 @@ async function paymentsInitialize(req: Request): Promise<Response> {
 
   const uid = await authUser(req);
   if (!uid) return json({ error: "missing bearer token" }, 401);
-  const { data: prof } = await asUser(bearer(req)).rpc("my_profile");
+  const userClient = asUser(bearer(req));
+  const { data: prof } = await userClient.rpc("my_profile");
   let email = str((prof as Record<string, unknown> | null)?.email);
   if (!validPayEmail(email)) email = `user-${(prof as Record<string, unknown> | null)?.id || "anon"}@smspin.io`;
   const name = str((prof as Record<string, unknown> | null)?.full_name) || "SMSPin User";
-  const pay = (await svc("create_payment", { p_amount: amount })) as Record<string, unknown>;
-  const reference = pay.reference as string;
+  // create_payment derives the owner from auth.uid(), so it must run as the
+  // signed-in user — a service-role call would have no uid and be rejected.
+  const { data: pay, error: payErr } = await userClient.rpc("create_payment", { p_amount: amount });
+  if (payErr || !pay) return json({ error: "could not create payment", detail: payErr?.message ?? null }, 400);
+  const reference = (pay as Record<string, unknown>).reference as string;
   await setPaymentFee(reference, amount);
   const redirect_url = `${host}/dashboard/wallet/?ref=${reference}`;
   const notify_url = `${host}/api/korapay/webhook`;
@@ -495,6 +547,7 @@ async function korapayWebhook(req: Request): Promise<Response> {
 }
 
 async function upstreamWebhookRoute(req: Request): Promise<Response> {
+  if (!(await rateOk(`webhook:${clientIp(req)}`, RL.webhook[0], RL.webhook[1]))) return json({ error: "rate limit exceeded" }, 429);
   const secret = Deno.env.get("SMSPIN_WEBHOOK_SECRET") || "";
   if (secret) {
     const given = req.headers.get("x-webhook-secret") || "";
@@ -518,6 +571,7 @@ async function policyAccept(req: Request): Promise<Response> {
 }
 
 async function statusSubscribe(req: Request): Promise<Response> {
+  if (!(await rateOk(`subscribe:${clientIp(req)}`, RL.subscribe[0], RL.subscribe[1]))) return json({ error: "rate limit exceeded" }, 429);
   const body = await readJson(req);
   const email = str(body.email).trim();
   if (!email) return json({ error: "email required" }, 400);
@@ -526,6 +580,7 @@ async function statusSubscribe(req: Request): Promise<Response> {
 }
 
 async function consent(req: Request): Promise<Response> {
+  if (!(await rateOk(`consent:${clientIp(req)}`, RL.consent[0], RL.consent[1]))) return json({ error: "rate limit exceeded" }, 429);
   const body = await readJson(req);
   const uid = await authUser(req);
   const c = (body.consent as Body) || body;
@@ -536,6 +591,7 @@ async function consent(req: Request): Promise<Response> {
 }
 
 async function submitReview(req: Request): Promise<Response> {
+  if (!(await rateOk(`review:${clientIp(req)}`, RL.review[0], RL.review[1]))) return json({ error: "rate limit exceeded" }, 429);
   const uid = await authUser(req);
   if (!uid) return json({ error: "sign in to leave a review" }, 401);
   const body = await readJson(req);
@@ -601,8 +657,11 @@ async function adminPost(req: Request, url: URL, path: string): Promise<Response
     const orderId = num(body.order_id); const reason = str(body.reason || "admin_refund");
     try {
       let r: Record<string, unknown>;
-      if (body.amount === undefined || body.amount === null) r = (await svc("refund_order", { p_order_id: orderId, p_reason: reason })) as Record<string, unknown>;
-      else r = (await svc("refund_order_partial", { p_order_id: orderId, p_amount: body.amount, p_reason: reason })) as Record<string, unknown>;
+      if (body.amount === undefined || body.amount === null) r = await refundOrder(orderId, reason);
+      else {
+        r = (await svc("refund_order_partial", { p_order_id: orderId, p_amount: body.amount, p_reason: reason })) as Record<string, unknown>;
+        if (!r.already) await notifyRefund(orderId, r.refunded, reason);
+      }
       await audit("admin.refund", orderId, { amount: body.amount, reason }); return json(r);
     } catch (e) { return json({ error: str(e) }, 400); }
   }
