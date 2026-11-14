@@ -120,13 +120,19 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
   `insert into admins(email, role) values ('ops@yourdomain', 'owner')`.
 
 ## Phase 6 — findable & fast (G1, G2, G3, G6)
-- **G1 SEO**: `build_robots()` / `build_sitemap()` in `backend/server.py` generate
-  `/robots.txt` and `/sitemap.xml` from the mirrored tree over `SITE_URL`
+- **G1 SEO**: `build_robots(base)` / `build_sitemap(base)` in `backend/server.py`
+  generate `/robots.txt` and `/sitemap.xml` from the mirrored tree. `base` is the
+  host the request arrived on (`Handler._public_base()`, so custom domains and the
+  local dev host get correct canonical URLs), falling back to `SITE_URL`
   (`SMSPIN_SITE_URL`, default `https://smspin.io`). Private prefixes are disallowed.
 - **G2 structured data**: `build_review_jsonld(path)` builds a `Product` +
   `AggregateRating` + `Review` JSON-LD node from the live `public_reviews()` RPC and
   injects it into review-eligible pages (`_REVIEW_PAGES`). Cached 10 min via
-  `_reviews_cache()`; injected HTML cached in `_LD_CACHE`.
+  `_reviews_cache()` (disabled outside production so tests see fresh rows); injected
+  HTML cached in `_LD_CACHE`. On the static Vercel host the same block is baked at
+  build time (no-JS crawler fallback) and `site/review-jsonld.js` republishes it from
+  the live `/api/reviews` feed at runtime, so a review published after a deploy is
+  reflected without a rebuild.
 - **G3 caching + consent**: `_serve_static_file()` sets `ETag`/`Last-Modified` and
   `Cache-Control` (immutable only for content-hashed `/_next/static/`; `no-cache,
   must-revalidate` for HTML **and** for our own hand-edited CSS/JS — a long max-age
@@ -840,7 +846,13 @@ needs no code change.
 - **Removed fake trust content.** Eight fabricated reviews (fake authors, seeded as
   `published`) were deleted from `reviews`; they had been rendered on `/` and `/reviews/`
   and baked into `AggregateRating`/`Review` JSON-LD. The build only injects review JSON-LD
-  when `public_reviews()` returns real rows.
+  when `public_reviews()` returns real rows, and `site/review-jsonld.js` refreshes the
+  block from the live feed at runtime. A Vercel deploy hook `smspin-review-publish`
+  (`.../deploy/prj_mJP7pAG7f00ONeprhwQva5fjW30s/KEbGOpeKHX`) can be called after
+  moderation to re-bake the no-JS crawler copy; the runtime injector makes it optional.
+- **Buy endpoint no longer leaks upstream state.** `/api/orders/buy` authenticates
+  before reporting `upstream_enabled()`, so an unauthenticated caller gets `401`
+  instead of a `503` availability probe.
 - **Removed the simulated-OTP demo** (`#buyDemoOtp` / `#buyDemoOut`) from the buy page.
   The developer "sandbox API key" feature is a real, tested product capability and stays.
 
