@@ -1681,19 +1681,6 @@
       tut.hidden = hasOrders || hidden;
       const dis = document.getElementById("buyTutDismiss");
       if (dis) dis.onclick = () => { tut.hidden = true; try { localStorage.setItem("smspin_buy_tut_hidden", "1"); } catch (e) {} };
-      const demo = document.getElementById("buyDemoOtp");
-      if (demo) demo.onclick = () => {
-        const out = document.getElementById("buyDemoOut");
-        const code = String(Math.floor(100000 + Math.random() * 900000));
-        out.hidden = false;
-        out.textContent =
-          "Sample inbox (simulated, nothing is charged)\n\n" +
-          "From:  WhatsApp\n" +
-          "To:    +44 7•• ••• 214\n" +
-          "Code:  " + code + "\n" +
-          "Time:  " + new Date().toLocaleTimeString() + "\n\n" +
-          "Copy the code into the app you are verifying. Real codes arrive the same way.";
-      };
     }
 
     if (btn) btn.addEventListener("click", async () => {

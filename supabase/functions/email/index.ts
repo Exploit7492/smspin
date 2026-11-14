@@ -18,7 +18,47 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { type EmailBrand, type EmailContent, type EmailRow, renderBrandedEmail } from "../_shared/email_template.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+// Every service-role credential this project may present. Supabase issues a
+// legacy JWT (SERVICE_ROLE_KEY) and a newer secret key (SUPABASE_SERVICE_ROLE_KEY,
+// SUPABASE_SECRET_KEYS); the pg_cron dispatcher sends the Vault-stored legacy JWT
+// while the platform injects the new one, so the guard must accept both and keep
+// working when either rotates.
+function serviceKeys(): string[] {
+  const out: string[] = [];
+  const push = (v: string | undefined) => { if (v && v.trim()) out.push(v.trim()); };
+  push(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"));
+  push(Deno.env.get("SERVICE_ROLE_KEY"));
+  const multi = Deno.env.get("SUPABASE_SECRET_KEYS");
+  if (multi) {
+    try {
+      const j = JSON.parse(multi);
+      if (j && typeof j === "object") for (const v of Object.values(j)) push(typeof v === "string" ? v : undefined);
+      else push(typeof j === "string" ? j : undefined);
+    } catch { push(multi); }
+  }
+  return out;
+}
+const KEYS = serviceKeys();
+
+// Constant-time-ish equality so a timing probe can't learn a secret byte by byte.
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// Accept a service-role key as either a Bearer token or the `apikey` header,
+// matching how the Postgres dispatcher (net.http_post) and the CLI invoke it.
+function authorized(req: Request): boolean {
+  if (!KEYS.length) return false;
+  const auth = req.headers.get("authorization") || "";
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  const apikey = (req.headers.get("apikey") || "").trim();
+  return KEYS.some((k) => (bearer && safeEqual(bearer, k)) || (apikey && safeEqual(apikey, k)));
+}
 const NOVU_KEY = Deno.env.get("NOVU_API_KEY") || "";
 const NOVU_BASE = (Deno.env.get("NOVU_BASE") || "https://api.novu.co").replace(/\/$/, "");
 const WORKFLOW = Deno.env.get("NOVU_WORKFLOW") || "smspin-transactional";
@@ -156,6 +196,11 @@ async function novuTrigger(body: unknown) {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+  // JWT verification is off at the platform edge so the cron caller can reach
+  // this function with the service-role key, which means the guard lives here:
+  // only a caller holding the service-role key (the dispatcher) may drain the
+  // queue or requeue failed sends.
+  if (!authorized(req)) return json({ error: "unauthorized" }, 401);
   if (!NOVU_KEY) return json({ error: "NOVU_API_KEY not configured" }, 500);
 
   let body: { limit?: number; requeue?: boolean } = {};

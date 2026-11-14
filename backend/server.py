@@ -125,26 +125,33 @@ def _sitemap_urls():
     return urls
 
 
-def build_sitemap():
-    """G1: sitemap.xml over the whole public mirror (max 50k URLs per file)."""
+def build_sitemap(base=None):
+    """G1: sitemap.xml over the whole public mirror (max 50k URLs per file).
+
+    `base` is the host the request arrived on, so the sitemap advertises the URL
+    the visitor (or a tenant's custom domain) actually reached, not a hardcoded
+    canonical. Falls back to SITE_URL when there is no request context.
+    """
+    base = (base or SITE_URL).rstrip("/")
     parts = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
     for loc, mtime in _sitemap_urls()[:50000]:
         lastmod = time.strftime("%Y-%m-%d", time.gmtime(mtime))
-        parts.append(f"<url><loc>{SITE_URL}{loc}</loc>"
+        parts.append(f"<url><loc>{base}{loc}</loc>"
                      f"<lastmod>{lastmod}</lastmod></url>")
     parts.append("</urlset>")
     return "\n".join(parts).encode()
 
 
-def build_robots():
+def build_robots(base=None):
     """G1: robots.txt — allow the marketing mirror, block private surfaces."""
+    base = (base or SITE_URL).rstrip("/")
     lines = ["User-agent: *", "Allow: /"]
     for p in _PRIVATE_PREFIXES:
         lines.append(f"Disallow: {p}")
     lines.append("Disallow: /*?")
     lines.append("")
-    lines.append(f"Sitemap: {SITE_URL}/sitemap.xml")
+    lines.append(f"Sitemap: {base}/sitemap.xml")
     return ("\n".join(lines) + "\n").encode()
 
 
@@ -153,10 +160,15 @@ _REVIEW_PAGES = ("/", "/price", "/buy", "/reviews", "/sms-verification")
 
 
 def _reviews_cache():
-    """Cache public_reviews() for 10 minutes — it is read on every HTML hit."""
+    """Cache public_reviews() for 10 minutes — it is read on every HTML hit.
+
+    Disabled outside production so a freshly published review shows immediately
+    (and the test suite does not have to wait out a TTL).
+    """
     now = time.time()
+    ttl = 0 if IS_PREVIEW else 600
     cache = getattr(_reviews_cache, "_c", None)
-    if cache and now - cache[0] < 600:
+    if cache and now - cache[0] < ttl:
         return cache[1]
     try:
         data = _svc("public_reviews", {"p_limit": 20}) or {}
@@ -1689,6 +1701,24 @@ class Handler(SimpleHTTPRequestHandler):
         # Suppress the stdlib access log; we emit structured JSON instead.
         pass
 
+    def _public_base(self):
+        """The scheme+host the request arrived on, used for canonical SEO URLs.
+
+        Falls back to SITE_URL when the Host header is missing, so robots.txt and
+        sitemap.xml always advertise a real, routable origin.
+        """
+        host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").strip()
+        if not host:
+            return SITE_URL
+        host = host.split(",")[0].strip()
+        if not host:
+            return SITE_URL
+        proto = self.headers.get("X-Forwarded-Proto")
+        if not proto:
+            local = host.split(":")[0] in ("localhost", "127.0.0.1", "::1")
+            proto = "http" if local else "https"
+        return f"{proto}://{host}"
+
     def _tick(self):
         self._t0 = time.time()
 
@@ -2017,14 +2047,14 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         # G1: dynamic SEO files are generated, so answer HEAD without a body.
         if path == "/robots.txt":
-            body = build_robots()
+            body = build_robots(self._public_base())
             self.send_response(200)
             self.send_header("Content-type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             return
         if path == "/sitemap.xml":
-            body = build_sitemap()
+            body = build_sitemap(self._public_base())
             self.send_response(200)
             self.send_header("Content-type", "application/xml; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -2042,9 +2072,9 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         # G1: dynamic SEO files generated from the mirrored tree.
         if path == "/robots.txt":
-            return self._send(200, build_robots(), "text/plain; charset=utf-8")
+            return self._send(200, build_robots(self._public_base()), "text/plain; charset=utf-8")
         if path == "/sitemap.xml":
-            return self._send(200, build_sitemap(), "application/xml; charset=utf-8")
+            return self._send(200, build_sitemap(self._public_base()), "application/xml; charset=utf-8")
         # Session handoff: stream the staged repo bundle / notes as a download.
         if path.startswith("/handoff/"):
             return self._serve_handoff(path[len("/handoff/"):])
@@ -2865,8 +2895,6 @@ class Handler(SimpleHTTPRequestHandler):
         if not country or not service:
             return self._send(400, {"error": "country and service required"})
         operator = body.get("operator")
-        if not upstream_enabled():
-            return self._send(503, {"error": "ordering temporarily unavailable"})
 
         user_id = None
         tenant_account = None
@@ -2879,6 +2907,11 @@ class Handler(SimpleHTTPRequestHandler):
             user_id = self._auth_user()
             if not user_id:
                 return self._send(401, {"error": "missing or invalid session"})
+
+        # Authenticate first, then report upstream state: an unauthenticated
+        # caller must never learn whether ordering is enabled.
+        if not upstream_enabled():
+            return self._send(503, {"error": "ordering temporarily unavailable"})
 
         ip = client_ip(self)
         actor = f"tenant:{tenant_account}" if tenant_account else f"user:{user_id}"

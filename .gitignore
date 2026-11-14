@@ -25,3 +25,6 @@ site/robots.txt
 site/sitemap.xml
 .vercel
 .env*
+
+# Supabase CLI local state
+supabase/.temp/

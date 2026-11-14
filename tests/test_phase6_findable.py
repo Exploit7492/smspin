@@ -47,7 +47,7 @@ def test_robots_and_sitemap_are_cacheable(http, server_up):
 
 
 # ---------------------------------------------------------------- G2 structured data
-def test_landing_has_review_aggregate_jsonld(http, server_up):
+def test_landing_has_review_aggregate_jsonld(http, server_up, published_review):
     st, body = http(server_up + "/")
     assert st == 200
     text = body if isinstance(body, str) else body.decode()

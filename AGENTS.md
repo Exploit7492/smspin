@@ -113,15 +113,11 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
   (add/rename entries as needed) and mark the current link `class="active"`.
 - API gateway: user API keys map to the owning user's wallet; tenant keys add markup.
 - `create_api_key` is capped at 5 active keys per user — revoke before creating more.
-- Test user: `demo@smspin.local`.
-
-## Local demo logins (seeded, for cross-checking)
-- User dashboard: `demo@smspin.local` / `SmspinDemo123!` (also an admin — the ops
-  console at `/admin/` unlocks). Seeded by `scripts/seed-demo-user.py`.
-- White-label store: `/store/zenith-verify/login` — `demo@smspin.local` /
-  `StoreDemo123!` (tenant slug `zenith-verify`, business #2). Seeded by
-  `scripts/seed-demo-tenant.py`.
-- Both scripts are idempotent and connect with `Smspin_supabase_Postgresql`.
+- Admin access is the `admins(email, role)` allow-list only. There are no seeded or
+  demo accounts: the previous `demo@smspin.local` / `SmspinDemo123!` owner login and
+  the `pytest-*@qa.local` admins were a published-password backdoor and have been
+  removed and banned. Grant a real operator with
+  `insert into admins(email, role) values ('ops@yourdomain', 'owner')`.
 
 ## Phase 6 — findable & fast (G1, G2, G3, G6)
 - **G1 SEO**: `build_robots()` / `build_sitemap()` in `backend/server.py` generate
@@ -705,8 +701,9 @@ to their store. One set of files serves everyone; a UI change lands on all store
   `sell_price_ngn(price, markup)`. Webhook DLQ count reads `tenant_webhook_events`
   (not `webhook_deliveries`, which has no `business_id`).
 
-**Demo:** `python scripts/seed-demo-tenant.py` seeds store `zenith-verify`; sign in at
-`/store/zenith-verify/login/` with `demo@smspin.local` / `StoreDemo123!`.
+**Demo:** the demo seed scripts were removed with the demo backdoor. Create a real
+tenant with `create_child_business()` (or the admin console) and sign in at
+`/store/<slug>/login/`.
 
 ## Production deployment (Vercel static host + Supabase)
 
@@ -822,6 +819,30 @@ needs no code change.
   (worker URL/key live in Vault, never in the repo).
 - Verify a real send by queueing with `email_enqueue` and reading `email_events`;
   confirm the Novu message payload carries the tenant's brand name and colour.
+- **From name / Reply-To are branded too.** The `email` edge function sets
+  `overrides.email.senderName` (the tenant's `from_name`) and `overrides.email.replyTo`
+  (the tenant's `reply_to`) on every Novu trigger, so a white-label store's mail never
+  shows the platform sender. The `email` function's auth guard accepts any configured
+  service credential (`SUPABASE_SERVICE_ROLE_KEY`, legacy `SERVICE_ROLE_KEY`, or
+  `SUPABASE_SECRET_KEYS`) so the Vault-keyed cron dispatcher keeps working across key
+  rotation; it 401s everything else.
+
+## Production hardening — 2026-11-13
+- **Removed a live admin backdoor.** `demo@smspin.local` / `SmspinDemo123!` (published
+  in this file and the repo) was an `admins(role='owner')` account, as were
+  `pytest-*@qa.local`; all were reachable through the product URL's `/api/admin/*`.
+  The `admins` rows were deleted, the demo/test auth users banned (`banned_until`), the
+  seed scripts (`seed-demo-user.py`, `seed-demo-tenant.py`, `seed-reviews.py`) deleted,
+  and the real owner (`fatheruche@gmail.com`, the Vercel account) granted `owner`.
+- **Payments are live.** `KORA_MODE=live` on the Supabase project, so `/api/env` reports
+  `is_prod: true` and the funding flow uses the live Korapay keys (not test). Redeploy
+  `api` + `funding` after changing it.
+- **Removed fake trust content.** Eight fabricated reviews (fake authors, seeded as
+  `published`) were deleted from `reviews`; they had been rendered on `/` and `/reviews/`
+  and baked into `AggregateRating`/`Review` JSON-LD. The build only injects review JSON-LD
+  when `public_reviews()` returns real rows.
+- **Removed the simulated-OTP demo** (`#buyDemoOtp` / `#buyDemoOut`) from the buy page.
+  The developer "sandbox API key" feature is a real, tested product capability and stays.
 
 ## Production deployment (live)
 - Product URL: `https://smspin.vercel.app` (Vercel project `smspin`,

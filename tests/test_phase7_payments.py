@@ -67,23 +67,12 @@ def test_initialize_defaults_to_card(http, server_up, test_user, db_conn):
     assert cur.fetchone()[0] == "card"
 
 
-def _tenant_token(http, server_up):
-    """Log into the demo tenant (skips when it is not seeded)."""
-    st, d = http(server_up + "/api/rpc", "POST",
-                 {"fn": "tenant_login", "args": {"p_email": "demo@smspin.local",
-                                                 "p_password": "StoreDemo123!",
-                                                 "p_slug": "zenith-verify"}})
-    if st != 200 or not (d or {}).get("token"):
-        pytest.skip("demo tenant not seeded")
-    return d["token"]
-
-
 @pytest.mark.parametrize("channel", ["card", "bank_transfer"])
-def test_tenant_fee_is_2_5_percent_of_ngn(http, server_up, db_conn, channel):
+def test_tenant_fee_is_2_5_percent_of_ngn(http, server_up, db_conn, test_tenant, channel):
     """A store top-up is charged in NGN, so the fee must be 2.5% of the NGN
     amount regardless of the caller's geo. A US-geolocated browser previously
     stamped a fee on a USD figure (e.g. NGN 101,875 on a NGN 3,000 charge)."""
-    tok = _tenant_token(http, server_up)
+    tok = test_tenant["token"]
     st, d = http(server_up + "/api/payments/initialize", "POST",
                  {"amount": 3000, "channel": channel, "tenant_token": tok,
                   "country": "US", "currency": "USD"})
@@ -98,8 +87,8 @@ def test_tenant_fee_is_2_5_percent_of_ngn(http, server_up, db_conn, channel):
     assert row[2], "tenant payment must be attributed to the tenant account"
 
 
-def test_tenant_initialize_rejects_unknown_channel(http, server_up):
-    tok = _tenant_token(http, server_up)
+def test_tenant_initialize_rejects_unknown_channel(http, server_up, test_tenant):
+    tok = test_tenant["token"]
     st, d = http(server_up + "/api/payments/initialize", "POST",
                  {"amount": 3000, "channel": "binance", "tenant_token": tok})
     assert st == 400, d

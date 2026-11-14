@@ -131,3 +131,54 @@ def test_user(supabase):
     _req(supabase["url"] + "/auth/v1/admin/users/" + uid, "DELETE",
          headers={"apikey": supabase["srk"], "Authorization": "Bearer " + supabase["srk"]})
     conn.close()
+
+
+@pytest.fixture
+def test_tenant(server_up, db_conn, http):
+    """Create a throwaway tenant account on a real store and log it in.
+
+    Skips when the store or the RPCs are unavailable, so the suite still runs
+    against a project without the white-label layer.
+    """
+    import random
+    slug = "zenith-verify"
+    cur = db_conn.cursor()
+    cur.execute("select 1 from businesses where slug=%s", (slug,))
+    if not cur.fetchone():
+        pytest.skip("store %s not seeded" % slug)
+    email = "qa-tenant-%d@smspin.io" % random.randint(100000, 999999)
+    pw = "QaTenant!2026"
+    st, reg = http(server_up + "/api/rpc", "POST",
+                   {"fn": "tenant_register",
+                    "args": {"p_email": email, "p_password": pw,
+                             "p_full_name": "QA Tenant", "p_slug": slug}})
+    if st != 200 or not (reg or {}).get("account_id"):
+        pytest.skip("tenant_register unavailable: %s" % reg)
+    st, tok = http(server_up + "/api/rpc", "POST",
+                   {"fn": "tenant_login",
+                    "args": {"p_email": email, "p_password": pw, "p_slug": slug}})
+    assert st == 200 and tok.get("token"), tok
+    yield {"email": email, "token": tok["token"], "slug": slug,
+           "account_id": reg["account_id"]}
+    cur.execute("delete from payments where tenant_account_id=%s", (reg["account_id"],))
+    cur.execute("delete from tenant_wallets where account_id=%s", (reg["account_id"],))
+    cur.execute("delete from tenant_accounts where id=%s", (reg["account_id"],))
+
+
+@pytest.fixture
+def published_review(db_conn):
+    """Publish one real review so the trust surfaces have genuine data to render.
+
+    Removed on teardown; the suite must never leave fabricated reviews behind
+    (the fabricated-review seed was deleted on 2026-11-13).
+    """
+    cur = db_conn.cursor()
+    cur.execute(
+        "insert into reviews(user_id, author, rating, title, body, service, country, "
+        "status, published_at) values (null, %s, 5, %s, %s, 'WhatsApp', 'US', 'published', now()) "
+        "returning id",
+        ("QA Reviewer", "End-to-end verified",
+         "Published by the test suite to prove the review pipeline renders real data."))
+    rid = cur.fetchone()[0]
+    yield rid
+    cur.execute("delete from reviews where id=%s", (rid,))
