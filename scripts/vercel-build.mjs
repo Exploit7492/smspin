@@ -112,6 +112,7 @@ const BUILD = (process.env.VERCEL_GIT_COMMIT_SHA || String(Date.now())).slice(0,
 const BRANDS_SRC = `<script>window.SMSPIN_TENANT_BRANDS=${JSON.stringify(BRANDS)};</script>`;
 const BRAND_SRC = `<script src="/tenant-brand.js?v=${BUILD}" defer></script>`;
 const CONSENT_SRC = `<script src="/consent-log.js?v=${BUILD}" defer></script>`;
+const REVIEW_LD_SRC = `<script src="/review-jsonld.js?v=${BUILD}" defer></script>`;
 
 // Runs at the end of <head> — the <title>/<meta> are parsed by then but the
 // body has not, so the tenant's name and palette are in place before the first
@@ -213,7 +214,8 @@ function injectTenantBootstrap(html, rel) {
   if (!isPrivate && !isStoreAuth) {
     out = applyMinPriceFloor(out);
     const extra = (out.includes("/tenant-brand.js") ? "" : BRAND_SRC) +
-                  (out.includes("/consent-log.js") ? "" : CONSENT_SRC);
+                  (out.includes("/consent-log.js") ? "" : CONSENT_SRC) +
+                  (out.includes("/review-jsonld.js") ? "" : REVIEW_LD_SRC);
     if (extra) {
       const i = out.search(/<\/head>/i);
       out = i !== -1 ? out.slice(0, i) + extra + out.slice(i)
@@ -276,9 +278,10 @@ writeFileSync(join(SITE, "sitemap.xml"),
 console.log(`build: wrote config.js, robots.txt, sitemap.xml (${pages.length} pages, ${injected.length} tenant-injected, ${offenders.length} sandbox refs).`);
 
 // 4. Review/AggregateRating JSON-LD on review-eligible marketing pages (G2).
-// The Python backend injected this per request from public_reviews(); a static
-// host cannot, so it is baked here from the same RPC. Best-effort: a build must
-// never fail because the reviews service is unreachable.
+// Baked here from the live RPC so crawlers that do not run JS still see it; the
+// injected site/review-jsonld.js refreshes the same block at runtime so a review
+// published after a deploy is reflected without a rebuild. Best-effort: a build
+// must never fail because the reviews service is unreachable.
 const REVIEW_PAGES = ["/", "/price/", "/buy/", "/reviews/", "/sms-verification/"];
 
 async function fetchReviews() {
@@ -296,12 +299,14 @@ async function fetchReviews() {
 function reviewJsonLd(path, data) {
   const rating = data && data.rating;
   const items = (data && data.items) || [];
+  // Never emit an empty Product node: schema.org requires at least one of
+  // review/reviewCount/aggregateRating, and an empty block is worse than none.
   if (!rating && !items.length) return null;
   const node = {
     "@context": "https://schema.org", "@type": "Product",
     name: "SMSPin — Online SMS Verification", url: `${SITE_URL}${path}`,
   };
-  if (rating) {
+  if (rating && Number(rating.reviewCount) > 0) {
     node.aggregateRating = {
       "@type": "AggregateRating", ratingValue: rating.ratingValue,
       reviewCount: rating.reviewCount, bestRating: rating.bestRating || 5,
@@ -320,6 +325,7 @@ function reviewJsonLd(path, data) {
     return rev;
   });
   if (reviews.length) node.review = reviews;
+  if (!node.review && !node.aggregateRating) return null;
   return JSON.stringify(node, null, 0);
 }
 
