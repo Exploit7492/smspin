@@ -141,6 +141,26 @@ def test_api_key_settings_and_sandbox(http, server_up, supabase, test_user, db_c
     assert st == 200 and "total" in u
 
 
+def test_api_key_secret_authenticates_but_prefix_does_not(http, server_up, supabase, test_user, db_conn):
+    """The gateway authenticates the real secret only.
+
+    The dashboard playground used to send the MASKED key prefix
+    (sk_live_9f2c...4a71), which never matches a stored hash — that is the
+    "invalid API key" the user hit. Guard both directions.
+    """
+    st, k = supabase_auth_rpc(supabase, test_user, "create_api_key", {"p_name": "authcheck"})
+    assert st == 200, k
+    secret = k["secret"]
+    assert secret.startswith("sk_live_")
+
+    st, bal = http(server_up + "/api/v1/balance", "GET", headers={"x-api-key": secret}, timeout=20)
+    assert st == 200 and "balance" in bal, bal
+
+    prefix = k["key_prefix"]
+    st, err = http(server_up + "/api/v1/balance", "GET", headers={"x-api-key": prefix}, timeout=20)
+    assert st == 401, (prefix, st, err)
+
+
 def test_customer_webhook_subscription_lifecycle(http, server_up, supabase, test_user, db_conn):
     st, c = supabase_auth_rpc(supabase, test_user, "create_webhook_sub",
                               {"p_url": "https://hook.example.com/x",

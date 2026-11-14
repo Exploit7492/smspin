@@ -5,6 +5,12 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const UI = window.SMSPINUI || { alert: async () => {}, confirm: async () => "ok", reveal: async () => {}, modal: async () => null, select: async () => null, toast: () => {} };
 
+  // A freshly minted API key is shown only once. Keep it for the tab session so
+  // the playground and snippets can use the real secret until the user reloads.
+  const KEY_SESSION = "smspin_key_session";
+  const rememberKey = k => { try { sessionStorage.setItem(KEY_SESSION, k); } catch (e) {} };
+  const recallKey = () => { try { return sessionStorage.getItem(KEY_SESSION) || ""; } catch (e) { return ""; } };
+
   // Tenants serve this exact file. In tenant mode every in-app link and route
   // is prefixed with the store base (/store/<slug>), and the router strips it
   // back off before matching, so the page markup and render code stay verbatim.
@@ -1121,11 +1127,13 @@
         const r = isRegen
           ? await SMSPIN.rpc("regenerate_api_key", { p_name: "key-" + Date.now().toString(36) })
           : await SMSPIN.rpc("create_api_key", { p_name: "key-" + Date.now().toString(36) });
-        await navigator.clipboard?.writeText(r.secret).catch(() => {});
+        const secret = r.secret || r.key || "";
+        if (secret) rememberKey(secret);
+        await navigator.clipboard?.writeText(secret).catch(() => {});
         await UI.reveal({
           title: "Your new API key",
           note: "Copy it now — it is shown only once and cannot be recovered later.",
-          value: r.secret,
+          value: secret,
         });
         draw();
       } catch (e) { toast(e.message, "err"); head.disabled = false; }
@@ -1146,6 +1154,13 @@
 
   // H1-H7: developer platform — usage, sandbox, key settings, customer webhooks.
   async function devPlatform() {
+    // Usage metering, sandbox keys, key settings and customer webhooks are
+    // account/platform features with no tenant twin. Hide those panels on a
+    // store dashboard instead of surfacing "not authenticated" errors.
+    if (TENANT) {
+      ["devUsagePanel", "devSandboxPanel", "devKeySettingsPanel", "devWebhookPanel"]
+        .forEach(id => { const el = document.getElementById(id); if (el) el.hidden = true; });
+    }
     // H5 usage metering.
     const usage = document.getElementById("devUsage");
     if (usage) {
@@ -1200,43 +1215,82 @@
     devPlayground();
   }
 
-  // O7: a live API playground that calls the deployment's own /api/v1 with the
-  // caller's key, plus copy-ready snippets in four languages.
+  // O7: a live API playground that calls this deployment with the caller's own
+  // key, plus copy-ready snippets in four languages. The key is read from the
+  // #pgKey input (auto-filled the moment a key is minted) — never from the
+  // masked prefix on the page, which is display-only and authenticates nothing.
+  //
+  // Two key families exist and they use different headers and paths:
+  //   * sk_live_… / sk_test_…  -> wallet keys,  header x-api-key,   /api/v1/*
+  //   * tk_live_…              -> store keys,   header x-tenant-key, /api/tenant/*
+  const PG_ENDPOINTS = {
+    sk: ["GET /api/v1/balance", "GET /api/v1/catalog?service=whatsapp&country=gb", "GET /api/v1/order?id=1"],
+    tk: ["GET /api/tenant/account", "GET /api/tenant/orders", "GET /api/tenant/stats"],
+  };
+  function pgKind(key) { return (key || "").trim().startsWith("tk_") ? "tk" : "sk"; }
   function devPlayground() {
     const run = document.getElementById("pgRun");
     const out = document.getElementById("pgOut");
     const base = location.origin;
-    const key = ($(".copyrow .mono") && $(".copyrow .mono").textContent.trim()) || "sk_live_...";
+    const keyIn = document.getElementById("pgKey");
+    const sel = document.getElementById("pgMethod");
+    if (keyIn && !keyIn.value) keyIn.value = recallKey();
 
-    const SNIPPETS = {
-      curl: 'curl "' + base + '/api/v1/catalog?service=whatsapp&country=gb" \\\n  -H "x-api-key: ' + key + '"',
-      node: 'const res = await fetch("' + base + '/api/v1/catalog?service=whatsapp&country=gb", {\n' +
-            '  headers: { "x-api-key": "' + key + '" },\n});\nconst catalog = await res.json();\nconsole.log(catalog);',
-      python: 'import requests\n\nr = requests.get(\n    "' + base + '/api/v1/catalog",\n' +
-              '    params={"service": "whatsapp", "country": "gb"},\n' +
-              '    headers={"x-api-key": "' + key + '"},\n)\nprint(r.json())',
-      php: '$ch = curl_init("' + base + '/api/v1/catalog?service=whatsapp&country=gb");\n' +
-           'curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\n' +
-           'curl_setopt($ch, CURLOPT_HTTPHEADER, ["x-api-key: ' + key + '"]);\n' +
-           '$catalog = json_decode(curl_exec($ch), true);',
-    };
+    function syncEndpoints() {
+      if (!sel) return;
+      const kind = pgKind(keyIn && keyIn.value);
+      const opts = PG_ENDPOINTS[kind];
+      const cur = sel.value;
+      sel.innerHTML = opts.map(o => '<option value="' + o + '">' + esc(o) + "</option>").join("");
+      if (opts.indexOf(cur) !== -1) sel.value = cur;
+    }
+
+    function currentKey() {
+      const k = (keyIn && keyIn.value || "").trim();
+      return k || (pgKind(k) === "tk" ? "tk_live_..." : "sk_live_...");
+    }
+    function snippets() {
+      const key = currentKey();
+      const kind = pgKind(key);
+      const header = kind === "tk" ? "x-tenant-key" : "x-api-key";
+      const path = kind === "tk" ? "/api/tenant/account" : "/api/v1/catalog?service=whatsapp&country=gb";
+      const url = base + path;
+      return {
+        curl: 'curl "' + url + '" \\\n  -H "' + header + ': ' + key + '"',
+        node: 'const res = await fetch("' + url + '", {\n' +
+              '  headers: { "' + header + '": "' + key + '" },\n});\nconsole.log(await res.json());',
+        python: 'import requests\n\nr = requests.get(\n    "' + url + '",\n' +
+                '    headers={"' + header + '": "' + key + '"},\n)\nprint(r.json())',
+        php: '$ch = curl_init("' + url + '");\n' +
+             'curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\n' +
+             'curl_setopt($ch, CURLOPT_HTTPHEADER, ["' + header + ': ' + key + '"]);\n' +
+             '$data = json_decode(curl_exec($ch), true);',
+      };
+    }
     function drawSnippet(lang) {
       const host = document.getElementById("devSnippet");
-      if (host) host.textContent = SNIPPETS[lang] || SNIPPETS.curl;
+      if (host) host.textContent = snippets()[lang] || snippets().curl;
       $$("#devSnipTabs .dev-tab").forEach(t => t.classList.toggle("active", t.dataset.lang === lang));
     }
     if (document.getElementById("devSnippet")) {
       $$("#devSnipTabs .dev-tab").forEach(t => t.onclick = () => drawSnippet(t.dataset.lang));
-      drawSnippet("curl");
     }
+    if (keyIn) {
+      keyIn.addEventListener("input", () => { syncEndpoints(); drawSnippet((($("#devSnipTabs .dev-tab.active") || {}).dataset || {}).lang || "curl"); });
+    }
+    syncEndpoints();
+    drawSnippet("curl");
     if (!run) return;
     run.onclick = async () => {
-      const spec = document.getElementById("pgMethod").value;
+      const key = (keyIn && keyIn.value || "").trim();
+      if (!key) { out.textContent = "Paste your API key above first (it is shown once when created)."; return; }
+      const spec = sel.value;
       const sp = spec.indexOf(" ");
       const method = spec.slice(0, sp), path = spec.slice(sp + 1);
+      const header = pgKind(key) === "tk" ? "x-tenant-key" : "x-api-key";
       out.textContent = "Running…";
       try {
-        const r = await fetch(base + path, { method, headers: { "x-api-key": key } });
+        const r = await fetch(base + path, { method, headers: { [header]: key } });
         const txt = await r.text();
         let pretty = txt;
         try { pretty = JSON.stringify(JSON.parse(txt), null, 2); } catch (e) {}

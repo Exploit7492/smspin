@@ -180,6 +180,78 @@ def test_tenant_api_key_lifecycle(http, server_up, supabase, business, db_conn):
     assert _rpc(db_conn, "tenant_resolve_api_key", {"p_hash": h}) is None
 
 
+def test_tenant_account_key_lifecycle(http, server_up, supabase, business, db_conn):
+    """A store customer can mint, use and revoke its OWN API key.
+
+    Tenant dashboards sign in with a store session token, not a Supabase JWT, so
+    the auth.uid()-based create/regenerate/revoke RPCs raised "not authenticated"
+    there — the tenant "Generate key" button was broken. The token-based twins
+    must work, and the key must only ever expose the caller's own data.
+    """
+    import random
+    import urllib.request
+    import urllib.error
+
+    def call(fn, args):
+        req = urllib.request.Request(server_up + "/api/rpc",
+                                     data=json.dumps({"fn": fn, "args": args}).encode(), method="POST")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", "Bearer " + supabase["anon"])
+        req.add_header("apikey", supabase["anon"])
+        try:
+            resp = urllib.request.urlopen(req, timeout=30)
+            return resp.status, json.loads(resp.read().decode() or "null")
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read().decode())
+            except Exception:
+                return e.code, None
+
+    email = "qa-tenantkey-%d@smspin.io" % random.randint(100000, 999999)
+    pw = "QaTenant!2026"
+    slug = business["slug"]
+    st, reg = call("tenant_register", {"p_email": email, "p_password": pw,
+                                       "p_full_name": "QA Key", "p_slug": slug})
+    if st != 200 or not (reg or {}).get("account_id"):
+        pytest.skip("tenant_register unavailable: %s" % reg)
+    acct = reg["account_id"]
+    st, tok = call("tenant_login", {"p_email": email, "p_password": pw, "p_slug": slug})
+    assert st == 200 and tok.get("token"), tok
+    token = tok["token"]
+
+    try:
+        st, created = call("tenant_key_create", {"p_token": token, "p_name": "cust",
+                                                 "p_scopes": ["read", "write"]})
+        assert st == 200, created
+        secret = created["key"]
+        assert secret.startswith("tk_live_")
+
+        # The key resolves to this account, never the store owner's keys.
+        h = hashlib.sha256(secret.encode()).hexdigest()
+        info = _rpc(db_conn, "tenant_resolve_api_key", {"p_hash": h})
+        assert info and info["account_id"] == acct
+        assert info["business_id"] == business["id"]
+
+        # Listing returns only the caller's key.
+        st, keys = call("tenant_my_api_keys", {"p_token": token})
+        assert st == 200 and [k["id"] for k in keys] == [created["id"]]
+
+        # The tenant read surface answers and the masked prefix never does.
+        st, acct_resp = http(server_up + "/api/tenant/account", headers={"x-tenant-key": secret})
+        assert st == 200 and acct_resp["account"]["email"] == email
+        st, _ = http(server_up + "/api/tenant/account", headers={"x-tenant-key": secret[:14] + "..." + secret[-4:]})
+        assert st == 401
+
+        # Revoke via the token-based twin.
+        st, rv = call("tenant_key_revoke", {"p_token": token, "p_id": created["id"]})
+        assert rv["revoked"] is True
+        assert _rpc(db_conn, "tenant_resolve_api_key", {"p_hash": h}) is None
+    finally:
+        cur = db_conn.cursor()
+        cur.execute("delete from tenant_api_keys where account_id=%s", (acct,))
+        cur.execute("delete from tenant_accounts where id=%s", (acct,))
+
+
 def test_tenant_webhook_enqueue_and_dispatch(http, server_up, supabase, business, db_conn):
     st, created = supabase_auth_rpc(supabase, business, "tenant_api_key_create",
                                     {"p_name": "hook", "p_scopes": ["read"],

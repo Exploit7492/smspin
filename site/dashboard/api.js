@@ -126,6 +126,9 @@
     my_notifications: ["tenant_my_notifications", "p_token"],
     my_profile: ["tenant_profile", "p_token"],
     my_api_keys: ["tenant_my_api_keys", "p_token"],
+    create_api_key: ["tenant_key_create", "p_token"],
+    regenerate_api_key: ["tenant_key_regenerate", "p_token"],
+    revoke_api_key: ["tenant_key_revoke", "p_token"],
     site_config: ["tenant_site_config", "p_slug"],
     browse_catalog: ["tenant_browse_catalog", "p_slug"],
   };

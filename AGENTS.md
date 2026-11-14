@@ -80,6 +80,21 @@ Public URL: https://work-1-wfaewerfovqrkyxa.prod-runtime.all-hands.dev/ (port 12
 - ONE active key per user. `create_api_key` raises `P0003` if one exists.
 - `regenerate_api_key` revokes the active key and mints a fresh one atomically.
 - The API Keys page shows the current key + revoke + regenerate, plus history.
+- Only the real secret authenticates. The dashboard renders a masked prefix
+  (`sk_live_9f2c...4a71`); it is display-only and always 401s. The playground
+  takes the key from `#pgKey` (auto-filled with the freshly minted secret for the
+  tab session) — never from the on-page prefix. That mismatch was the "invalid
+  API key" bug: the playground used to send the masked prefix.
+- Two key families, two headers: wallet keys `sk_live_…`/`sk_test_…` use
+  `x-api-key` on `/api/v1/*`; store keys `tk_live_…` use `x-tenant-key` on
+  `/api/tenant/*`.
+- Store customers mint keys with the token-based `tenant_key_create` /
+  `tenant_key_regenerate` / `tenant_key_revoke` (migration
+  `20261119000000_tenant_account_api_keys.sql`). `tenant_api_keys.account_id`
+  scopes each key to the signed-in store account; `tenant_my_api_keys` lists only
+  the caller's keys. The auth.uid()-based twins raise "not authenticated" on a
+  tenant dashboard, so `site/dashboard/api.js` maps `create_api_key`,
+  `regenerate_api_key` and `revoke_api_key` to the `tenant_key_*` twins.
 
 ## Base URL
 - Never hardcode `smspin.io` in the app. Use `location.origin` (referrals, API base URL,

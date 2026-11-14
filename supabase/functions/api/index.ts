@@ -279,20 +279,42 @@ async function rpcBridge(req: Request): Promise<Response> {
 async function tenantGet(req: Request, url: URL, path: string): Promise<Response> {
   const info = await tenantKeyInfo(req);
   if (!info) return json({ error: "invalid or missing tenant API key" }, 401);
+  // Accept both vocabularies: plain "read"/"write" and the scoped "orders:read"
+  // form the seeded keys use.
   const scopes = (info.scopes as string[]) || [];
-  if (!scopes.includes("read")) return json({ error: "key lacks 'read' scope" }, 403);
+  if (scopes.length && !scopes.some((s) => s === "read" || s.endsWith(":read")))
+    return json({ error: "key lacks 'read' scope", code: "scope_denied" }, 403);
   const biz = info.business_id;
+  const acct = (info.account_id as string) || null;
   if (path === "/api/tenant/account") {
+    if (acct) {
+      const { data } = await admin().from("tenant_accounts")
+        .select("email, full_name, tenant_slug, business_id").eq("id", acct).maybeSingle();
+      const a = (data as Record<string, unknown> | null) || {};
+      const { data: b } = await admin().from("businesses").select("slug").eq("id", biz).maybeSingle();
+      const brand = await svcSoft("business_branding", { p_slug: (b as Record<string, unknown> | null)?.slug ?? null });
+      return json({ account: a, brand });
+    }
     const { data } = await admin().from("businesses").select("slug").eq("id", biz).maybeSingle();
     return json(await svcSoft("business_branding", { p_slug: (data as Record<string, unknown> | null)?.slug ?? null }));
   }
   if (path === "/api/tenant/orders") {
     const limit = Math.max(1, Math.min(num(one(url, "limit", "50"), 50), 200));
-    const { data } = await admin().from("orders").select("id,country_code,service_code,phone_number,price,status,created_at")
-      .eq("business_id", biz).order("created_at", { ascending: false }).limit(limit);
+    let q = admin().from("orders").select("id,country_code,service_code,phone_number,price,status,created_at")
+      .eq("business_id", biz);
+    if (acct) q = q.eq("tenant_account_id", acct);
+    const { data } = await q.order("created_at", { ascending: false }).limit(limit);
     return json({ orders: data || [] });
   }
-  if (path === "/api/tenant/stats") return json(await svcSoft("my_business_stats_by_id", { p_business: biz }));
+  if (path === "/api/tenant/stats") {
+    if (acct) {
+      const { data: o } = await admin().from("orders").select("price,status").eq("tenant_account_id", acct);
+      const rows = (o as Array<Record<string, unknown>>) || [];
+      const spent = rows.reduce((s, r) => s + Number(r.price || 0), 0);
+      return json({ orders: rows.length, spent, currency: "NGN" });
+    }
+    return json(await svcSoft("my_business_stats_by_id", { p_business: biz }));
+  }
   return json({ error: "unknown endpoint" }, 404);
 }
 
