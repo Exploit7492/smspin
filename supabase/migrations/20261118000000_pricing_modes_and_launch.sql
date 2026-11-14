@@ -7,10 +7,12 @@
 --    function". The 3-arg overload is dropped; the 5-arg form has defaults, so
 --    older callers keep working.
 --
--- 2. Fixed markup must add the whole amount and never undercharge, so it is
---    applied to the raw base and then rounded UP to a whole dollar. Percentage
---    markup is a true percentage increase, rounded to the nearest whole dollar
---    (the buyer-facing rule from sell_price_ngn).
+-- 2. Fixed markup must add the whole amount and never round it away, so a
+--    store is priced at exactly host base + its margin. Percentage markup is a
+--    true percentage increase. Both round to the nearest naira and keep the
+--    $2 platform floor. (Whole-dollar rounding is dropped: it cannot represent
+--    a 30% markup — $2 x 1.3 rounds back to $2 or $3 — and it swallowed small
+--    fixed margins entirely.)
 --
 -- 3. business_markup_preview returns REAL in-stock catalog rows priced with the
 --    chosen mode, so the wizard shows the same figures a buyer will pay instead
@@ -25,13 +27,12 @@ create or replace function public.biz_markup_amount(
   p_base_ngn numeric, p_mode text, p_pct numeric, p_fixed numeric)
 returns numeric language plpgsql stable set search_path to 'public' as $$
 declare v_rate numeric := coalesce((select rate from fx_rates where code='NGN'), 1600);
+        v_floor numeric := round(2 * v_rate);
 begin
   if coalesce(p_mode, 'percent') = 'fixed' then
-    -- Add the whole fixed amount, then round UP to a whole dollar so the store
-    -- never sells below its host price plus the margin it asked for.
-    return greatest(2 * v_rate, ceil((coalesce(p_base_ngn, 0) + greatest(0, coalesce(p_fixed, 0))) / v_rate) * v_rate);
+    return greatest(v_floor, round(coalesce(p_base_ngn, 0) + greatest(0, coalesce(p_fixed, 0))));
   end if;
-  return public.sell_price_ngn(coalesce(p_base_ngn, 0), greatest(0, coalesce(p_pct, 0)));
+  return greatest(v_floor, round(coalesce(p_base_ngn, 0) * (1 + greatest(0, coalesce(p_pct, 0)) / 100.0)));
 end $$;
 
 create or replace function public.biz_apply_markup(p_business_id bigint, p_base_ngn numeric)
