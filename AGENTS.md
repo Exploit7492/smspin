@@ -811,3 +811,30 @@ needs no code change.
   (worker URL/key live in Vault, never in the repo).
 - Verify a real send by queueing with `email_enqueue` and reading `email_events`;
   confirm the Novu message payload carries the tenant's brand name and colour.
+
+## Production deployment (live)
+- Product URL: `https://smspin.vercel.app` (Vercel project `smspin`,
+  `prj_mJP7pAG7f00ONeprhwQva5fjW30s`, team `fatheruche-4266`). Backend is
+  Supabase Edge Functions (`api`/`funding`/`email`) on project
+  `sdoykujqzpppwpropsdo`; `/api/*` on the product URL rewrites to the `api` fn.
+- The Vercel Git link is suspended upstream (GitHub account `Exploit7492`), so
+  deploys are done with the Vercel CLI. `vercel deploy --prod` uploads files
+  one-by-one and trips the account's 5000-file/24h cap on this 12.6k-file site —
+  always pass `--archive=tgz` so the tree ships as one archive.
+- Static `site/` is committed pre-build; the build (`scripts/vercel-build.mjs`)
+  injects `config.js`, the tenant bootstrap, robots/sitemap and fails the build
+  if any sandbox URL survived. It refuses to build without `SUPABASE_URL`/anon key.
+
+## White-label custom domains (per-tenant, live routing)
+- `businesses.domain/domain_status/domain_verification/...` +
+  `resolve_domain(host)` map a host back to a slug; the static build bakes the
+  active map into the tenant bootstrap so a visitor on a store's own domain is
+  recognised with no server.
+- Owner dashboard (`/dashboard/business/`) drives `/api/business/domain`
+  (`provision`/`get`/`remove`), which calls the Vercel Domains API via
+  `_shared/vercel.ts`. A `<slug>-smspin.vercel.app` host on the shared product
+  zone verifies instantly and needs no DNS, so it routes immediately; a real
+  custom domain shows the CNAME to add and stays `pending` until DNS resolves.
+- Deploy the edge functions after changing them:
+  `SUPABASE_ACCESS_TOKEN=... npx supabase@latest functions deploy <name> --project-ref sdoykujqzpppwpropsdo --yes`.
+- Test against production with `SMSPIN_TEST_BASE=https://smspin.vercel.app`.
