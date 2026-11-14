@@ -292,8 +292,25 @@
     }, true);
   }
 
+  // React re-renders the nav after hydration and re-asserts its own inline
+  // `background:#E11D2E` on the logo mark, which paints one frame of the platform
+  // brand before the next re-skin pass. A stylesheet rule with `!important` beats
+  // an inline style, but it must not depend on an attribute React can strip (it
+  // reconciles <html>), so this style carries the literal tenant colour and is
+  // re-created if hydration removes it.
+  function applyGuard() {
+    if (!PAL) return;
+    // `>` so the rule hits the mark square only, not the aria-hidden <svg> inside it.
+    var txt =
+      ".logo > [aria-hidden='true']{background:" + PAL.primary + "!important;box-shadow:0 6px 20px " + (rgba(PAL.primary, .4) || "transparent") + "!important}" +
+      ".logo svg [fill='#E11D2E'],.logo svg [fill='#e11d2e']{fill:" + PAL.primary + "!important}";
+    var st = document.getElementById("tenant-guard");
+    if (!st) { st = document.createElement("style"); st.id = "tenant-guard"; document.head.appendChild(st); }
+    if (st.textContent !== txt) st.textContent = txt;
+  }
+
   function apply() {
-    applyPalette(); applyLogo(); applyWordmark(); renameText(); scrubHost(); rewriteLinks(); applyCssReskin();
+    applyGuard(); applyPalette(); applyLogo(); applyWordmark(); renameText(); scrubHost(); rewriteLinks(); applyCssReskin();
     // The head bootstrap hides the platform logo until the re-skin has run;
     // reveal it now that the tenant's own mark and wordmark are in place.
     if (NAME && document.documentElement.hasAttribute("data-tenant-brand")) {
@@ -344,14 +361,16 @@
   // of the platform brand, so re-apply the moment the DOM changes. Debounced to
   // one pass per frame so a large re-render does not thrash.
   function watchDom() {
-    if (!window.MutationObserver || !document.body) return;
+    if (!window.MutationObserver || !document.documentElement) return;
     var queued = false;
     var obs = new MutationObserver(function () {
       if (queued) return;
       queued = true;
       requestAnimationFrame(function () { queued = false; apply(); });
     });
-    obs.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+    // childList only: React replacing the nav is what flashes, and observing
+    // attributes/characterData would re-trigger on our own re-skin writes.
+    obs.observe(document.documentElement, { childList: true, subtree: true });
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", function () { bootAndSettle(); guardLinks(); watchDom(); });

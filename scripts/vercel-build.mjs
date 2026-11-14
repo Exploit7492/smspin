@@ -110,30 +110,20 @@ const CONSENT_SRC = `<script src="/consent-log.js?v=${BUILD}" defer></script>`;
 
 // Runs at the end of <head> — the <title>/<meta> are parsed by then but the
 // body has not, so the tenant's name and palette are in place before the first
-// paint.
-//
-// Two attributes drive the anti-flash guards:
-//   * data-tenant-brand — set here, cleared by site/tenant-brand.js once it has
-//     swapped the logo/wordmark. Hides the logo mark until then.
-//   * data-tenant — set here and never cleared. It marks the document as a
-//     tenant page so the `!important` rules below outrank React: after hydration
-//     React re-renders the nav and re-asserts its own inline
-//     `background:#E11D2E` on the logo mark (and the "SMSPin" wordmark), which
-//     without a guard paints one frame of the platform brand.
+// paint, and the logo mark is hidden until site/tenant-brand.js has swapped it
+// for the tenant's own (that script clears the data-tenant-brand flag). A
+// timeout reveals it anyway if the re-skin never runs. The mark's colour is
+// pinned by a `!important` style that tenant-brand.js installs, because React
+// re-asserts its own inline platform red after hydration.
 const BRAND_BOOT = `<script>(function(){try{
 var s=window.SMSPIN_TENANT_SLUG;if(!s)return;
 var b=(window.SMSPIN_TENANT_BRANDS||{})[s];if(!b||!b.name)return;
-var r=document.documentElement;r.setAttribute("data-tenant","");r.setAttribute("data-tenant-brand","");
+var r=document.documentElement;r.setAttribute("data-tenant-brand","");
 if(b.primary)r.style.setProperty("--brand",b.primary);
 if(b.secondary)r.style.setProperty("--brand-2",b.secondary);
-if(b.primary){r.style.setProperty("--tenant-logo",b.primary);var n=parseInt(b.primary.replace("#",""),16);if(!isNaN(n)){r.style.setProperty("--tenant-logo-shadow","0 6px 20px rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+",0.40)");}}
 if(document.title&&document.title.indexOf("SMSPin")!==-1)document.title=document.title.split("SMSPin").join(b.name);
 var m=document.querySelectorAll('meta[content*="SMSPin"]');for(var i=0;i<m.length;i++){m[i].setAttribute("content",m[i].getAttribute("content").split("SMSPin").join(b.name));}
-var st=document.createElement("style");st.id="tenant-boot-hide";
-st.textContent="html[data-tenant-brand] .logo{visibility:hidden}"+
-"html[data-tenant] .logo [aria-hidden='true']{background:var(--tenant-logo,#e11d2e)!important;box-shadow:var(--tenant-logo-shadow)!important}"+
-"html[data-tenant] [fill='#E11D2E'],html[data-tenant] [fill='#e11d2e']{fill:var(--tenant-logo,#e11d2e)!important}";
-document.head.appendChild(st);
+var st=document.createElement("style");st.id="tenant-boot-hide";st.textContent="html[data-tenant-brand] .logo{visibility:hidden}";document.head.appendChild(st);
 setTimeout(function(){if(r.hasAttribute("data-tenant-brand"))r.removeAttribute("data-tenant-brand");},3000);
 }catch(e){}})();</script>`;
 
