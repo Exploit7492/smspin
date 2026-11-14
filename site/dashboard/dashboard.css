@@ -330,6 +330,7 @@ table.tbl td.strong { color:var(--text-primary); font-weight:600; }
 .buy-summary { margin: 14px 0 12px; }
 .buy-stock { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
 .buy-stock.is-out { color: var(--amber, #b45309); }
+.buy-was { opacity: .62; font-weight: 600; text-decoration: line-through; margin-right: 2px; }
 .buy-pick .btn-lg { width: 100%; }
 
 /* Step 1: inline service list (preloaded, searchable) */

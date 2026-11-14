@@ -34,7 +34,7 @@
   <div id="msg" class="auth-msg"></div>
   <form id="f">
     <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
-    <button class="btn btn-primary btn-lg btn-full" type="submit">Send reset link</button>
+    <button class="btn btn-primary btn-lg btn-full" type="submit"><span class="btn-spin" hidden aria-hidden="true"></span><span class="btn-lbl">Send reset link</span></button>
   </form>
   <div class="auth-foot"><a href="/login/">Back to sign in</a></div>
 </div></div>
@@ -47,12 +47,14 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const email = document.getElementById('email').value.trim();
   const btn = e.target.querySelector('button'); btn.disabled = true;
+  const spin = btn.querySelector('.btn-spin'), lbl = btn.querySelector('.btn-lbl');
+  if (spin) spin.hidden = false; if (lbl) lbl.textContent = 'Sending…';
   try {
     await SMSPIN.auth.resetPassword(email);
     show('If that email exists, a reset link is on its way.', 'ok');
   } catch (err) {
     show(err.message || 'Could not send reset link', 'err');
-  } finally { btn.disabled = false; }
+  } finally { btn.disabled = false; if (spin) spin.hidden = true; if (lbl) lbl.textContent = 'Send reset link'; }
 });
 </script>
 </body>

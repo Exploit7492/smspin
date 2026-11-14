@@ -35,7 +35,7 @@
   <form id="f">
     <div class="field"><label for="password">New password</label><input id="password" type="password" minlength="8" required></div>
     <div class="field"><label for="password2">Confirm password</label><input id="password2" type="password" minlength="8" required></div>
-    <button class="btn btn-primary btn-lg btn-full" type="submit">Update password</button>
+    <button class="btn btn-primary btn-lg btn-full" type="submit"><span class="btn-spin" hidden aria-hidden="true"></span><span class="btn-lbl">Update password</span></button>
   </form>
 </div></div>
 <script src="/dashboard/config.js"></script>
@@ -55,13 +55,15 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   const p2 = document.getElementById('password2').value;
   if (p1 !== p2) { show('Passwords do not match', 'err'); return; }
   const btn = e.target.querySelector('button'); btn.disabled = true;
+  const spin = btn.querySelector('.btn-spin'), lbl = btn.querySelector('.btn-lbl');
+  if (spin) spin.hidden = false; if (lbl) lbl.textContent = 'Updating…';
   try {
     await SMSPIN.auth.updatePassword(p1);
     show('Password updated. Redirecting to sign in...', 'ok');
     setTimeout(()=>location.href='/login/', 1200);
   } catch (err) {
     show(err.message || 'Could not update password', 'err');
-  } finally { btn.disabled = false; }
+  } finally { btn.disabled = false; if (spin) spin.hidden = true; if (lbl) lbl.textContent = 'Update password'; }
 });
 </script>
 </body>

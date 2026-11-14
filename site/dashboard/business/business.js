@@ -19,6 +19,7 @@
   let step = 1;
   const TOTAL = 4;
   let theme = "crimson";
+  let markupMode = "percent";
   let geo = { currency: "NGN" };
 
   function setStep(n) {
@@ -56,26 +57,50 @@
 
   function drawThemes() {
     $("#themeGrid").innerHTML = THEMES.map(t =>
-      '<div class="theme-card' + (t.id === theme ? " sel" : "") + '" data-theme="' + t.id + '">' +
+      '<div class="theme-card' + (t.id === theme ? " sel" : "") + '" role="button" tabindex="0" aria-pressed="' + (t.id === theme) + '" data-theme="' + t.id + '">' +
       '<div class="theme-swatch">' + t.c.map(c => '<i style="background:' + c + '"></i>').join("") + "</div>" +
       "<b>" + esc(t.name) + "</b></div>").join("");
-    $$("[data-theme]").forEach(el => el.addEventListener("click", () => {
-      theme = el.dataset.theme;
-      drawThemes();
-    }));
+    // Scope to the grid — a global [data-theme] selector also matches the
+    // <html data-theme="dark"> that theme.js sets, which would clobber the pick.
+    $$("#themeGrid .theme-card").forEach(el => {
+      const pick = () => { theme = el.dataset.theme; drawThemes(); };
+      el.addEventListener("click", pick);
+      el.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+    });
   }
 
   function updateSlug() {
     $("#slugPreview").textContent = "/store/" + slugify($("#bizName").value);
   }
 
+  function markupValue() {
+    return markupMode === "fixed"
+      ? Number($("#bizMarkupFixed") ? $("#bizMarkupFixed").value : 0) || 0
+      : Number($("#bizMarkup") ? $("#bizMarkup").value : 0) || 0;
+  }
+
+  function setMarkupMode(mode) {
+    markupMode = mode === "fixed" ? "fixed" : "percent";
+    $$(".mk-mode-btn").forEach(b => {
+      const on = b.dataset.mode === markupMode;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    if ($("#mkPercentWrap")) $("#mkPercentWrap").hidden = markupMode !== "percent";
+    if ($("#mkFixedWrap")) $("#mkFixedWrap").hidden = markupMode !== "fixed";
+    updateMarkupPreview();
+  }
+
   async function updateMarkupPreview() {
-    const mk = Number($("#bizMarkup").value || 0);
-    const rows = [["WhatsApp \u00b7 UK", 150], ["Telegram \u00b7 US", 220], ["Google \u00b7 NG", 190]];
+    // Illustrative host base prices; the store sells each at the host price
+    // plus this store's markup, and the host base is what gets struck out.
+    const rows = [["WhatsApp \u00b7 UK", 4051], ["Telegram \u00b7 US", 5402], ["Google \u00b7 NG", 2701]];
+    const pct = Number($("#bizMarkup") ? $("#bizMarkup").value : 0) || 0;
+    const fixed = Number($("#bizMarkupFixed") ? $("#bizMarkupFixed").value : 0) || 0;
     $("#mkPreview").innerHTML = rows.map(([n, base]) => {
-      const ours = base * (1 + mk / 100);
+      const ours = markupMode === "fixed" ? base + fixed : base * (1 + pct / 100);
       return '<div class="mk"><small>' + esc(n) + "</small><b>" + money(ours) +
-        '</b><small style="text-decoration:line-through">' + money(base) + "</small></div>";
+        '<span class="was">' + money(base) + "</span></b></div>";
     }).join("");
   }
 
@@ -99,9 +124,15 @@
   async function saveDraft() {
     const name = $("#bizName").value.trim();
     if (!name) { toast("Enter a store name", "err"); setStep(1); return null; }
-    const markup = Number($("#bizMarkup").value || 0);
+    const pct = Number($("#bizMarkup") ? $("#bizMarkup").value : 0) || 0;
+    const fixed = Number($("#bizMarkupFixed") ? $("#bizMarkupFixed").value : 0) || 0;
     try {
-      return await SMSPIN.rpc("create_business", { p_name: name, p_theme: theme, p_markup: markup });
+      return await SMSPIN.rpc("create_business", {
+        p_name: name, p_theme: theme,
+        p_markup: markupMode === "percent" ? pct : 0,
+        p_markup_mode: markupMode,
+        p_markup_fixed: markupMode === "fixed" ? fixed : 0,
+      });
     } catch (e) { toast(e.message, "err"); return null; }
   }
 
@@ -160,7 +191,9 @@
         }
         $("#bizName").value = b.name || "";
         $("#bizMarkup").value = b.markup_percent != null ? b.markup_percent : 30;
+        if ($("#bizMarkupFixed") && b.markup_fixed_ngn != null) $("#bizMarkupFixed").value = b.markup_fixed_ngn;
         theme = b.theme || "crimson";
+        setMarkupMode(b.markup_mode || "percent");
         updateSlug();
       }
     } catch (e) {}
@@ -379,7 +412,9 @@
     const open2 = $("#bizOpenStore2"); if (open2) open2.href = "/store/" + s.slug;
     drawDonut(s.by_status || []);
     $("#bizEarned").textContent = money(s.earned_ngn);
-    $("#bizMarkupPct").textContent = (Number(s.markup_percent) || 0) + "%";
+    $("#bizMarkupPct").textContent = s.markup_mode === "fixed"
+      ? money(s.markup_fixed_ngn || 0) + " / number"
+      : (Number(s.markup_percent) || 0) + "%";
     const when = iso => { try { return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
     const badgeCls = st => st === "received" ? "ok" : st === "refunded" ? "err" : "wait";
     const tb = $("#bizOrdersTbl tbody");
@@ -451,6 +486,8 @@
     drawThemes();
     $("#bizName").addEventListener("input", updateSlug);
     $("#bizMarkup").addEventListener("input", updateMarkupPreview);
+    if ($("#bizMarkupFixed")) $("#bizMarkupFixed").addEventListener("input", updateMarkupPreview);
+    $$(".mk-mode-btn").forEach(b => b.addEventListener("click", () => setMarkupMode(b.dataset.mode)));
     $("#wizBack").addEventListener("click", () => setStep(step - 1));
     $("#wizNext").addEventListener("click", () => {
       if (step === 1) { if (!$("#bizName").value.trim()) { toast("Enter a store name", "err"); return; } setStep(2); }

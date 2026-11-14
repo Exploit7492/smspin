@@ -89,6 +89,7 @@
   .st-card .svc{color:var(--text-secondary);font-size:13px}
   .st-card .price{margin-top:auto;display:flex;align-items:baseline;gap:8px;padding-top:8px}
   .st-card .price b{font-size:20px;color:var(--brand);font-weight:900}
+  .st-card .price .was{color:var(--text-muted);font-size:13.5px;font-weight:600}
   .st-card .stock{font-size:12px;color:var(--text-muted);margin-top:4px}
   .st-card .buy{margin-top:12px;width:100%;text-align:center}
   .st-more{display:block;margin:26px auto 0;background:var(--glass-bg-soft);border:1px solid var(--glass-border);color:var(--text-primary);padding:12px 22px;border-radius:12px;font-weight:700;cursor:pointer;font-size:14px}
@@ -391,14 +392,18 @@
       $("#stMore").hidden = true; return;
     }
     const s = encodeURIComponent(slug());
-    grid.innerHTML = rows.slice(0, shown).map(c =>
-      '<div class="st-card">'+
+    grid.innerHTML = rows.slice(0, shown).map(c => {
+      const price = whole(c.price_ngn);
+      const was = c.base_ngn != null ? whole(c.base_ngn) : 0;
+      const strike = was && was < price ? '<s class="was">'+money(was)+'</s>' : '';
+      return '<div class="st-card">'+
         '<div class="r">'+(c.icon?'<img src="'+esc(c.icon)+'" alt="" loading="lazy">':'<span class="flag">'+esc(c.flag||"")+'</span>')+
           '<div><b>'+esc(c.country_name)+'</b><div class="svc">'+esc(c.service_name)+'</div></div></div>'+
-        '<div class="price"><b>'+money(whole(c.price_ngn))+'</b></div>'+
+        '<div class="price">'+strike+'<b>'+money(price)+'</b></div>'+
         '<div class="stock">'+Number(c.stock).toLocaleString()+' in stock</div>'+
         '<a class="st-btn primary buy" href="/store/'+s+'/register/?service='+encodeURIComponent(c.service)+'&country='+encodeURIComponent(c.country)+'">Buy number</a>'+
-      '</div>').join("");
+      '</div>';
+    }).join("");
     $("#stMore").hidden = rows.length <= shown;
   }
 

@@ -186,5 +186,67 @@
     });
   }
 
-  window.SMSPINUI = { modal: base, alert, confirm, reveal, select, toast };
+  // Upgrade native <select> elements to the themed modal picker, so every
+  // dropdown in the app shares one custom design instead of the OS control.
+  // The real <select> stays where it is (so `.value`, form submission, `change`
+  // listeners and React reconciliation all keep working) — we only restyle it
+  // and intercept its activation to open the themed picker, then write the
+  // choice back onto the native control.
+  function enhanceSelect(sel) {
+    if (!sel || sel.dataset.uiEnhanced === "1") return;
+    if (sel.multiple || Number(sel.size) > 1) return;
+    sel.dataset.uiEnhanced = "1";
+    sel.classList.add("ui-select-native");
+    let opening = false;
+
+    const open = async () => {
+      if (opening || sel.disabled) return;
+      opening = true;
+      try {
+        const items = Array.from(sel.options).map(o => ({ value: o.value, label: o.textContent || "", sub: o.dataset.sub || null }));
+        const title = sel.dataset.title || sel.getAttribute("aria-label") ||
+          (sel.labels && sel.labels[0] && sel.labels[0].textContent) || "Select";
+        const v = await select({ title: title, items: items, value: sel.value,
+          searchPlaceholder: sel.dataset.search || "Search…" });
+        if (v != null) {
+          // Write through the prototype setter so a React-controlled <select>
+          // (the marketing pages) sees the change instead of ignoring it.
+          const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+          if (setter) setter.call(sel, v); else sel.value = v;
+          sel.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      } finally { opening = false; }
+    };
+
+    // Suppress the native popup on mousedown (it opens on mousedown, before
+    // click), then open our themed picker on the click that follows — opening
+    // on mousedown would let the same click land on the fresh overlay backdrop
+    // and immediately dismiss it.
+    sel.addEventListener("mousedown", e => { if (!sel.disabled) e.preventDefault(); });
+    sel.addEventListener("click", e => { e.preventDefault(); open(); });
+    sel.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(); }
+    });
+  }
+
+  function enhanceSelects(root) {
+    (root || document).querySelectorAll("select:not([data-ui-enhanced])").forEach(enhanceSelect);
+  }
+
+  // Auto-upgrade selects on load and whenever a page injects new ones (e.g. the
+  // admin tables and wallet converters build their <select> after render).
+  function watchSelects() {
+    enhanceSelects(document);
+    new MutationObserver(muts => {
+      for (const m of muts) for (const n of m.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        if (n.tagName === "SELECT") enhanceSelect(n);
+        else if (n.querySelector) enhanceSelects(n);
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", watchSelects);
+  else watchSelects();
+
+  window.SMSPINUI = { modal: base, alert, confirm, reveal, select, toast, enhanceSelects };
 })();

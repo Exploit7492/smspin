@@ -1337,7 +1337,7 @@
           cat = (b && b.catalog || []).map(c => ({
             country: c.country, country_name: c.country_name, flag: c.flag,
             service: c.service, service_name: c.service_name, service_icon: c.service_icon || c.icon,
-            price: c.price_ngn, price_usd: c.price_usd, stock: c.stock,
+            price: c.price_ngn, base: c.base_ngn, price_usd: c.price_usd, stock: c.stock,
           }));
         } else {
           cat = await SMSPIN.rpc("browse_catalog", {});
@@ -1363,7 +1363,7 @@
         cat = (b && b.catalog || []).map(c => ({
           country: c.country, country_name: c.country_name, flag: c.flag,
           service: c.service, service_name: c.service_name, service_icon: c.service_icon || c.icon,
-          price: c.price_ngn, price_usd: c.price_usd, stock: c.stock,
+          price: c.price_ngn, base: c.base_ngn, price_usd: c.price_usd, stock: c.stock,
         }));
       } else {
         cat = await SMSPIN.rpc("browse_catalog", {});
@@ -1560,6 +1560,15 @@
       try { d = (await SMSPIN.rentPrices({ country: state.country, service: code })).durations || []; } catch (e) {}
       state.durations = d;
       if (!d.length) { host.innerHTML = '<p class="muted">Rentals are not available for this pair. Try another service or country.</p>'; updatePrice(); return; }
+      // The provider answers in `durationHours`; normalise to `hours` (+ a human
+      // label) so the picker renders even if the API shape ever drifts back.
+      d = d.map(x => {
+        const hours = Number(x.hours != null ? x.hours : (x.durationHours != null ? x.durationHours : x.duration));
+        const label = x.label || (hours % 168 === 0 ? (hours / 168) + (hours / 168 > 1 ? " weeks" : " week")
+          : hours % 24 === 0 ? (hours / 24) + (hours / 24 > 1 ? " days" : " day") : hours + " hours");
+        return Object.assign({}, x, { hours: hours, label: label });
+      }).filter(x => x.hours > 0);
+      if (!d.length) { host.innerHTML = '<p class="muted">Rentals are not available for this pair. Try another service or country.</p>'; updatePrice(); return; }
       if (!d.some(x => x.hours === state.duration)) state.duration = d[0].hours;
       host.innerHTML = d.map(x =>
         '<button type="button" class="rent-dur' + (x.hours === state.duration ? " on" : "") + '" data-h="' + x.hours + '">' +
@@ -1617,11 +1626,16 @@
       if (!row || !curPrice) { btn.textContent = "Unavailable"; btn.disabled = true; return; }
       if (!curStock) { btn.textContent = "Out of stock"; btn.disabled = true; return; }
       btn.disabled = false;
+      // Show the host base struck through before our price, so the buyer sees
+      // exactly what the store adds on top of the host amount.
+      const was = row && row.base != null ? Number(row.base) : 0;
+      const strike = was && was < curPrice
+        ? '<s class="buy-was">' + money(price(was), "NGN") + "</s> " : "";
       let label = money(price(curPrice), "NGN");
       if (GEO.currency && GEO.currency !== "NGN" && row && row.price_usd) {
         label += " (\u2248 " + (GEO.currency === "USD" ? "$" : "") + Number(row.price_usd).toLocaleString() + ")";
       }
-      btn.textContent = "Buy number \u00b7 " + label;
+      btn.innerHTML = "Buy number \u00b7 " + strike + label;
     }
 
     const svcSearch = document.getElementById("svcSearch");

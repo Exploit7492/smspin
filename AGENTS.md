@@ -713,11 +713,13 @@ to their store. One set of files serves everyone; a UI change lands on all store
 - **Product URL:** `https://smspin.vercel.app`. Vercel project `smspin`
   (`prj_mJP7pAG7f00ONeprhwQva5fjW30s`, team `team_hC0ECJbEyal5BgAUlIvxPYCL`),
   git-linked to `Exploit7492/smspin` (repo id `1454140163`).
-- **Do not deploy with the Vercel CLI.** The repo is ~12k files; CLI upload hits the
-  5000-files/day limit. Create Git-sourced deploys via the REST API instead:
-  `POST /v13/deployments?forceNew=1` with
-  `{"name":"smspin","project":"<prj>","target":"production","gitSource":{"type":"github","repoId":1454140163,"ref":"<branch>"}}`.
-  A production-targeted Git deploy takes the `smspin.vercel.app` alias automatically.
+- **Deploy with the Vercel CLI, always `--archive=tgz`.** The Git link is suspended
+  (see "Production deployment (live)" below), so a Git-sourced deploy via
+  `POST /v13/deployments` no longer works. A plain `vercel deploy` uploads
+  one-by-one and trips the account's 5000-file/24h cap; `--archive=tgz` ships the
+  ~12k-file tree as one archive and takes the `smspin.vercel.app` alias
+  automatically:
+  `VERCEL_TOKEN=<token> npx -y vercel@latest deploy --prod --archive=tgz --yes --token "$VERCEL_TOKEN"`.
 - **Static tenant routing:** the Python backend stamped `window.SMSPIN_TENANT_SLUG/BASE`
   per request; the static host cannot, so `scripts/vercel-build.mjs` injects a
   bootstrap that derives the slug from the URL path at runtime, or from the host
@@ -753,6 +755,15 @@ to their store. One set of files serves everyone; a UI change lands on all store
   `backend/email_template.py`) produce branded HTML, passed to Novu as
   `{{payload.html}}` / `{{payload.subject}}`. Verified per tenant via the Novu
   notifications API.
+- **Verify a tenant send end-to-end:** queue with
+  `select email_enqueue(null,'<addr>','welcome','{"name":"QA"}','nova-numbers')`,
+  POST the `email` function, then read
+  `GET https://api.novu.co/v1/messages?transactionId=<provider_ref>` — the
+  `subject` and `payload.html` must carry the tenant's brand name and colour, and
+  the notification `jobs[].executionDetails` must show "Tenant context selected"
+  then "Custom SMTP provider was selected". The email `from`/`reply-to` are set by
+  the Novu tenant record, but the HTML colours come from `email_sender()` (the DB),
+  so a stale Novu tenant record cannot mis-colour a message.
 - **Tests need a fresh backend.** `python3 backend/server.py` caches bytecode; a
   long-running instance keeps serving old code and can 500 on routes the current
   source handles. Restart it before running `pytest tests/` (124 passed, 3 skipped).
@@ -824,6 +835,12 @@ needs no code change.
 - Static `site/` is committed pre-build; the build (`scripts/vercel-build.mjs`)
   injects `config.js`, the tenant bootstrap, robots/sitemap and fails the build
   if any sandbox URL survived. It refuses to build without `SUPABASE_URL`/anon key.
+- **Never commit the build output.** A local `node scripts/vercel-build.mjs` rewrites
+  ~12.5k `site/**/index.html` (tenant bootstrap, domain retarget, price floor,
+  asset stamps). Commit source only: revert every `site/**/index.html` to HEAD
+  except the handful you hand-edited, and commit those in pre-build form (strip the
+  injected `<script>`/`<link>` tags, `?v=<hash>` stamps and `smspin.io`->`SITE_URL`
+  retarget). Verify the build still passes from a clean checkout copy afterwards.
 
 ## White-label custom domains (per-tenant, live routing)
 - `businesses.domain/domain_status/domain_verification/...` +

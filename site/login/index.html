@@ -85,7 +85,11 @@
     box-shadow:0 8px 26px rgba(244,63,79,.35);
   }
   .submit:hover{background:#ff5564}
-  .submit:disabled{opacity:.6; cursor:progress}
+  .submit:disabled{opacity:.85; cursor:progress}
+  .submit .spin{width:18px;height:18px;flex:0 0 auto;border-radius:50%;border:2.5px solid rgba(26,10,10,.35);border-top-color:var(--btn-text);animation:spinsub .6s linear infinite}
+  .submit .spin[hidden]{display:none}
+  @keyframes spinsub{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion: reduce){.submit .spin{animation-duration:1.4s}}
 
   .foot{margin-top:24px; text-align:center; font-size:15px; color:var(--body)}
   .foot a{color:var(--link); text-decoration:none; font-weight:600}
@@ -154,7 +158,8 @@
         </div>
       </div>
       <button class="submit" type="submit" id="submitBtn">
-        Sign in
+        <span class="spin" hidden aria-hidden="true"></span>
+        <span class="submit-label">Sign in</span>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </button>
     </form>
@@ -217,7 +222,10 @@
     var password = pw.value;
     if(!email || !password){ show('Enter your email and password.', 'err'); return; }
     var btn = document.getElementById('submitBtn');
+    var spin = btn.querySelector('.spin'), lbl = btn.querySelector('.submit-label');
     btn.disabled = true;
+    if (spin) spin.hidden = false;
+    if (lbl) lbl.textContent = 'Signing in…';
     try {
       await SMSPIN.auth.signIn(email, password);
       show('Signed in. Redirecting…', 'ok');
@@ -225,6 +233,8 @@
     } catch (err) {
       show((err && err.message) || 'Sign in failed. Check your details and try again.', 'err');
       btn.disabled = false;
+      if (spin) spin.hidden = true;
+      if (lbl) lbl.textContent = 'Sign in';
     }
   });
 })();

@@ -30,7 +30,7 @@
       <div class="ta-field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
       <div class="ta-field"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required></div>
       <div class="ta-row"><span></span><a href="/forgot-password/" id="taForgot">Forgot password?</a></div>
-      <button class="ta-btn" type="submit">Sign in</button>
+      <button class="ta-btn" type="submit"><span class="ta-spin" hidden aria-hidden="true"></span><span class="ta-label">Sign in</span></button>
     </form>
     <div class="ta-foot">New here? <a id="taReg" href="#">Create an account</a></div>
     <div class="ta-cross">Each store runs its own account system — the same email can sign in on every store independently.</div>
@@ -86,6 +86,8 @@
     var email = document.getElementById('email').value.trim();
     var password = document.getElementById('password').value;
     var btn = e.target.querySelector('button'); btn.disabled = true;
+    var spin = btn.querySelector('.ta-spin'), lbl = btn.querySelector('.ta-label');
+    if (spin) spin.hidden = false; if (lbl) lbl.textContent = 'Signing in…';
     try {
       if (S) {
         await SMSPIN.tenant.login(email, password, S);
@@ -98,7 +100,7 @@
       }
     } catch (err) {
       TENANT_AUTH.show(msg, err.message || 'Sign in failed', 'err');
-    } finally { btn.disabled = false; }
+    } finally { btn.disabled = false; if (spin) spin.hidden = true; if (lbl) lbl.textContent = 'Sign in'; }
   });
 })();
 </script>

@@ -52,9 +52,17 @@
           </div>
           <!-- Step 3 -->
           <div class="wiz-pane" data-pane="3" hidden>
-            <div class="field"><label for="bizMarkup">Your one-time markup (%)</label>
+            <div class="field"><label>How do you want to price?</label>
+              <div class="mk-mode" role="tablist" aria-label="Markup type">
+                <button type="button" class="mk-mode-btn on" data-mode="percent" role="tab" aria-selected="true">By percentage</button>
+                <button type="button" class="mk-mode-btn" data-mode="fixed" role="tab" aria-selected="false">By fixed price</button>
+              </div>
+            </div>
+            <div class="field" id="mkPercentWrap"><label for="bizMarkup">Your markup (%)</label>
               <input id="bizMarkup" type="number" min="0" max="500" step="5" value="30"></div>
-            <p class="muted">You set this once. Every number in your store sells at our price plus your markup.</p>
+            <div class="field" id="mkFixedWrap" hidden><label for="bizMarkupFixed">Your fixed markup (₦ per number)</label>
+              <input id="bizMarkupFixed" type="number" min="0" step="50" value="500"></div>
+            <p class="muted">You set this once. Every number in your store sells at the host price plus your markup.</p>
             <div class="mk-preview" id="mkPreview"></div>
           </div>
           <!-- Step 4 -->

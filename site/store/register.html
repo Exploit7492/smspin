@@ -31,7 +31,7 @@
       <div class="ta-field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
       <div class="ta-field"><label for="password">Password</label><input id="password" type="password" autocomplete="new-password" minlength="8" required></div>
       <div class="ta-field"><label for="password2">Confirm password</label><input id="password2" type="password" autocomplete="new-password" minlength="8" required></div>
-      <button class="ta-btn" type="submit">Create account</button>
+      <button class="ta-btn" type="submit"><span class="ta-spin" hidden aria-hidden="true"></span><span class="ta-label">Create account</span></button>
     </form>
     <div class="ta-foot">Already have an account? <a id="taLogin" href="#">Sign in</a></div>
     <div class="ta-cross">This account lives on <span data-tenant-name>SMSPin</span> only. You can use the same email on any other store.</div>
@@ -64,6 +64,8 @@
     if (p1 !== p2) { TENANT_AUTH.show(msg, 'Passwords do not match', 'err'); return; }
     if (p1.length < 8) { TENANT_AUTH.show(msg, 'Use at least 8 characters', 'err'); return; }
     var btn = e.target.querySelector('button'); btn.disabled = true;
+    var spin = btn.querySelector('.ta-spin'), lbl = btn.querySelector('.ta-label');
+    if (spin) spin.hidden = false; if (lbl) lbl.textContent = 'Creating account…';
     try {
       if (S) {
         await SMSPIN.tenant.register({ email: email, password: p1, fullName: name, slug: S });
@@ -77,7 +79,7 @@
       }
     } catch (err) {
       TENANT_AUTH.show(msg, err.message || 'Sign up failed', 'err');
-    } finally { btn.disabled = false; }
+    } finally { btn.disabled = false; if (spin) spin.hidden = true; if (lbl) lbl.textContent = 'Create account'; }
   });
 })();
 </script>

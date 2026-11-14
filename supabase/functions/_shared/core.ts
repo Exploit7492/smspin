@@ -224,9 +224,20 @@ async function rentPricesReal(country: string, service: string) {
     const priceUsd = Math.round(usd * (1 + markup / 100) * 100) / 100;
     return { price_usd: priceUsd, price_usd_raw: usd, price_ngn: Math.round(priceUsd * ngn) };
   };
-  const durations = ((raw.durations as Array<Record<string, unknown>>) || []).map((d) => ({ ...d, ...shaped(num(d.price)) }));
+  // The provider speaks in `durationHours`; the UI (and the rental ladder) work in
+  // whole `hours` with a human `label`, so shape both here in one place.
+  const durations = ((raw.durations as Array<Record<string, unknown>>) || []).map((d) => {
+    const hours = num(d.durationHours ?? d.duration ?? d.hours);
+    return { ...d, hours, label: rentLabel(hours), ...shaped(num(d.price)) };
+  });
   const countries = ((raw.countries as Array<Record<string, unknown>>) || []).map((c) => ({ ...c, ...shaped(num(c.fromPrice)) }));
   return { service, country: raw.country ?? (country || null), countries, durations };
+}
+
+function rentLabel(hours: number): string {
+  if (hours > 0 && hours % 168 === 0) { const n = hours / 168; return `${n} week${n > 1 ? "s" : ""}`; }
+  if (hours > 0 && hours % 24 === 0) { const n = hours / 24; return `${n} day${n > 1 ? "s" : ""}`; }
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
 }
 
 async function rentReal(country: string, service: string, duration: number, userId: string | null, tenantAccount: string | null) {

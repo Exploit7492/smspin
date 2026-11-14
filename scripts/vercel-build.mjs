@@ -186,6 +186,16 @@ function applyMinPriceFloor(html) {
 // /store/auth.js, so they get neither the bootstrap nor the re-skin script.
 const SKIP_TENANT = new Set(["store/login.html", "store/register.html", "store/account.html", "store/index.html"]);
 
+// Stamp the cache-busting commit hash onto the app assets the build owns
+// (ui.js, theme.css, the tenant scripts), so a new deploy never serves a stale
+// cached copy — vercel.json caches .js/.css for a week. Every injected asset is
+// normalised to this build's hash so a rebuild is byte-identical apart from the
+// hash itself.
+function stampAssets(html) {
+  return html.replace(/(["'/](?:ui\.js|theme\.css|tenant-brand\.js|consent-log\.js))\?v=[0-9a-f]+/g,
+    `$1?v=${BUILD}`);
+}
+
 function injectTenantBootstrap(html, rel) {
   const isPrivate = rel.startsWith("dashboard/") || rel.startsWith("admin/");
   const isStoreAuth = SKIP_TENANT.has(rel);
@@ -214,6 +224,8 @@ function injectTenantBootstrap(html, rel) {
       out = out.slice(0, i) + BRANDS_SRC + BRAND_BOOT + out.slice(i);
     }
   }
+  // Cache-bust the app assets this build owns.
+  out = stampAssets(out);
   return out === html ? null : out;
 }
 function walk(dir) {

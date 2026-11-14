@@ -67,7 +67,13 @@ body::before {
 }
 .ta-btn:hover { box-shadow: 0 14px 34px color-mix(in srgb, var(--brand) 46%, transparent); }
 .ta-btn:active { transform: translateY(1px); }
-.ta-btn:disabled { opacity: .6; cursor: not-allowed; transform: none; }
+.ta-btn:disabled { opacity: .7; cursor: progress; transform: none; }
+.ta-btn .ta-spin { width: 16px; height: 16px; flex: 0 0 auto; border-radius: 50%;
+  border: 2.5px solid color-mix(in srgb, #fff 42%, transparent); border-top-color: #fff;
+  animation: ta-spin .6s linear infinite; }
+.ta-btn .ta-spin[hidden] { display: none; }
+@keyframes ta-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ta-btn .ta-spin { animation-duration: 1.4s; } }
 .ta-btn.ghost { background: var(--glass-bg-soft); color: var(--text-primary); border: 1px solid var(--glass-border); box-shadow: none; }
 .ta-btn.ghost:hover { background: var(--glass-bg); box-shadow: none; }
 .ta-foot { text-align: center; font-size: 13.5px; color: var(--text-secondary); margin-top: 18px; }
