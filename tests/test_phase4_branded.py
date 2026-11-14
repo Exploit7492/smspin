@@ -74,16 +74,34 @@ def test_branding_roundtrip(http, server_up, supabase, business):
 
 
 def test_custom_domain_resolves(http, server_up, supabase, business, db_conn):
-    domain = business["slug"] + ".example.com"
-    st, r = supabase_auth_rpc(supabase, business, "business_set_branding",
-                              {"p_domain": domain})
+    # Provisioning registers the host on the product host (Vercel) so it actually
+    # routes. A free host on the shared product zone verifies instantly and needs
+    # no DNS work, which is what makes this assertable in CI.
+    domain = f"{business['slug']}-smspin.vercel.app"
+    auth = _auth(business)
+    st, r = http(server_up + "/api/business/domain", "POST",
+                 {"action": "provision", "domain": domain}, auth)
+    if st == 503:
+        pytest.skip("domain provisioning not configured")
     assert st == 200, r
     assert r["domain"] == domain
-    # Public resolver maps the host back to the slug (port stripped).
-    assert _rpc(db_conn, "resolve_domain", {"p_host": domain + ":443"}) == business["slug"]
-    # The domain routes the storefront on a custom Host header.
-    st, _ = http(server_up + "/", headers={"Host": domain})
-    assert st == 200
+    assert r["status"] == "active", r
+    try:
+        # Public resolver maps the host back to the slug (port stripped).
+        assert _rpc(db_conn, "resolve_domain", {"p_host": domain + ":443"}) == business["slug"]
+        # The host routes the storefront end to end. A freshly registered host
+        # takes a few seconds to propagate across the product host's edge, so
+        # poll rather than assert on the first response.
+        deadline = time.time() + 60
+        st = 0
+        while time.time() < deadline:
+            st, _ = http("https://" + domain + "/")
+            if st == 200:
+                break
+            time.sleep(3)
+        assert st == 200, f"custom host did not route (last status {st})"
+    finally:
+        http(server_up + "/api/business/domain", "POST", {"action": "remove"}, auth)
 
 
 def test_domain_validation_and_uniqueness(http, server_up, supabase, business, db_conn):

@@ -98,7 +98,7 @@ export function renderBrandedEmail(brand: EmailBrand, content: EmailContent): st
   const p = palette(brand);
   const name = brand.brand_name || "SMSPin";
   const support = (brand.support_email || "").trim();
-  const site = (brand.site_url || "https://smspin.io").replace(/\/$/, "");
+  const site = (brand.site_url || "https://smspin.vercel.app").replace(/\/$/, "");
   const footer = brand.footer || `You are receiving this because you have an account with ${name}.`;
   const preheader = content.preheader || content.heading || content.subject;
 

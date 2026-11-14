@@ -249,6 +249,51 @@
       } catch (e) { toast(e.message, "err"); }
       finally { save.disabled = false; }
     });
+    wireDomain();
+  }
+
+  // ---------------- C2 custom domain (live provisioning) ----------------
+  function renderDomainState(d) {
+    const st = $("#domainStatus"), dns = $("#domainDns"), rm = $("#domainRemove");
+    if (!st) return;
+    const status = (d && d.status) || "none";
+    const dom = d && d.domain;
+    if (rm) rm.hidden = !dom;
+    if (!dom) {
+      st.textContent = "No custom domain connected. Your store is also served at " + ((d && d.managed_host) || "") + ".";
+      if (dns) dns.textContent = "";
+      return;
+    }
+    const label = { active: "Live", pending: "Waiting for DNS", error: "Error", none: "Not connected" }[status] || status;
+    st.innerHTML = "Domain <b>" + esc(dom) + "</b> — " + esc(label) +
+      (d.error ? " (" + esc(d.error) + ")" : "");
+    if (dns) {
+      const recs = (status === "active") ? [] : (d.dns || []);
+      dns.innerHTML = recs.length
+        ? "Add this DNS record at your registrar:<br>" + recs.map(r =>
+            esc(r.type) + " &nbsp; " + esc(r.name) + " &nbsp; → &nbsp; " + esc(r.value)).join("<br>")
+        : "";
+    }
+  }
+
+  function wireDomain() {
+    const connect = $("#domainConnect"), rm = $("#domainRemove");
+    const refresh = async () => { try { renderDomainState(await SMSPIN.domain("get")); } catch (e) {} };
+    if (connect) connect.addEventListener("click", async () => {
+      const name = ($("#brDomain").value || "").trim();
+      if (!name) { toast("Enter a domain first", "err"); return; }
+      connect.disabled = true;
+      try { renderDomainState(await SMSPIN.domain("provision", name)); toast("Domain registered", "ok"); }
+      catch (e) { toast(e.message, "err"); }
+      finally { connect.disabled = false; }
+    });
+    if (rm) rm.addEventListener("click", async () => {
+      rm.disabled = true;
+      try { renderDomainState(await SMSPIN.domain("remove")); toast("Domain removed", "ok"); }
+      catch (e) { toast(e.message, "err"); }
+      finally { rm.disabled = false; }
+    });
+    refresh();
   }
 
   // ---------------- C4 payouts ----------------

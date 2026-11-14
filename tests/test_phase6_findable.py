@@ -29,7 +29,9 @@ def test_sitemap_lists_public_pages_and_excludes_private(http, server_up):
     text = body if isinstance(body, str) else body.decode()
     assert text.startswith("<?xml")
     assert "<urlset" in text
-    assert "https://smspin.io/" in text
+    # The canonical host is whatever the deployment serves from, not a hardcoded
+    # domain: production is the product URL, a local run is 127.0.0.1.
+    assert ("<loc>%s/" % server_up.rstrip("/")) in text
     assert "/dashboard/" not in text
     assert "/admin/" not in text
 

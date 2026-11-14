@@ -10,7 +10,7 @@ import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 export const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 export const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 export const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-export const SITE_URL = (Deno.env.get("SMSPIN_SITE_URL") || "https://smspin.io").replace(/\/$/, "");
+export const SITE_URL = (Deno.env.get("SMSPIN_SITE_URL") || "https://smspin.vercel.app").replace(/\/$/, "");
 
 export const KORA_BASE = "https://api.korapay.com/merchant/api/v1";
 export const KORA_MODE = Deno.env.get("KORA_MODE") || "test";
@@ -65,7 +65,7 @@ export function clientIp(req: Request): string {
 // Public base URL for redirect/notification links, derived from the request so
 // it works on the production domain, a preview URL, or localhost.
 export function baseUrl(req: Request): string {
-  const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "smspin.io";
+  const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "smspin.vercel.app";
   const proto = (req.headers.get("x-forwarded-proto") || "https").split(",")[0];
   return `${proto}://${host}`;
 }

@@ -103,6 +103,11 @@ def test_upstream_status(server_up, http):
 
 def test_rate_limit_trips(server_up, http):
     """The buy bucket is 30/min; the 31st request from one IP must 429."""
+    # The limiter uses fixed 60s windows, so align to a window boundary first:
+    # otherwise the 33 requests can straddle a reset and never exceed 30 in one
+    # window (a flaky pass). 33 well within one window trips it deterministically.
+    import time
+    time.sleep((60 - (time.time() % 60)) % 60 + 0.5)
     ip = {"X-Forwarded-For": "203.0.113.7"}
     codes = []
     for _ in range(33):

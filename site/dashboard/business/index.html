@@ -135,6 +135,14 @@
               <div class="field"><label for="brDomain">Custom domain</label>
                 <input id="brDomain" type="text" placeholder="numbers.yourbrand.com" autocomplete="off">
                 <small class="muted">Point a CNAME at this platform; we serve your store on the domain.</small></div>
+              <div class="field">
+                <div id="domainStatus" class="muted" style="font-size:13px">No custom domain connected.</div>
+                <div id="domainDns" class="muted mono" style="font-size:12px;margin-top:6px;line-height:1.5"></div>
+                <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+                  <button class="btn btn-ghost" type="button" id="domainConnect">Connect domain</button>
+                  <button class="btn btn-ghost" type="button" id="domainRemove" hidden>Remove domain</button>
+                </div>
+              </div>
               <button class="btn btn-primary" type="button" id="brandSave">Save branding</button>
             </div>
             <div class="brand-preview" id="brandPreview">

@@ -13,6 +13,9 @@ import {
   buyReal, rentReal, rentPricesReal, upstreamWebhook, requireAdmin, apiKeyUser, tenantKeyInfo,
   validPayEmail, KORA_CHANNELS, KORA_CHANNEL_IDS, AUP_VERSION_FALLBACK, refundOrder, notifyRefund, provider,
 } from "../_shared/core.ts";
+import {
+  addDomain, domainStatus, removeDomain, dnsInstructions, managedHost, vercelConfigured,
+} from "../_shared/vercel.ts";
 
 type Body = Record<string, unknown>;
 const RL: Record<string, [number, number]> = {
@@ -108,7 +111,7 @@ async function handleGet(req: Request, url: URL, path: string): Promise<Response
     if (!slug) return json({ error: "slug required" }, 400);
     const biz = await svcSoft("business_public", { p_slug: slug }) as Record<string, unknown> | null;
     if (!biz) return json({ error: "store not found" }, 404);
-    const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "smspin.io";
+    const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "smspin.vercel.app";
     const scheme = (req.headers.get("x-forwarded-proto") || "https").split(",")[0];
     return json({ app_name: biz.name, package: "io.smspin.store." + slug.replace(/-/g, ""),
       store_url: `${scheme}://${host}/${slug}`, theme: biz.theme || "crimson",
@@ -127,6 +130,7 @@ async function handleGet(req: Request, url: URL, path: string): Promise<Response
   }
   if (path.startsWith("/api/tenant/")) return tenantGet(req, url, path);
   if (path.startsWith("/api/v1/")) return apiV1(req, url, path);
+  if (path === "/api/business/domain") return domainGet(req);
   if (path === "/api/rpc") return rpcBridge(req);
   if (path === "/api/catalog/taxonomy") {
     const cc = str(one(url, "country")).toLowerCase();
@@ -247,6 +251,7 @@ async function handlePost(req: Request, url: URL, path: string): Promise<Respons
   if (path === "/api/status/subscribe") return statusSubscribe(req);
   if (path === "/api/consent") return consent(req);
   if (path === "/api/reviews") return submitReview(req);
+  if (path === "/api/business/domain") return domainPost(req);
   if (path.startsWith("/api/admin/")) {
     if (req.headers.get("x-tenant-token")) return tenantAdminPost(req, url, path);
     return adminPost(req, url, path);
@@ -643,6 +648,91 @@ async function adminGet(req: Request, url: URL, path: string): Promise<Response>
   if (path === "/api/admin/tours") return json({ funnel: await svcSoft("tour_funnel", { p_days: num(one(url, "days", "30"), 30) }) });
   if (path === "/api/admin/risk") return rpc("risk_events_list", { p_limit: num(one(url, "limit", "100"), 100), p_user: one(url, "user") });
   return json({ error: "not found" }, 404);
+}
+
+// --- white-label custom domains ---------------------------------------------
+// A store owner points their own host (or accepts the free shared host) at the
+// product. The edge holds the Vercel token and does the provisioning; the
+// database only records the resulting state.
+async function ownerSlug(req: Request): Promise<string | null> {
+  const uid = await authUser(req);
+  if (!uid) return null;
+  const { data } = await admin().from("businesses").select("slug")
+    .eq("user_id", uid).is("parent_id", null).maybeSingle();
+  return (data as Record<string, unknown> | null)?.slug as string | null ?? null;
+}
+
+// `my_domain_state` resolves the store from auth.uid(), so it must run as the
+// signed-in owner, not the service role.
+async function ownerDomainState(req: Request): Promise<Record<string, unknown> | null> {
+  const { data } = await asUser(bearer(req)).rpc("my_domain_state");
+  return (data as Record<string, unknown> | null) ?? null;
+}
+
+function domainShape(slug: string, st: Record<string, unknown> | null) {
+  const domain = (st?.domain as string) || null;
+  return {
+    slug,
+    domain,
+    status: (st?.status as string) || "none",
+    verification: (st?.verification as unknown) || null,
+    error: (st?.error as string) || null,
+    managed_host: managedHost(slug),
+    dns: domain ? dnsInstructions(domain) : null,
+    provisioner: vercelConfigured() ? "vercel" : "unconfigured",
+  };
+}
+
+async function domainGet(req: Request): Promise<Response> {
+  const slug = await ownerSlug(req);
+  if (!slug) return json({ error: "sign in as a store owner" }, 401);
+  const st = await ownerDomainState(req);
+  return json(domainShape(slug, st));
+}
+
+async function domainPost(req: Request): Promise<Response> {
+  const slug = await ownerSlug(req);
+  if (!slug) return json({ error: "sign in as a store owner" }, 401);
+  if (!(await rateOk(`domain:${clientIp(req)}`, 20, 60))) return json({ error: "rate limit exceeded" }, 429);
+  if (!vercelConfigured()) return json({ error: "domain provisioning is not configured" }, 503);
+
+  const body = await readJson(req);
+  const action = str(body.action || "provision");
+  const st = await ownerDomainState(req);
+  // Persist the requested host through the owner's own RPC so validation,
+  // uniqueness and the reset-to-pending all happen in one place.
+  const user = asUser(bearer(req));
+  async function saveDomain(d: string | null) {
+    const { data, error } = await user.rpc("business_set_branding", { p_domain: d ?? "" });
+    if (error) throw new Error(error.message);
+    return data as Record<string, unknown>;
+  }
+
+  if (action === "remove") {
+    const domain = (st?.domain as string) || str(body.domain).trim().toLowerCase();
+    if (domain) await removeDomain(domain);
+    await saveDomain(null);
+    const out = await svcSoft("business_set_domain_state", { p_slug: slug, p_status: "none", p_verification: null, p_error: null });
+    return json(domainShape(slug, out as Record<string, unknown> | null));
+  }
+
+  let domain = str(body.domain).trim().toLowerCase() || (st?.domain as string) || "";
+  if (!domain) return json({ error: "no domain configured; save one in branding first" }, 400);
+  if (!/^([a-z0-9-]+\.)+[a-z]{2,}$/.test(domain)) return json({ error: "invalid domain" }, 400);
+
+  try { await saveDomain(domain); }
+  catch (e) { return json({ error: e instanceof Error ? e.message : "invalid domain" }, 400); }
+
+  const res = await addDomain(domain);
+  if (!res.ok) {
+    await svcSoft("business_set_domain_state", { p_slug: slug, p_status: "error", p_verification: null, p_error: res.error });
+    return json({ error: res.error || "could not register domain" }, 400);
+  }
+  const verification = res.verification || dnsInstructions(domain);
+  const out = await svcSoft("business_set_domain_state", {
+    p_slug: slug, p_status: res.status, p_verification: verification, p_error: null,
+  });
+  return json(domainShape(slug, out as Record<string, unknown> | null));
 }
 
 async function adminPost(req: Request, url: URL, path: string): Promise<Response> {

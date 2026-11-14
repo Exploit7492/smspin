@@ -361,13 +361,27 @@
     return data;
   }
 
+  // White-label domain lifecycle (provision / status / remove). Provisioning is
+  // done server-side by the api Edge Function, which holds the product-host
+  // token; the browser only ever names the host it wants.
+  async function domain(action, name) {
+    const res = await fetch("/api/business/domain", {
+      method: action === "get" ? "GET" : "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + accessToken() },
+      body: action === "get" ? undefined : JSON.stringify({ action: action, domain: name || "" }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((data && data.error) || res.statusText);
+    return data;
+  }
+
   async function orderStatus(orderId) {
     const res = await fetch("/api/order/status?id=" + encodeURIComponent(orderId));
     if (!res.ok) return null;
     return res.json().catch(() => null);
   }
 
-  window.SMSPIN = { auth, tenant, rpc, functions, feeQuote, buyOrder, rentPrices, rentCountries, rentOrder, cancelOrder, orderStatus, getSession, setSession, config: cfg,
+  window.SMSPIN = { auth, tenant, rpc, functions, domain, feeQuote, buyOrder, rentPrices, rentCountries, rentOrder, cancelOrder, orderStatus, getSession, setSession, config: cfg,
     tenantSlug: TSLUG, tenantBase: TBASE, isTenant: !!TSLUG, store: () => {
     try { return localStorage.getItem("smspin_store") || ""; } catch (e) { return ""; }
   } };
