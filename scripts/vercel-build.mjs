@@ -169,8 +169,12 @@ const PRICE_FIELD = /((?:minPrice|maxPrice|lowPrice|highPrice|price)["\\:]{0,16}
 function floorNum(raw) {
   return parseFloat(raw) < MIN_PRICE ? `${MIN_PRICE}.00` : raw;
 }
+// The pricing hero splits the currency symbol and the amount into two spans, so
+// the plain `$N.NN` rules above never see the pair. Floor the amount on its own.
+const PRICE_HERO = /(<span class="rh-amount">)(\d+(?:\.\d{1,2})?)(<\/span>)/g;
 function applyMinPriceFloor(html) {
   html = html.replace(PRICE_DEC, (m, a, b) => (parseFloat(`${a}.${b}`) < MIN_PRICE ? `$${MIN_PRICE}.00` : m));
+  html = html.replace(PRICE_HERO, (m, p, n, s) => p + floorNum(n) + s);
   html = html.replace(PRICE_RSC, (m, p, n) => p + floorNum(n));
   html = html.replace(PRICE_RSC_STR, (m, p, n) => p + floorNum(n));
   html = html.replace(PRICE_BARE, `$${MIN_PRICE}`);
