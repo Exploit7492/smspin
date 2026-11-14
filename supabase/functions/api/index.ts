@@ -84,7 +84,7 @@ async function handleGet(req: Request, url: URL, path: string): Promise<Response
     const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "smspin.io";
     const scheme = (req.headers.get("x-forwarded-proto") || "https").split(",")[0];
     return json({ app_name: biz.name, package: "io.smspin.store." + slug.replace(/-/g, ""),
-      store_url: `${scheme}://${host}/store/${slug}`, theme: biz.theme || "crimson",
+      store_url: `${scheme}://${host}/${slug}`, theme: biz.theme || "crimson",
       markup_percent: biz.markup_percent || 0, api_base: `${scheme}://${host}/api/v1`, platform: "android",
       build: { format: "apk", min_sdk: 24, target_sdk: 34, version_name: "1.0.0", version_code: 1 } });
   }

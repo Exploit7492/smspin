@@ -26,7 +26,21 @@
     { "source": "/store/:slug/:dir/:page", "destination": "/:dir/:page/index.html" },
     { "source": "/store/:slug/:dir/:page/", "destination": "/:dir/:page/index.html" },
     { "source": "/store/:slug/:dir/:sub/:page", "destination": "/:dir/:sub/:page/index.html" },
-    { "source": "/store/:slug/:dir/:sub/:page/", "destination": "/:dir/:sub/:page/index.html" }
+    { "source": "/store/:slug/:dir/:sub/:page/", "destination": "/:dir/:sub/:page/index.html" },
+
+    { "source": "/:slug/dashboard/:rest*", "destination": "/dashboard/:rest*" },
+    { "source": "/:slug/admin/:rest*", "destination": "/admin/:rest*" },
+    { "source": "/:slug/login", "destination": "/store/login.html" },
+    { "source": "/:slug/register", "destination": "/store/register.html" },
+    { "source": "/:slug/account", "destination": "/store/account.html" },
+    { "source": "/:slug/:dir/:sub/:page", "destination": "/:dir/:sub/:page/index.html" },
+    { "source": "/:slug/:dir/:sub/:page/", "destination": "/:dir/:sub/:page/index.html" },
+    { "source": "/:slug/:dir/:page", "destination": "/:dir/:page/index.html" },
+    { "source": "/:slug/:dir/:page/", "destination": "/:dir/:page/index.html" },
+    { "source": "/:slug/:page", "destination": "/:page/index.html" },
+    { "source": "/:slug/:page/", "destination": "/:page/index.html" },
+    { "source": "/:slug", "destination": "/index.html" },
+    { "source": "/:slug/", "destination": "/index.html" }
   ],
   "headers": [
     {

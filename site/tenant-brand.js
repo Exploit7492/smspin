@@ -34,12 +34,18 @@
   function slug() {
     if (window.SMSPIN_TENANT_SLUG) return window.SMSPIN_TENANT_SLUG;
     var m = location.pathname.match(/^\/store\/([^\/]+)/);
-    return m ? decodeURIComponent(m[1]) : "";
+    if (m) return decodeURIComponent(m[1]);
+    // Root form: /<slug>/... — only when the build baked that slug as a store,
+    // so a real route (/about, /price) is never read as a tenant.
+    var p = location.pathname.split("/").filter(Boolean);
+    var known = window.SMSPIN_TENANT_BRANDS || {};
+    if (p.length && p[0] && p[0].indexOf(".") === -1 && known[p[0]]) return decodeURIComponent(p[0]);
+    return "";
   }
   function base() {
     if (window.SMSPIN_TENANT_BASE) return window.SMSPIN_TENANT_BASE.replace(/\/$/, "");
     var s = slug();
-    return s ? "/store/" + s : "";
+    return s ? "/" + s : "";
   }
   function rpc(fn, args) {
     return fetch("/api/rpc", {
@@ -159,8 +165,10 @@
     if (!LOGO) return;
     document.querySelectorAll(".logo [aria-hidden='true']").forEach(function (mark) {
       if (mark.querySelector("img")) return;
-      mark.style.background = "transparent";
-      mark.style.boxShadow = "none";
+      // Inline `!important` so the coloured mark is cleared even though the
+      // build-time guard sets the background with `!important`.
+      mark.style.setProperty("background", "transparent", "important");
+      mark.style.setProperty("box-shadow", "none", "important");
       mark.innerHTML = '<img src="' + LOGO + '" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:inherit">';
     });
   }
@@ -331,8 +339,23 @@
     var n = 0, iv = setInterval(function () { apply(); if (++n > 20) clearInterval(iv); }, 500);
   }
 
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", function () { bootAndSettle(); guardLinks(); });
-  else { bootAndSettle(); guardLinks(); }
+  // React replaces the nav (and its logo/wordmark) when hydration finishes. The
+  // interval above can be up to 500ms late, which is long enough to paint a frame
+  // of the platform brand, so re-apply the moment the DOM changes. Debounced to
+  // one pass per frame so a large re-render does not thrash.
+  function watchDom() {
+    if (!window.MutationObserver || !document.body) return;
+    var queued = false;
+    var obs = new MutationObserver(function () {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(function () { queued = false; apply(); });
+    });
+    obs.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", function () { bootAndSettle(); guardLinks(); watchDom(); });
+  else { bootAndSettle(); guardLinks(); watchDom(); }
   window.addEventListener("load", bootAndSettle);
   ["pushState", "replaceState"].forEach(function (k) {
     var orig = history[k];

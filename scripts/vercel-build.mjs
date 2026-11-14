@@ -47,16 +47,24 @@ const SKIP = [/(^|\/)\.git\//, /node_modules/, /\.map$/];
 // page it served (window.SMSPIN_TENANT_SLUG/BASE) so the shared dashboard/admin
 // code and tenant-brand.js knew which store they were rendering. A static host
 // cannot do that per request, so the bootstrap below derives the slug from the
-// URL path (/store/<slug>/...) in the browser, before any app script runs, and
-// from the host for a white-label custom domain (map baked in at build time).
+// URL path in the browser, before any app script runs, and from the host for a
+// white-label custom domain (map baked in at build time).
+//
+// Two path shapes are recognised:
+//   * /store/<slug>/...   — the original namespaced form (kept working).
+//   * /<slug>/...         — the product form, e.g. smspin.vercel.app/zenith-verify.
+// A bare first segment is only treated as a tenant when it is a slug the build
+// actually baked, so a real route (/about, /price, /blog) is never mistaken for
+// a store.
 //
 // Faithful to the backend's split: the slug bootstrap goes on every page (it is
-// a no-op off /store/<slug>/), while the re-skin script and consent log go only
+// a no-op off a tenant URL), while the re-skin script and consent log go only
 // on the public marketing pages — the dashboard/admin re-brand themselves from
 // site_config and must not have their links rewritten underneath them.
-function tenantBoot(domains) {
+function tenantBoot(domains, brands) {
   const map = Object.keys(domains).length ? JSON.stringify(domains) : "null";
-  return `<script>(function(){try{var D=${map};var host=location.hostname.toLowerCase();var s=D&&D[host]?D[host]:null;var custom=!!s;if(!s){var m=location.pathname.match(/^\\/store\\/([^\\/?#.]+)(?:\\/|$)/);if(!m)return;s=decodeURIComponent(m[1]);if(s==="login"||s==="register"||s==="account"||s==="index")return;}if(!window.SMSPIN_TENANT_SLUG){window.SMSPIN_TENANT_SLUG=s;window.SMSPIN_TENANT_BASE=custom?"":"/store/"+s;}}catch(e){}})();</script>`;
+  const known = Object.keys(brands).length ? JSON.stringify(Object.keys(brands)) : "null";
+  return `<script>(function(){try{var D=${map};var K=${known};var host=location.hostname.toLowerCase();var s=D&&D[host]?D[host]:null;var custom=!!s;if(!s){var p=location.pathname.split("/").filter(Boolean);if(p[0]==="store"){s=decodeURIComponent(p[1]||"");}else if(p.length&&p[0]&&p[0].indexOf(".")===-1&&K&&K.indexOf(p[0])!==-1){s=decodeURIComponent(p[0]);}}if(!s)return;if(s==="login"||s==="register"||s==="account"||s==="index")return;if(!window.SMSPIN_TENANT_SLUG){window.SMSPIN_TENANT_SLUG=s;window.SMSPIN_TENANT_BASE=custom?"":"/"+s;}}catch(e){}})();</script>`;
 }
 
 // Active white-label domains, resolved to their store slug, so a visitor on a
@@ -92,7 +100,7 @@ async function fetchTenantBrands() {
   } catch { return {}; }
 }
 const BRANDS = await fetchTenantBrands();
-const BOOT = tenantBoot(await fetchTenantDomains());
+const BOOT = tenantBoot(await fetchTenantDomains(), BRANDS);
 // Version the injected assets by commit so a new deploy never serves a stale
 // cached copy (vercel.json caches .js for a week).
 const BUILD = (process.env.VERCEL_GIT_COMMIT_SHA || String(Date.now())).slice(0, 8);
@@ -102,18 +110,30 @@ const CONSENT_SRC = `<script src="/consent-log.js?v=${BUILD}" defer></script>`;
 
 // Runs at the end of <head> — the <title>/<meta> are parsed by then but the
 // body has not, so the tenant's name and palette are in place before the first
-// paint. The logo mark is hidden until site/tenant-brand.js has swapped it for
-// the tenant's own (that script clears the data-tenant-brand flag). A timeout
-// reveals it anyway if the re-skin never runs.
+// paint.
+//
+// Two attributes drive the anti-flash guards:
+//   * data-tenant-brand — set here, cleared by site/tenant-brand.js once it has
+//     swapped the logo/wordmark. Hides the logo mark until then.
+//   * data-tenant — set here and never cleared. It marks the document as a
+//     tenant page so the `!important` rules below outrank React: after hydration
+//     React re-renders the nav and re-asserts its own inline
+//     `background:#E11D2E` on the logo mark (and the "SMSPin" wordmark), which
+//     without a guard paints one frame of the platform brand.
 const BRAND_BOOT = `<script>(function(){try{
 var s=window.SMSPIN_TENANT_SLUG;if(!s)return;
 var b=(window.SMSPIN_TENANT_BRANDS||{})[s];if(!b||!b.name)return;
-var r=document.documentElement;r.setAttribute("data-tenant-brand","");
+var r=document.documentElement;r.setAttribute("data-tenant","");r.setAttribute("data-tenant-brand","");
 if(b.primary)r.style.setProperty("--brand",b.primary);
 if(b.secondary)r.style.setProperty("--brand-2",b.secondary);
+if(b.primary){r.style.setProperty("--tenant-logo",b.primary);var n=parseInt(b.primary.replace("#",""),16);if(!isNaN(n)){r.style.setProperty("--tenant-logo-shadow","0 6px 20px rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+",0.40)");}}
 if(document.title&&document.title.indexOf("SMSPin")!==-1)document.title=document.title.split("SMSPin").join(b.name);
 var m=document.querySelectorAll('meta[content*="SMSPin"]');for(var i=0;i<m.length;i++){m[i].setAttribute("content",m[i].getAttribute("content").split("SMSPin").join(b.name));}
-var st=document.createElement("style");st.id="tenant-boot-hide";st.textContent="html[data-tenant-brand] .logo{visibility:hidden}";document.head.appendChild(st);
+var st=document.createElement("style");st.id="tenant-boot-hide";
+st.textContent="html[data-tenant-brand] .logo{visibility:hidden}"+
+"html[data-tenant] .logo [aria-hidden='true']{background:var(--tenant-logo,#e11d2e)!important;box-shadow:var(--tenant-logo-shadow)!important}"+
+"html[data-tenant] [fill='#E11D2E'],html[data-tenant] [fill='#e11d2e']{fill:var(--tenant-logo,#e11d2e)!important}";
+document.head.appendChild(st);
 setTimeout(function(){if(r.hasAttribute("data-tenant-brand"))r.removeAttribute("data-tenant-brand");},3000);
 }catch(e){}})();</script>`;
 

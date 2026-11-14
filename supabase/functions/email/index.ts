@@ -49,7 +49,7 @@ function compose(event: string, brand: string, ident: Ident, p: Record<string, u
   // the reader inside the brand they signed up with.
   const dash = (path = "") =>
     ident.tenant_slug
-      ? `${SITE_URL}/store/${ident.tenant_slug}/dashboard/${path}`
+      ? `${SITE_URL}/${ident.tenant_slug}/dashboard/${path}`
       : `${SITE_URL}/dashboard/${path}`;
   const row = (icon: string, label: string, value: unknown): EmailRow =>
     ({ icon, label, value: String(value ?? "—") });

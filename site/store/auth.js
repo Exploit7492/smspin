@@ -10,9 +10,17 @@
   };
 
   function slug() {
-    var parts = location.pathname.split("/").filter(Boolean); // ["store","<slug>","login"]
-    var fromPath = parts[0] === "store" ? (parts[1] || "").replace(/\.html$/, "") : "";
-    if (fromPath && fromPath !== "login" && fromPath !== "register" && fromPath !== "account") return fromPath;
+    var parts = location.pathname.split("/").filter(Boolean); // ["store","<slug>","login"] or ["<slug>","login"]
+    var reserved = { login: 1, register: 1, account: 1 };
+    var fromPath = "";
+    if (parts[0] === "store") {
+      var cand = (parts[1] || "").replace(/\.html$/, "");
+      if (cand && !reserved[cand]) fromPath = cand;
+    } else if (parts.length >= 2 && reserved[parts[parts.length - 1]]) {
+      // Product form: /<slug>/login, /<slug>/register, /<slug>/account.
+      fromPath = parts[0];
+    }
+    if (fromPath) return fromPath;
     var q = new URLSearchParams(location.search);
     return q.get("store") || q.get("slug") || "";
   }
