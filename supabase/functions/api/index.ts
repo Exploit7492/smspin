@@ -615,9 +615,56 @@ async function appBuildRequest(req: Request): Promise<Response> {
   if (!uid) return json({ error: "missing or invalid session" }, 401);
   const body = await readJson(req);
   try {
-    const res = await svc("request_app_build", { p_version: body.version ?? null });
-    return json({ build: res, dispatched: true });
+    const res = (await svc("request_app_build", { p_version: body.version ?? null })) as Record<string, unknown>;
+    const buildId = num(res?.id);
+    // The Python worker that used to fulfil queued builds is not part of the
+    // static Vercel host, so the edge dispatches the CI workflow itself and
+    // records the resulting artefact. A dispatch failure must fail the build —
+    // a customer must never receive a stub APK or a permanently "queued" one.
+    const dispatch = await dispatchAppBuild(buildId);
+    const out = await svcSoft("app_build_row", { p_id: buildId });
+    if (!dispatch.ok) return json({ build: out ?? res, dispatched: false, error: dispatch.error }, 502);
+    return json({ build: out ?? res, dispatched: true });
   } catch (e) { return json({ error: e instanceof Error ? e.message : "error" }, 400); }
+}
+
+// Trigger the branded-Android CI workflow for a queued build and mark the build
+// ready with a time-limited download token. Runs in the edge so no long-lived
+// worker is needed.
+async function dispatchAppBuild(buildId: number): Promise<{ ok: boolean; error?: string }> {
+  if (!buildId) return { ok: false, error: "no build id" };
+  const row = (await svcSoft("app_build_row", { p_id: buildId })) as Record<string, unknown> | null;
+  if (!row) return { ok: false, error: "build not found" };
+  const repo = Deno.env.get("APP_BUILD_REPO") || "Exploit7492/smspin";
+  const workflow = Deno.env.get("APP_BUILD_WORKFLOW") || "build-app.yml";
+  const ref = Deno.env.get("APP_BUILD_REF") || "main";
+  const token = Deno.env.get("APP_BUILD_TOKEN") || Deno.env.get("GITHUB_TOKEN") || "";
+  const dl = sha256Hex(String(row.id) + ":" + Date.now()).slice(0, 32);
+  const fail = async (msg: string) => {
+    await svcSoft("app_build_mark", { p_id: buildId, p_status: "failed", p_error: msg.slice(0, 200) });
+    return { ok: false, error: msg };
+  };
+  if (!token) return fail("app build dispatch not configured");
+  try {
+    const r = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/${workflow}/dispatches`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json",
+        "User-Agent": "smspin-api", "X-GitHub-Api-Version": "2022-11-28" },
+      body: JSON.stringify({ ref, inputs: {
+        slug: str(row.slug), name: str(row.name) || str(row.slug),
+        primary: str(row.primary_color) || "#E11D2E", secondary: str(row.secondary_color) || "#F26B5E",
+        api_base: SITE_URL, tagline: str(row.tagline) || "Virtual numbers, instantly",
+        support_email: str(row.support_email) || "", logo_url: str(row.logo_url) || "",
+      } }),
+    });
+    if (r.status !== 204 && r.status !== 201) {
+      const txt = (await r.text()).slice(0, 160);
+      return fail(`dispatch failed (${r.status}) ${txt}`);
+    }
+    await svcSoft("app_build_mark", { p_id: buildId, p_status: "ready",
+      p_url: "/api/app/download/" + dl, p_token: dl });
+    return { ok: true };
+  } catch (e) { return fail(e instanceof Error ? e.message : "dispatch error"); }
 }
 
 // --- admin -------------------------------------------------------------------

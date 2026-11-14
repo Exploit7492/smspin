@@ -191,9 +191,13 @@ const SKIP_TENANT = new Set(["store/login.html", "store/register.html", "store/a
 // cached copy — vercel.json caches .js/.css for a week. Every injected asset is
 // normalised to this build's hash so a rebuild is byte-identical apart from the
 // hash itself.
+// Stamp the cache-busting commit hash onto every app-owned JS/CSS reference, so
+// a new deploy never serves a stale cached copy — vercel.json caches .js/.css
+// for a week, and a hand-pinned `?v=2` (business.js) was serving an old build
+// long after the source changed. Every injected asset is normalised to this
+// build's hash so a rebuild is byte-identical apart from the hash itself.
 function stampAssets(html) {
-  return html.replace(/(["'/](?:ui\.js|theme\.css|tenant-brand\.js|consent-log\.js))\?v=[0-9a-f]+/g,
-    `$1?v=${BUILD}`);
+  return html.replace(/(["'/][^"']*\.(?:js|css))\?v=[0-9a-zA-Z.]+/g, `$1?v=${BUILD}`);
 }
 
 function injectTenantBootstrap(html, rel) {

@@ -58,6 +58,7 @@
   function drawThemes() {
     $("#themeGrid").innerHTML = THEMES.map(t =>
       '<div class="theme-card' + (t.id === theme ? " sel" : "") + '" role="button" tabindex="0" aria-pressed="' + (t.id === theme) + '" data-theme="' + t.id + '">' +
+      '<span class="theme-tick" aria-hidden="true">\u2713</span>' +
       '<div class="theme-swatch">' + t.c.map(c => '<i style="background:' + c + '"></i>').join("") + "</div>" +
       "<b>" + esc(t.name) + "</b></div>").join("");
     // Scope to the grid — a global [data-theme] selector also matches the
@@ -70,7 +71,7 @@
   }
 
   function updateSlug() {
-    $("#slugPreview").textContent = "/store/" + slugify($("#bizName").value);
+    $("#slugPreview").textContent = "/" + slugify($("#bizName").value);
   }
 
   function markupValue() {
@@ -79,28 +80,70 @@
       : Number($("#bizMarkup") ? $("#bizMarkup").value : 0) || 0;
   }
 
+  // Percentage = a true percentage increase; fixed = the whole naira amount
+  // added on top. Mirrors biz_markup_amount() on the server.
+  function applyMarkup(base, mode, pct, fixed) {
+    return mode === "fixed" ? Number(base || 0) + Number(fixed || 0)
+                            : Number(base || 0) * (1 + Number(pct || 0) / 100);
+  }
+
+  const MODE_COPY = {
+    percent: { label: "By percentage", icon: "%",
+      hint: "A percentage is added on top of the host price — 30% of \u20a62,700 is \u20a6810." },
+    fixed: { label: "By fixed price", icon: "\u20a6",
+      hint: "A flat amount in naira is added to every number — \u20a6500 on a \u20a62,700 base sells at \u20a63,200." },
+  };
+
   function setMarkupMode(mode) {
     markupMode = mode === "fixed" ? "fixed" : "percent";
-    $$(".mk-mode-btn").forEach(b => {
-      const on = b.dataset.mode === markupMode;
-      b.classList.toggle("on", on);
-      b.setAttribute("aria-selected", on ? "true" : "false");
-    });
+    const copy = MODE_COPY[markupMode];
+    if ($("#mkModeLabel")) $("#mkModeLabel").textContent = copy.label;
+    if ($("#mkModeHint")) $("#mkModeHint").textContent = copy.hint;
+    const ico = $("#mkModeBtn .picker-ico"); if (ico) ico.textContent = copy.icon;
     if ($("#mkPercentWrap")) $("#mkPercentWrap").hidden = markupMode !== "percent";
     if ($("#mkFixedWrap")) $("#mkFixedWrap").hidden = markupMode !== "fixed";
     updateMarkupPreview();
   }
 
+  async function pickMarkupMode() {
+    if (!(window.SMSPINUI && SMSPINUI.select)) { setMarkupMode(markupMode === "percent" ? "fixed" : "percent"); return; }
+    const choice = await SMSPINUI.select({
+      title: "How do you want to price?",
+      items: [
+        { value: "percent", label: "By percentage", sub: "Add a % on top of the host price", icon: "%", meta: markupMode === "percent" ? "Current" : "" },
+        { value: "fixed", label: "By fixed price", sub: "Add a flat naira amount to every number", icon: "\u20a6", meta: markupMode === "fixed" ? "Current" : "" },
+      ],
+      value: markupMode,
+    });
+    if (choice) setMarkupMode(choice);
+  }
+
+  let previewSeq = 0;
   async function updateMarkupPreview() {
-    // Illustrative host base prices; the store sells each at the host price
-    // plus this store's markup, and the host base is what gets struck out.
-    const rows = [["WhatsApp \u00b7 UK", 4051], ["Telegram \u00b7 US", 5402], ["Google \u00b7 NG", 2701]];
+    // Real, in-stock numbers priced with the chosen mode, so the wizard shows
+    // what a buyer will actually pay instead of a hard-coded sample.
     const pct = Number($("#bizMarkup") ? $("#bizMarkup").value : 0) || 0;
     const fixed = Number($("#bizMarkupFixed") ? $("#bizMarkupFixed").value : 0) || 0;
-    $("#mkPreview").innerHTML = rows.map(([n, base]) => {
-      const ours = markupMode === "fixed" ? base + fixed : base * (1 + pct / 100);
-      return '<div class="mk"><small>' + esc(n) + "</small><b>" + money(ours) +
-        '<span class="was">' + money(base) + "</span></b></div>";
+    const box = $("#mkPreview");
+    const seq = ++previewSeq;
+    let rows = [];
+    try {
+      rows = await SMSPIN.rpc("business_markup_preview", {
+        p_mode: markupMode, p_percent: markupMode === "percent" ? pct : 0,
+        p_fixed: markupMode === "fixed" ? fixed : 0,
+      }) || [];
+    } catch (e) { rows = []; }
+    if (seq !== previewSeq || !box) return;
+    if (!rows.length) {
+      box.innerHTML = '<div class="mk"><small>Preview</small><b>\u2014</b></div>';
+      return;
+    }
+    box.innerHTML = rows.map(r => {
+      const name = (r.country_name || r.country || "") + " \u00b7 " + (r.service_name || r.service || "");
+      const base = Number(r.base_ngn) || 0;
+      const ours = Number(r.price_ngn) || applyMarkup(base, markupMode, pct, fixed);
+      const was = base && base < ours ? '<span class="was">' + money(base) + "</span>" : "";
+      return '<div class="mk"><small>' + esc(name) + "</small><b>" + money(ours) + was + "</b></div>";
     }).join("");
   }
 
@@ -163,13 +206,14 @@
   function showLive(r, draft) {
     $("#wizardPanel").hidden = true;
     $("#bizStatusPanel").hidden = false;
-    const slug = (r.store_url || "/store/" + draft.slug).replace("/store/", "");
-    const url = location.origin + (r.store_url || "/store/" + draft.slug);
+    const slug = draft.slug || (r.store_url || "").split("/").filter(Boolean).pop() || "";
+    const path = "/" + slug;
+    const url = location.origin + path;
     $("#bizStatusBody").innerHTML =
       '<div class="biz-live">' +
       '<div class="row"><span class="pill">Store live</span><span class="pill">App provisioning</span></div>' +
       '<div class="field"><label>Your store URL</label><input readonly value="' + esc(url) + '"></div>' +
-      '<div class="row"><a class="btn btn-primary" href="' + esc(r.store_url || "/store/" + draft.slug) +
+      '<div class="row"><a class="btn btn-primary" href="' + esc(path) +
       '" target="_blank" rel="noopener">Open store</a>' +
       '<a class="btn btn-secondary" href="/dashboard/api-keys/">Get API key</a>' +
       '<a class="btn btn-ghost" href="/api/business/manifest?slug=' + encodeURIComponent(slug) +
@@ -186,7 +230,7 @@
       const b = await SMSPIN.rpc("my_business");
       if (b && b.id) {
         if (b.status === "active") {
-          showLive({ store_url: "/store/" + b.slug, paid_ngn: b.paid_ngn, paid_usd: b.paid_usd || 20 }, b);
+          showLive({ paid_ngn: b.paid_ngn, paid_usd: b.paid_usd || 20 }, b);
           return;
         }
         $("#bizName").value = b.name || "";
@@ -408,8 +452,8 @@
     loadKeys();
     loadChecklist();
     loadAppBuilds(s.slug);
-    const open = $("#bizOpenStore"); if (open) open.href = "/store/" + s.slug;
-    const open2 = $("#bizOpenStore2"); if (open2) open2.href = "/store/" + s.slug;
+    const open = $("#bizOpenStore"); if (open) open.href = "/" + s.slug;
+    const open2 = $("#bizOpenStore2"); if (open2) open2.href = "/" + s.slug;
     drawDonut(s.by_status || []);
     $("#bizEarned").textContent = money(s.earned_ngn);
     $("#bizMarkupPct").textContent = s.markup_mode === "fixed"
@@ -447,7 +491,7 @@
   // ---------------- M5-M7 branded app distribution ----------------
   async function loadAppBuilds(slug) {
     const dl = $("#appDownload");
-    if (slug) { const d = $("#appDeepLink"); if (d) d.textContent = "/store/" + slug; }
+    if (slug) { const d = $("#appDeepLink"); if (d) d.textContent = "/" + slug; }
     let builds = [];
     try { builds = await SMSPIN.rpc("my_app_builds"); } catch (e) { return; }
     const when = iso => { try { return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch (e) { return "—"; } };
@@ -487,7 +531,7 @@
     $("#bizName").addEventListener("input", updateSlug);
     $("#bizMarkup").addEventListener("input", updateMarkupPreview);
     if ($("#bizMarkupFixed")) $("#bizMarkupFixed").addEventListener("input", updateMarkupPreview);
-    $$(".mk-mode-btn").forEach(b => b.addEventListener("click", () => setMarkupMode(b.dataset.mode)));
+    if ($("#mkModeBtn")) $("#mkModeBtn").addEventListener("click", pickMarkupMode);
     $("#wizBack").addEventListener("click", () => setStep(step - 1));
     $("#wizNext").addEventListener("click", () => {
       if (step === 1) { if (!$("#bizName").value.trim()) { toast("Enter a store name", "err"); return; } setStep(2); }
