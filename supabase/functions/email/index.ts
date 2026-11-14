@@ -22,7 +22,7 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const NOVU_KEY = Deno.env.get("NOVU_API_KEY") || "";
 const NOVU_BASE = (Deno.env.get("NOVU_BASE") || "https://api.novu.co").replace(/\/$/, "");
 const WORKFLOW = Deno.env.get("NOVU_WORKFLOW") || "smspin-transactional";
-const SITE_URL = (Deno.env.get("SMSPIN_SITE_URL") || "https://smspin.io").replace(/\/$/, "");
+const SITE_URL = (Deno.env.get("SMSPIN_SITE_URL") || "https://smspin.vercel.app").replace(/\/$/, "");
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -45,8 +45,8 @@ const PLATFORM: Ident = {
 // so the backend worker and this serverless worker produce identical mail.
 function compose(event: string, brand: string, ident: Ident, p: Record<string, unknown>): EmailContent {
   const currency = (p.currency as string) || "NGN";
-  // A tenant's dashboard lives under its store path, so transactional CTAs keep
-  // the reader inside the brand they signed up with.
+  // A tenant's dashboard lives under its own path (/<slug>/dashboard), so
+  // transactional CTAs keep the reader inside the brand they signed up with.
   const dash = (path = "") =>
     ident.tenant_slug
       ? `${SITE_URL}/${ident.tenant_slug}/dashboard/${path}`

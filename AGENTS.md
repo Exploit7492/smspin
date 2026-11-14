@@ -720,13 +720,26 @@ to their store. One set of files serves everyone; a UI change lands on all store
   A production-targeted Git deploy takes the `smspin.vercel.app` alias automatically.
 - **Static tenant routing:** the Python backend stamped `window.SMSPIN_TENANT_SLUG/BASE`
   per request; the static host cannot, so `scripts/vercel-build.mjs` injects a
-  bootstrap that derives the slug from `/store/<slug>/...` at runtime, or from the
-  host via the baked-in `tenant_domains()` map (white-label domains).
-- **Deep routes:** every tenant page lives under `/store/<slug>/...`. `vercel.json`
-  has rewrite rules for depth 1–3 (`/store/:slug`, `/:page`, `/:dir/:page`,
+  bootstrap that derives the slug from the URL path at runtime, or from the host
+  via the baked-in `tenant_domains()` map (white-label domains).
+- **Tenant URL shapes:** a tenant is reachable at BOTH the product form
+  `/zenith-verify` and the legacy namespaced form `/store/zenith-verify` (kept
+  working for old links and email). A bare first segment is only treated as a
+  tenant when it is a slug the build actually baked into
+  `window.SMSPIN_TENANT_BRANDS`, so real routes (`/about`, `/price`, `/blog`)
+  are never mistaken for a store.
+- **Deep routes:** every tenant page lives under `/<slug>/...`. `vercel.json` has
+  rewrite rules for depth 1–3 (`/:slug`, `/:page`, `/:dir/:page`,
   `/:dir/:sub/:page`, each with/without trailing slash) pointing at the real
-  `/<path>/index.html`. Filesystem files (e.g. `/store/login.html`) take precedence
-  over rewrites. Add a rule if a new marketing route depth appears.
+  `/<path>/index.html`, and a parallel set under `/store/:slug/...`. Filesystem
+  files (e.g. `/store/login.html`) take precedence over rewrites. Add a rule if a
+  new marketing route depth appears.
+- **Anti-flash re-skin:** `site/tenant-brand.js` re-applies the tenant brand after
+  React hydration (which replaces the nav and re-asserts the platform logo). It
+  keeps a `#tenant-guard` style with the literal tenant colour and a `childList`
+  MutationObserver, because an attribute-based guard is stripped when React
+  reconciles `<html>`. Verify with a screencast: the header logo region must never
+  show `#E11D2E` on a tenant page.
 - **Build env:** `scripts/vercel-build.mjs` fails the build if `SUPABASE_URL` /
   `SUPABASE_ANON_KEY` are unset, and if any sandbox URL (`:12000`,
   `*.prod-runtime.all-hands.dev`, `*.onrender.com`) leaks into a text asset.
