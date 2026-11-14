@@ -130,3 +130,30 @@ def test_audit_write_and_list(db_conn):
     assert rows and rows[0]["action"] == "test.action"
     cur = db_conn.cursor()
     cur.execute("delete from audit_log where actor='pytest:actor'")
+
+
+def test_markup_modes_price_above_host(db_conn):
+    """Percent and fixed markup must both raise the price and never round it away.
+
+    Whole-dollar rounding used to swallow the margin: a 30% markup on the $2
+    floor came straight back to $2, and a small fixed margin landed below the
+    host price.
+    """
+    cur = db_conn.cursor()
+    cur.execute("select rate from fx_rates where code='NGN'")
+    rate = float(cur.fetchone()[0])
+    base = round(2 * rate)  # the $2 platform floor, in naira
+
+    def price(mode, pct=0, fixed=0):
+        cur.execute("select public.biz_markup_amount(%s,%s,%s,%s)", (base, mode, pct, fixed))
+        return float(cur.fetchone()[0])
+
+    assert price("percent", pct=0) == base
+    assert price("percent", pct=30) > base
+    assert price("percent", pct=100) == round(2 * base)
+    assert price("fixed", fixed=0) == base
+    assert price("fixed", fixed=500) == base + 500
+    # A large host base plus a fixed margin is exact, not rounded to a dollar.
+    big = round(20 * rate)
+    cur.execute("select public.biz_markup_amount(%s,'fixed',0,500)", (big,))
+    assert float(cur.fetchone()[0]) == big + 500
