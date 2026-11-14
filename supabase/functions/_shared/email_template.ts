@@ -14,6 +14,7 @@
 
 export type EmailBrand = {
   brand_name: string;
+  from_name?: string | null;
   primary_color?: string | null;
   secondary_color?: string | null;
   support_email?: string | null;

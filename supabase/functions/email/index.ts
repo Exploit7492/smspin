@@ -35,7 +35,8 @@ const json = (body: unknown, status = 200) =>
 type Ident = EmailBrand & { tenant_id: string; theme?: string };
 
 const PLATFORM: Ident = {
-  tenant_id: "smspin-platform", brand_name: "SMSPin", primary_color: "#E11D2E",
+  tenant_id: "smspin-platform", brand_name: "SMSPin", from_name: "SMSPin",
+  primary_color: "#E11D2E", reply_to: "support@smspin.io",
   secondary_color: "#F26B7A", support_email: "support@smspin.io", logo_url: null,
   footer: "You are receiving this because you have an account with SMSPin.",
   site_url: SITE_URL, tagline: "Virtual numbers",
@@ -198,6 +199,15 @@ Deno.serve(async (req) => {
       name: WORKFLOW,
       to: { subscriberId: sub, email: to, ...(payload.name ? { firstName: String(payload.name).split(" ")[0] } : {}) },
       tenant: { identifier: id.tenant_id },
+      // Brand the envelope per tenant, not just the body: the From display name
+      // and Reply-To come from the tenant's own identity so a recipient never
+      // sees the platform brand on a white-label store's mail.
+      overrides: {
+        email: {
+          senderName: id.from_name || id.brand_name,
+          ...(id.reply_to ? { replyTo: id.reply_to } : {}),
+        },
+      },
       payload: {
         subject: content.subject,
         heading: content.heading,

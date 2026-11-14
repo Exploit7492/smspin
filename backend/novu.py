@@ -115,12 +115,13 @@ def upsert_subscriber(subscriber_id, email=None, first_name=None, last_name=None
 
 
 # ---------------------------------------------------------------- trigger
-def trigger(workflow, to, payload=None, tenant=None, transaction_id=None):
+def trigger(workflow, to, payload=None, tenant=None, transaction_id=None, overrides=None):
     """Trigger a transactional workflow.
 
     ``to`` is a subscriber dict (``{"subscriberId":..., "email":...}``) or a
     string subscriber id. ``tenant`` is ``{"identifier":..., "data":{...}}``.
-    Returns ``{"ok": bool, "id": <transactionId>, "error": <str>}``.
+    ``overrides`` carries per-message channel settings (e.g. the tenant's From
+    name and Reply-To). Returns ``{"ok": bool, "id": <transactionId>, "error": <str>}``.
     """
     if not configured():
         return {"ok": False, "error": "novu not configured"}
@@ -129,6 +130,8 @@ def trigger(workflow, to, payload=None, tenant=None, transaction_id=None):
     body["to"] = {"subscriberId": to} if isinstance(to, str) else dict(to)
     if tenant:
         body["tenant"] = tenant
+    if overrides:
+        body["overrides"] = overrides
     if transaction_id:
         body["transactionId"] = transaction_id
     try:
@@ -138,7 +141,7 @@ def trigger(workflow, to, payload=None, tenant=None, transaction_id=None):
         # "no_tenant_found" means the tenant row is missing; the platform
         # fallback is to retrigger without a tenant so mail still goes out.
         if status == "no_tenant_found" and tenant:
-            return trigger(workflow, to, payload, None, transaction_id)
+            return trigger(workflow, to, payload, None, transaction_id, overrides)
         ok = status in ("processed", "queued", None) and not res.get("error")
         return {"ok": bool(ok), "id": data.get("transactionId"),
                 "status": status, "error": res.get("message") or res.get("error")}
@@ -233,4 +236,12 @@ def send_event(event, to, tenant, base_url=None, **kw):
     content["brand_name"] = brand
     content["support_email"] = tx.get("support_email") or ""
     novu_tenant = {"identifier": tx.get("tenant_id") or "smspin-platform"}
-    return trigger(event, to, content, novu_tenant)
+    # Brand the envelope per tenant: the From display name and Reply-To come from
+    # the sending store's own identity, so a white-label recipient never sees the
+    # platform brand on the message.
+    sender_name = tx.get("from_name") or brand
+    reply_to = tx.get("reply_to")
+    overrides = {"email": {"senderName": sender_name}}
+    if reply_to:
+        overrides["email"]["replyTo"] = reply_to
+    return trigger(event, to, content, novu_tenant, overrides=overrides)

@@ -157,3 +157,29 @@ def test_markup_modes_price_above_host(db_conn):
     big = round(20 * rate)
     cur.execute("select public.biz_markup_amount(%s,'fixed',0,500)", (big,))
     assert float(cur.fetchone()[0]) == big + 500
+
+
+def test_email_sender_identity_is_per_tenant(db_conn):
+    """Each store's mail identity is its own brand, not the platform's.
+
+    The dispatcher reads from_name/reply_to from email_sender() to brand the
+    envelope, so a white-label recipient never sees SMSPin.
+    """
+    cur = db_conn.cursor()
+    cur.execute("select slug, name, support_email from businesses "
+                "where status='active' and parent_id is null order by id")
+    tenants = cur.fetchall()
+    assert tenants, "need at least one active tenant"
+    for slug, name, support in tenants:
+        cur.execute("select public.email_sender(%s)", (slug,))
+        ident = cur.fetchone()[0]
+        assert ident["brand_name"] == name
+        assert ident["tenant_id"] == slug
+        assert ident["from_name"] == name
+        if support:
+            assert ident["reply_to"] == support
+    # The platform fallback keeps its own identity.
+    cur.execute("select public.email_sender(null)")
+    plat = cur.fetchone()[0]
+    assert plat["tenant_id"] == "smspin-platform"
+    assert plat["brand_name"] and plat["from_name"]
